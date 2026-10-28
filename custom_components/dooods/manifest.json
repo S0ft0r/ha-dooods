@@ -1,0 +1,12 @@
+{
+  "domain": "dooods",
+  "name": "DOOODS — Dedicated Overhaul Open Object Detection Service",
+  "codeowners": ["@S0ft0r"],
+  "config_flow": true,
+  "dependencies": ["camera"],
+  "documentation": "https://github.com/snowzach/doods2",
+  "integration_type": "service",
+  "iot_class": "local_polling",
+  "requirements": [],
+  "version": "0.1.9.1"
+}

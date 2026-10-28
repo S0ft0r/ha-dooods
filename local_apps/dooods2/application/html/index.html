@@ -1,0 +1,290 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>DOODS Web Interface...</title>
+  <style>
+    body {
+      background-color: steelblue;
+      font-family: sans-serif;
+    }
+    #logo {
+      position: relative;
+      float: left;
+    }
+    #title {
+      position: relative;
+      float: left;
+    }
+    h1 {
+      color: #333333;
+      margin-left: 10px;
+    }
+    #body {
+      clear: both;
+      padding-top: 5px;
+    }
+    h4 {
+      margin: 0px;
+    }
+    #detection_request_header {
+      display: flex;
+      align-items: center;
+    }
+    #detect_request {
+      width: 90%;
+    }
+    #json {
+      width: 90%;
+      height: 100vh;
+    }
+    </style>
+</head>
+<script>
+const reader = new FileReader();
+
+function loadFile() {
+  const file = document.getElementById('file').files[0];
+  if (file) {
+    reader.readAsDataURL(file);
+    console.log("File loaded...");
+  }
+}
+
+function detectImage() {
+  const file = document.getElementById('file').files[0];
+  if (!file) {
+    alert("Select a file first...");
+    return
+  }
+  try {
+    var detect_request = JSON.parse(document.getElementById('detect_request').value);
+  } catch (error) {
+    alert('could not parse detect request: '+error)
+    return
+  }
+  detect_request.data = reader.result.split(',')[1];
+  
+  var xmlhttp = new XMLHttpRequest();
+  xmlhttp.open("POST", "/image");
+  xmlhttp.setRequestHeader("Content-Type", "application/json;charset=UTF-8");
+  xmlhttp.responseType = "blob";
+  xmlhttp.onload = function(e) {
+    if (this.status !== 200) {
+      this.response.text().then(function(message){alert(message)});
+      return;
+    }
+    var urlCreator = window.URL || window.webkitURL;
+    var imageUrl = urlCreator.createObjectURL(this.response);
+    const image = document.getElementById('image');
+    image.src = imageUrl;
+    image.hidden = false;
+    document.getElementById('json').hidden = true;
+  }
+  xmlhttp.send(JSON.stringify(detect_request));
+}
+
+function detectJSON() {
+  const file = document.getElementById('file').files[0];
+  if (!file) {
+    alert("Select a file first...");
+    return
+  }
+  try {
+    var detect_request = JSON.parse(document.getElementById('detect_request').value);
+  } catch (error) {
+    alert('could not parse detect request: '+error)
+    return
+  }
+  detect_request.data = reader.result.split(',')[1];
+  
+  var xmlhttp = new XMLHttpRequest();
+  xmlhttp.open("POST", "/detect");
+  xmlhttp.setRequestHeader("Content-Type", "application/json;charset=UTF-8");
+  xmlhttp.onload = function(e) {
+    if (this.status !== 200) {
+      this.response.text().then(function(message){alert(message)});
+      return;
+    }
+    var urlCreator = window.URL || window.webkitURL;
+    response = JSON.parse(this.response);
+    json.innerHTML = JSON.stringify(response, null, 2);
+    json.hidden = false;
+    document.getElementById('image').hidden = true;
+  }
+  xmlhttp.send(JSON.stringify(detect_request));
+}
+
+function detectUrlImage() {
+  try {
+    var detect_request = JSON.parse(document.getElementById('detect_request').value);
+  } catch (error) {
+    alert('could not parse detect request: '+error)
+    return
+  }
+  detect_request.data = document.getElementById('url').value;
+
+  var xmlhttp = new XMLHttpRequest();
+  xmlhttp.open("POST", "/image");
+  xmlhttp.setRequestHeader("Content-Type", "application/json;charset=UTF-8");
+  xmlhttp.responseType = "blob";
+  xmlhttp.onload = function(e) {
+    if (this.status !== 200) {
+      this.response.text().then(function(message){alert(message)});
+      return;
+    }
+    var urlCreator = window.URL || window.webkitURL;
+    var imageUrl = urlCreator.createObjectURL(this.response);
+    const image = document.getElementById('image');
+    image.src = imageUrl;
+    image.hidden = false;
+    document.getElementById('json').hidden = true;
+  }
+  xmlhttp.send(JSON.stringify(detect_request));
+}
+
+function detectUrlJSON() {
+  try {
+    var detect_request = JSON.parse(document.getElementById('detect_request').value);
+  } catch (error) {
+    alert('could not parse detect request: '+error)
+    return
+  }
+  detect_request.data = document.getElementById('url').value;
+
+  var xmlhttp = new XMLHttpRequest();
+  xmlhttp.open("POST", "/detect");
+  xmlhttp.setRequestHeader("Content-Type", "application/json;charset=UTF-8");
+  xmlhttp.onload = function(e) {
+    if (this.status !== 200) {
+      this.response.text().then(function(message){alert(message)});
+      return;
+    }
+    var urlCreator = window.URL || window.webkitURL;
+    response = JSON.parse(this.response);
+    json.innerHTML = JSON.stringify(response, null, 2);
+    json.hidden = false;
+    document.getElementById('image').hidden = true;
+  }
+  xmlhttp.send(JSON.stringify(detect_request));
+}
+
+function detectUrlStream() {
+  try {
+    var detect_request = JSON.parse(document.getElementById('detect_request').value);
+  } catch (error) {
+    alert('could not parse detect request: '+error)
+    return
+  }
+  detect_request.data = document.getElementById('url').value;
+  window.open("/stream?detect_request=" + encodeURIComponent(JSON.stringify(detect_request)));
+}
+
+function getDetectors() {
+  var xmlhttp = new XMLHttpRequest();
+  xmlhttp.open("GET", "/detectors");
+  xmlhttp.onload = function(e) {
+    if (this.status !== 200) {
+      this.response.text().then(function(message){alert(message)});
+      return;
+    }
+    const json = document.getElementById('json');
+    // Parse the json response
+    response = JSON.parse(this.response);
+    json.innerHTML = JSON.stringify(response, null, 2);
+    json.hidden = false;
+    document.getElementById('image').hidden = true;
+  }
+  xmlhttp.send();
+}
+
+function setDetectorName(e) {
+  var detect_request = document.getElementById('detect_request');
+  try {
+    detect_request_object = JSON.parse(detect_request.value);
+  } catch (error) {
+    alert('could not parse detect request: '+error);
+    return
+  }
+  detect_request_object.detector_name = e.target.value;
+  detect_request.value = JSON.stringify(detect_request_object, null, 2);
+   console.log(detect_request);
+}
+
+// Fetch the detectors and fill the select
+let xmlhttp = new XMLHttpRequest();
+xmlhttp.open("GET", "/detectors");
+xmlhttp.onload = function(e) {
+    if (this.status !== 200) {
+      this.response.text().then(function(message){alert(message)});
+      return;
+    }
+    const detector_names = document.getElementById('detector_names');
+    response = JSON.parse(this.response);
+    for (const detector of response.detectors) {
+      var opt = document.createElement('option');
+      opt.value = detector.name;
+      opt.innerHTML = detector.name;
+      detector_names.appendChild(opt);
+    }
+    detector_names.dispatchEvent(new Event('change'));
+}
+xmlhttp.send();
+
+</script>
+<body>
+<div id="logo"><img src="doods.jpg"/></div>
+<div id="title"><h1>DOODS Web Interface</h3></div>
+<div style="clear:both;padding:0 10px 10px">
+  <a href="./profiles.html" style="color:#102f4a;font-weight:700">Редактор профилей зон Overhaul →</a>
+</div>
+<div id="body">
+<hr/>
+<div id=detection_request_header>
+  Detection Request
+  &nbsp;&nbsp;
+  <a href="https://github.com/snowzach/doods2#detect-request" target="_blank">
+    <img src="link.png"/>
+  </a>
+  &nbsp;&nbsp;
+  <button type="button" onclick=getDetectors()>Show Configured Detectors</button>
+  &nbsp;&nbsp;
+  Detectors: <select id="detector_names" onchange=setDetectorName(event)></select>
+</div>
+<h4></h4>
+
+<textarea id="detect_request" rows=12>
+{
+  "id": "manual",
+  "detector_name": "default",
+  "preprocess": [],
+  "detect": {
+    "*": 50
+  },
+  "regions": [
+    {"top": 0.1, "left": 0.1, "bottom": 0.9, "right": 0.9, "detect": {"*":50}, "covers": false}
+  ]
+}  
+</textarea>
+<hr/>
+
+Image:
+<input id="file" type="file" onchange="loadFile()">
+&nbsp;&nbsp;
+<button type="button" onclick=detectImage()>Detect Image</button>
+<button type="button" onclick=detectJSON()>Detect JSON</button>
+<hr/>
+
+URL: 
+<input id="url" type="text" id="url" value="rtsp://user:pass@hostname:554/Streaming/Channels/101/" size="100">
+<button type="button" onclick=detectUrlImage()>Detect Image</button>
+<button type="button" onclick=detectUrlJSON()>Detect JSON</button>
+<button type="button" onclick=detectUrlStream()>Detect Stream</button>
+<br/>
+Supports http://, https://, ftp:// or rtsp:// for both an image or video stream. (Detect stream willl only work with a video stream)
+<hr/>
+
+<img id="image" hidden="true"/>
+<textarea id="json" hidden="true" rows=12></textarea>
+</div>
+</body>
+</html>

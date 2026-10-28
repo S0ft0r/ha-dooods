@@ -1,0 +1,628 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Server connection",
+        "description": "Enter the DOODS2 base URL and optional API key. On submit, DOOODS checks GET /detectors and loads the configured detector and label choices before continuing.",
+        "data": {
+          "url": "Server URL",
+          "auth_key": "API key"
+        },
+        "data_description": {
+          "url": "Use the app's internal hostname and port, for example http://addon-hostname:8080. Do not add /detect.",
+          "auth_key": "The key is sent in the doods-auth-key header. The current DOODS2 server does not enforce it, so do not rely on it for protection."
+        }
+      },
+      "cameras": {
+        "title": "Cameras and schedule",
+        "description": "Choose cameras and a periodic fallback interval. You can assign an existing motion sensor to each camera on the next screen.",
+        "data": {
+          "source": "Camera entities",
+          "scan_interval": "Scan interval (seconds)"
+        },
+        "data_description": {
+          "source": "Select one or more camera entities to scan.",
+          "scan_interval": "Periodic fallback interval between scans of each camera, in seconds."
+        }
+      },
+      "detection": {
+        "title": "Detector and defaults",
+        "description": "Select a configured detector and set timeout and confidence defaults for camera scans.",
+        "data": {
+          "detector": "Detector",
+          "timeout": "Request timeout (seconds)",
+          "confidence": "Minimum confidence (%)"
+        },
+        "data_description": {
+          "detector": "Select one detector reported by the DOODS2 server.",
+          "timeout": "Timeout applied to camera snapshots and DOODS2 requests.",
+          "confidence": "Global confidence threshold from 0 to 100."
+        }
+      },
+      "labels": {
+        "title": "Labels",
+        "description": "Choose labels to track. Leaving the selection empty tracks every label reported by the detector.",
+        "data": {
+          "labels": "Labels to include"
+        },
+        "data_description": {
+          "labels": "Select one or more reported labels. If the server does not report labels, enter one label per line. All selected labels use the global confidence and area."
+        }
+      },
+      "area": {
+        "title": "Global detection area",
+        "description": "Set the shared area applied to every camera detection. Coordinates are normalized from 0 to 1.",
+        "sections": {
+          "area": {
+            "name": "Global detection area",
+            "description": "The defaults cover the full image.",
+            "data": {
+              "top": "Top",
+              "left": "Left",
+              "bottom": "Bottom",
+              "right": "Right",
+              "covers": "Require each detection to fit fully inside the area"
+            },
+            "data_description": {
+              "covers": "When disabled, any overlap with the area is enough."
+            }
+          }
+        }
+      },
+      "output": {
+        "title": "Annotated frame archive",
+        "description": "Only frames with at least one detection that passes the active filters are stored. Leave the directory empty to disable the archive.",
+        "data": {
+          "file_out": "Archive root directory",
+          "archive_max_count": "Maximum frames per camera (0 = unlimited)",
+          "archive_max_age_days": "Maximum frame age in days (0 = unlimited)"
+        },
+        "data_description": {
+          "file_out": "Enter one archive root directory. Relative paths are resolved under the Home Assistant configuration directory. DOOODS creates entry, camera, and date subdirectories and writes uniquely named JPEG files. Previous multi-line path templates were not used; replace them with a single directory. Cleanup only touches files created inside this entry archive. Changing or clearing the directory does not delete an older archive.",
+          "archive_max_count": "When a new frame is stored, the oldest files for that camera are removed until the count is within this limit.",
+          "archive_max_age_days": "Expired files are cleaned on startup, daily, and when frames are stored. If both limits are set, exceeding either one removes the file."
+        }
+      },
+      "reconfigure": {
+        "title": "Change DOOODS connection settings",
+        "description": "Update the saved URL or API key. DOOODS checks GET /detectors and requires at least one configured detector before saving.",
+        "data": {
+          "url": "Server URL",
+          "auth_key": "API key"
+        },
+        "data_description": {
+          "url": "Use the app's internal hostname and port, for example http://addon-hostname:8080. Do not add /detect.",
+          "auth_key": "The current value is shown as a masked field. Saving an empty value clears the key. The current DOODS2 server does not enforce this key."
+        }
+      },
+      "motion": {
+        "title": "Motion trigger",
+        "description": "Camera {camera_name} ({camera_entity_id}), {camera_index} of {camera_count}. If exactly one motion sensor is linked to the camera device, DOOODS selects it automatically. If several are linked, choose one. If none are linked, choose an external binary_sensor. Periodic scanning remains as a fallback.",
+        "data": {
+          "motion_sensor": "Motion sensor entity"
+        },
+        "data_description": {
+          "motion_sensor": "Motion sensors linked to the camera device are preferred. Choose an external binary_sensor if the camera has no motion sensor."
+        }
+      },
+      "profiles": {
+        "title": "Camera detection profile",
+        "description": "Camera {camera_name} ({camera_entity_id}), {camera_index} of {camera_count}. Select a saved Overhaul profile. Its polygon zones and per-zone label thresholds replace the integration-wide label, confidence, and rectangular-area filters for this camera. Choose no profile to keep the existing filters.",
+        "data": {
+          "profile_id": "Detection profile"
+        },
+        "data_description": {
+          "profile_id": "A selected profile controls accepted labels, confidence thresholds, and polygon zones for this camera."
+        }
+      }
+    },
+    "error": {
+      "invalid_url": "Enter a valid HTTP or HTTPS base URL without credentials, query, or fragment.",
+      "already_configured": "A DOOODS entry already uses this server URL.",
+      "cannot_connect": "Could not reach the DOODS2 server or GET /detectors returned an error.",
+      "invalid_auth": "The DOODS2 server rejected the API key.",
+      "invalid_response": "The server replied, but the /detectors response is not valid.",
+      "no_detectors": "The server did not report any configured detectors.",
+      "detector_not_found": "The previously selected detector is no longer available. Select a replacement.",
+      "no_cameras": "Select at least one camera entity."
+    },
+    "abort": {
+      "already_configured": "This DOODS2 server is already configured in DOOODS."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Cameras and schedule",
+        "description": "Choose cameras and a periodic fallback interval. You can assign an existing motion sensor to each camera on the next screen.",
+        "data": {
+          "source": "Camera entities",
+          "scan_interval": "Scan interval (seconds)"
+        },
+        "data_description": {
+          "source": "Select one or more camera entities to scan.",
+          "scan_interval": "Periodic fallback interval between scans of each camera, in seconds."
+        }
+      },
+      "detection": {
+        "title": "Detector and defaults",
+        "description": "Edit the detector, timeout, and confidence used for camera scans.",
+        "data": {
+          "detector": "Detector",
+          "timeout": "Request timeout (seconds)",
+          "confidence": "Minimum confidence (%)"
+        },
+        "data_description": {
+          "detector": "Select one detector reported by the DOODS2 server.",
+          "timeout": "Timeout applied to camera snapshots and DOODS2 requests.",
+          "confidence": "Global confidence threshold from 0 to 100."
+        }
+      },
+      "labels": {
+        "title": "Labels",
+        "description": "Edit the labels tracked for the selected detector. An empty selection tracks all reported labels.",
+        "data": {
+          "labels": "Labels to include"
+        },
+        "data_description": {
+          "labels": "Select one or more reported labels. If the server does not report labels, enter one label per line."
+        }
+      },
+      "area": {
+        "title": "Global detection area",
+        "description": "Edit the shared area applied to every camera detection. Coordinates are normalized from 0 to 1.",
+        "sections": {
+          "area": {
+            "name": "Global detection area",
+            "description": "The defaults cover the full image.",
+            "data": {
+              "top": "Top",
+              "left": "Left",
+              "bottom": "Bottom",
+              "right": "Right",
+              "covers": "Require each detection to fit fully inside the area"
+            },
+            "data_description": {
+              "covers": "When disabled, any overlap with the area is enough."
+            }
+          }
+        }
+      },
+      "output": {
+        "title": "Annotated frame archive",
+        "description": "Only frames with at least one detection that passes the active filters are stored. Leave the directory empty to disable the archive.",
+        "data": {
+          "file_out": "Archive root directory",
+          "archive_max_count": "Maximum frames per camera (0 = unlimited)",
+          "archive_max_age_days": "Maximum frame age in days (0 = unlimited)"
+        },
+        "data_description": {
+          "file_out": "Enter one archive root directory. Relative paths are resolved under the Home Assistant configuration directory. DOOODS creates entry, camera, and date subdirectories and writes uniquely named JPEG files. Previous multi-line path templates were not used; replace them with a single directory. Cleanup only touches files created inside this entry archive. Changing or clearing the directory does not delete an older archive.",
+          "archive_max_count": "When a new frame is stored, the oldest files for that camera are removed until the count is within this limit.",
+          "archive_max_age_days": "Expired files are cleaned on startup, daily, and when frames are stored. If both limits are set, exceeding either one removes the file."
+        }
+      },
+      "motion": {
+        "title": "Motion trigger",
+        "description": "Camera {camera_name} ({camera_entity_id}), {camera_index} of {camera_count}. If exactly one motion sensor is linked to the camera device, DOOODS selects it automatically. If several are linked, choose one. If none are linked, choose an external binary_sensor. Periodic scanning remains as a fallback.",
+        "data": {
+          "motion_sensor": "Motion sensor entity"
+        },
+        "data_description": {
+          "motion_sensor": "Motion sensors linked to the camera device are preferred. Choose an external binary_sensor if the camera has no motion sensor."
+        }
+      },
+      "profiles": {
+        "title": "Camera detection profile",
+        "description": "Camera {camera_name} ({camera_entity_id}), {camera_index} of {camera_count}. Select a saved Overhaul profile. Its polygon zones and per-zone label thresholds replace the integration-wide label, confidence, and rectangular-area filters for this camera. Choose no profile to keep the existing filters.",
+        "data": {
+          "profile_id": "Detection profile"
+        },
+        "data_description": {
+          "profile_id": "A selected profile controls accepted labels, confidence thresholds, and polygon zones for this camera."
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Could not reach the DOODS2 server or GET /detectors returned an error. Detector names are shown as free text until the server is available.",
+      "invalid_auth": "The DOODS2 server rejected the API key. Detector names are shown as free text until access is restored.",
+      "invalid_response": "The /detectors response is not valid. Detector names are shown as free text.",
+      "no_detectors": "The server did not report any configured detectors.",
+      "detector_not_found": "The previously selected detector is no longer available. Select a replacement.",
+      "no_cameras": "Select at least one camera entity."
+    }
+  },
+  "services": {
+    "scan": {
+      "name": "Scan cameras now",
+      "description": "Queue an immediate scan for the selected camera or cameras. The request is independent of the periodic schedule and motion sensors, and the action does not wait for completion."
+    }
+  },
+  "entity": {
+    "sensor": {
+      "camera_detections": {
+        "name": "Detected objects"
+      }
+    },
+    "image": {
+      "annotated_detections": {
+        "name": "Annotated detections"
+      }
+    },
+    "binary_sensor": {
+      "label_person": {
+        "name": "Person"
+      },
+      "label_human": {
+        "name": "Human"
+      },
+      "label_people": {
+        "name": "People"
+      },
+      "label_pedestrian": {
+        "name": "Pedestrian"
+      },
+      "label_animal": {
+        "name": "Animal"
+      },
+      "label_bicycle": {
+        "name": "Bicycle"
+      },
+      "label_car": {
+        "name": "Car"
+      },
+      "label_vehicle": {
+        "name": "Vehicle"
+      },
+      "label_car_side": {
+        "name": "Car side"
+      },
+      "label_motorcycle": {
+        "name": "Motorcycle"
+      },
+      "label_motorbike": {
+        "name": "Motorbike"
+      },
+      "label_airplane": {
+        "name": "Airplane"
+      },
+      "label_bus": {
+        "name": "Bus"
+      },
+      "label_train": {
+        "name": "Train"
+      },
+      "label_truck": {
+        "name": "Truck"
+      },
+      "label_boat": {
+        "name": "Boat"
+      },
+      "label_traffic_light": {
+        "name": "Traffic light"
+      },
+      "label_fire_hydrant": {
+        "name": "Fire hydrant"
+      },
+      "label_stop_sign": {
+        "name": "Stop sign"
+      },
+      "label_parking_meter": {
+        "name": "Parking meter"
+      },
+      "label_bench": {
+        "name": "Bench"
+      },
+      "label_bird": {
+        "name": "Bird"
+      },
+      "label_cat": {
+        "name": "Cat"
+      },
+      "label_dog": {
+        "name": "Dog"
+      },
+      "label_horse": {
+        "name": "Horse"
+      },
+      "label_sheep": {
+        "name": "Sheep"
+      },
+      "label_cow": {
+        "name": "Cow"
+      },
+      "label_elephant": {
+        "name": "Elephant"
+      },
+      "label_bear": {
+        "name": "Bear"
+      },
+      "label_zebra": {
+        "name": "Zebra"
+      },
+      "label_giraffe": {
+        "name": "Giraffe"
+      },
+      "label_backpack": {
+        "name": "Backpack"
+      },
+      "label_umbrella": {
+        "name": "Umbrella"
+      },
+      "label_handbag": {
+        "name": "Handbag"
+      },
+      "label_tie": {
+        "name": "Tie"
+      },
+      "label_suitcase": {
+        "name": "Suitcase"
+      },
+      "label_frisbee": {
+        "name": "Frisbee"
+      },
+      "label_ski": {
+        "name": "Ski"
+      },
+      "label_skis": {
+        "name": "Skis"
+      },
+      "label_snowboard": {
+        "name": "Snowboard"
+      },
+      "label_sports_ball": {
+        "name": "Sports ball"
+      },
+      "label_kite": {
+        "name": "Kite"
+      },
+      "label_baseball_bat": {
+        "name": "Baseball bat"
+      },
+      "label_baseball_glove": {
+        "name": "Baseball glove"
+      },
+      "label_skateboard": {
+        "name": "Skateboard"
+      },
+      "label_surfboard": {
+        "name": "Surfboard"
+      },
+      "label_tennis_racket": {
+        "name": "Tennis racket"
+      },
+      "label_bottle": {
+        "name": "Bottle"
+      },
+      "label_wine_glass": {
+        "name": "Wine glass"
+      },
+      "label_cup": {
+        "name": "Cup"
+      },
+      "label_fork": {
+        "name": "Fork"
+      },
+      "label_knife": {
+        "name": "Knife"
+      },
+      "label_spoon": {
+        "name": "Spoon"
+      },
+      "label_bowl": {
+        "name": "Bowl"
+      },
+      "label_banana": {
+        "name": "Banana"
+      },
+      "label_apple": {
+        "name": "Apple"
+      },
+      "label_sandwich": {
+        "name": "Sandwich"
+      },
+      "label_orange": {
+        "name": "Orange"
+      },
+      "label_broccoli": {
+        "name": "Broccoli"
+      },
+      "label_carrot": {
+        "name": "Carrot"
+      },
+      "label_hot_dog": {
+        "name": "Hot dog"
+      },
+      "label_pizza": {
+        "name": "Pizza"
+      },
+      "label_donut": {
+        "name": "Donut"
+      },
+      "label_cake": {
+        "name": "Cake"
+      },
+      "label_chair": {
+        "name": "Chair"
+      },
+      "label_couch": {
+        "name": "Couch"
+      },
+      "label_potted_plant": {
+        "name": "Potted plant"
+      },
+      "label_bed": {
+        "name": "Bed"
+      },
+      "label_dining_table": {
+        "name": "Dining table"
+      },
+      "label_toilet": {
+        "name": "Toilet"
+      },
+      "label_tv": {
+        "name": "TV"
+      },
+      "label_laptop": {
+        "name": "Laptop"
+      },
+      "label_mouse": {
+        "name": "Mouse"
+      },
+      "label_remote": {
+        "name": "Remote"
+      },
+      "label_keyboard": {
+        "name": "Keyboard"
+      },
+      "label_cell_phone": {
+        "name": "Cell phone"
+      },
+      "label_cellphone": {
+        "name": "Cellphone"
+      },
+      "label_microwave": {
+        "name": "Microwave"
+      },
+      "label_oven": {
+        "name": "Oven"
+      },
+      "label_toaster": {
+        "name": "Toaster"
+      },
+      "label_sink": {
+        "name": "Sink"
+      },
+      "label_refrigerator": {
+        "name": "Refrigerator"
+      },
+      "label_book": {
+        "name": "Book"
+      },
+      "label_clock": {
+        "name": "Clock"
+      },
+      "label_vase": {
+        "name": "Vase"
+      },
+      "label_scissors": {
+        "name": "Scissors"
+      },
+      "label_teddy_bear": {
+        "name": "Teddy bear"
+      },
+      "label_hair_drier": {
+        "name": "Hair drier"
+      },
+      "label_toothbrush": {
+        "name": "Toothbrush"
+      },
+      "label_egg": {
+        "name": "Egg"
+      },
+      "label_flower": {
+        "name": "Flower"
+      },
+      "label_plant": {
+        "name": "Plant"
+      },
+      "label_van": {
+        "name": "Van"
+      },
+      "object": {
+        "name": "Detected object"
+      }
+    }
+  },
+  "device": {
+    "doods_server": {
+      "name": "DOOODS2 server"
+    },
+    "camera_child": {
+      "name": "{camera_name}"
+    }
+  },
+  "exceptions": {
+    "invalid_json": {
+      "message": "The response is not valid JSON."
+    },
+    "missing_detector_list": {
+      "message": "The server response does not contain a detector list."
+    },
+    "invalid_detector_entry": {
+      "message": "The server returned an invalid detector entry."
+    },
+    "invalid_detector_metadata": {
+      "message": "The server returned invalid detector metadata."
+    },
+    "invalid_auth": {
+      "message": "The server rejected the API key."
+    },
+    "http_error": {
+      "message": "Request {endpoint} returned HTTP {status}."
+    },
+    "connection_failed": {
+      "message": "Could not connect to the DOODS2 server."
+    },
+    "invalid_detection_response": {
+      "message": "The detection response is not a valid object."
+    },
+    "missing_detections_list": {
+      "message": "The detection response does not contain a detections list."
+    },
+    "invalid_detection_entry": {
+      "message": "The server returned an invalid detection entry."
+    },
+    "invalid_detection_metadata": {
+      "message": "The server returned invalid detection metadata."
+    },
+    "detection_failed": {
+      "message": "DOOODS2 could not process the image: {details}"
+    },
+    "camera_no_image": {
+      "message": "Camera {camera_entity_id} returned no image."
+    },
+    "setup_auth_failed": {
+      "message": "DOOODS2 rejected the saved API key."
+    },
+    "setup_failed": {
+      "message": "Could not initialize the DOOODS2 connection."
+    },
+    "no_detectors": {
+      "message": "The DOODS2 server has no configured detectors."
+    },
+    "setup_profiles_unsupported": {
+      "message": "The selected profile requires Overhaul profile and polygon-zone support. Check the App version and API key."
+    },
+    "setup_profiles_failed": {
+      "message": "Could not load the Overhaul profiles assigned to cameras."
+    },
+    "setup_profile_not_found": {
+      "message": "An assigned profile was deleted or renamed. Open DOOODS options and select an available profile."
+    },
+    "invalid_profile_list": {
+      "message": "The DOODS2 profile list has an invalid format."
+    },
+    "invalid_profile_entry": {
+      "message": "The server returned an invalid profile entry."
+    },
+    "invalid_profile_metadata": {
+      "message": "The server returned invalid profile metadata."
+    },
+    "invalid_profile_zone": {
+      "message": "The server returned an invalid profile zone."
+    },
+    "invalid_profile_labels": {
+      "message": "The server returned invalid zone labels."
+    },
+    "scan_no_camera_selected": {
+      "message": "Select at least one camera to scan."
+    },
+    "scan_invalid_camera_target": {
+      "message": "The selected entities are not cameras: {entity_ids}."
+    },
+    "scan_camera_not_configured": {
+      "message": "The selected cameras are not configured in any loaded DOOODS integration entry: {camera_entity_ids}."
+    }
+  }
+}

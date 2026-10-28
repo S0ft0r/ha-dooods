@@ -1,0 +1,1094 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>DOOODS2 Overhaul — профили зон</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #17232f;
+      --muted: #5b6b7a;
+      --line: #d5dee7;
+      --panel: #ffffff;
+      --canvas: #edf2f6;
+      --accent: #1769aa;
+      --accent-2: #0c4c80;
+      --danger: #a72b36;
+      --ok: #216b45;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; color: var(--ink); background: #f4f7fa; }
+    header {
+      display: flex; justify-content: space-between; align-items: center; gap: 1rem;
+      padding: 1rem clamp(1rem, 3vw, 2.5rem); background: #122b43; color: #fff;
+    }
+    header h1 { margin: 0; font-size: clamp(1.05rem, 2vw, 1.45rem); }
+    header .sub { color: #c7d8e7; font-size: .86rem; margin-top: .25rem; }
+    header .header-actions { display: flex; flex-direction: column; align-items: flex-end; gap: .35rem; }
+    header .header-actions a { color: #c7d8e7; font-size: .85rem; }
+    #capability-status.connected { color: #b8f2c8; }
+    #capability-status.error { color: #ffd0d0; }
+    main { max-width: 1500px; margin: 0 auto; padding: 1rem clamp(.75rem, 2vw, 1.5rem) 2rem; }
+    .top-grid { display: grid; grid-template-columns: minmax(260px, 360px) minmax(0, 1fr); gap: 1rem; align-items: start; }
+    .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; box-shadow: 0 2px 8px #15324a0c; padding: 1rem; }
+    h2 { margin: 0 0 .85rem; font-size: 1.05rem; }
+    h3 { margin: 1rem 0 .55rem; font-size: .97rem; }
+    p { line-height: 1.45; }
+    .muted { color: var(--muted); font-size: .88rem; }
+    label { display: block; font-size: .88rem; font-weight: 650; margin: .65rem 0 .28rem; }
+    input, select, button { font: inherit; }
+    input[type="text"], input[type="number"], select {
+      width: 100%; min-height: 2.45rem; padding: .48rem .6rem; border: 1px solid #bcc9d6;
+      border-radius: 7px; color: var(--ink); background: #fff;
+    }
+    input:focus, select:focus, button:focus-visible { outline: 3px solid #5aa7e455; outline-offset: 1px; border-color: var(--accent); }
+    button {
+      min-height: 2.35rem; padding: .45rem .75rem; border: 1px solid #b8c7d4; border-radius: 7px;
+      color: var(--ink); background: #fff; cursor: pointer; font-weight: 650;
+    }
+    button:hover { background: #eff5fa; }
+    button.primary { color: #fff; background: var(--accent); border-color: var(--accent); }
+    button.primary:hover { background: var(--accent-2); }
+    button.danger { color: var(--danger); border-color: #e1b6bc; }
+    button:disabled { opacity: .48; cursor: not-allowed; }
+    .row { display: flex; gap: .5rem; align-items: center; }
+    .row > * { min-width: 0; }
+    .row .grow { flex: 1; }
+    .actions { display: flex; flex-wrap: wrap; gap: .5rem; margin-top: .8rem; }
+    .status { margin-top: .7rem; min-height: 1.3rem; color: var(--muted); font-size: .88rem; }
+    .status.error { color: var(--danger); }
+    .status.success { color: var(--ok); }
+    .warning {
+      margin: .8rem 0 0; padding: .65rem .75rem; border-radius: 8px;
+      color: #684e00; background: #fff7d8; border: 1px solid #ecd88a; font-size: .86rem;
+    }
+    .editor-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(250px, 330px); gap: 1rem; margin-top: 1rem; }
+    .stage-wrap { min-width: 0; }
+    .stage {
+      position: relative; width: 100%; aspect-ratio: 16 / 9; overflow: hidden; border: 1px solid #bac8d4;
+      border-radius: 9px; background-color: var(--canvas);
+      background-image: linear-gradient(45deg, #dfe7ee 25%, transparent 25%),
+        linear-gradient(-45deg, #dfe7ee 25%, transparent 25%),
+        linear-gradient(45deg, transparent 75%, #dfe7ee 75%),
+        linear-gradient(-45deg, transparent 75%, #dfe7ee 75%);
+      background-size: 24px 24px; background-position: 0 0, 0 12px, 12px -12px, -12px 0;
+    }
+    #preview-image { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; display: none; }
+    #overlay { position: absolute; inset: 0; width: 100%; height: 100%; touch-action: none; }
+    #empty-stage { position: absolute; inset: 0; display: grid; place-items: center; padding: 1rem; text-align: center; color: #526578; pointer-events: none; }
+    #empty-stage[hidden] { display: none; }
+    .vertex { fill: #fff; stroke: #173d5c; stroke-width: 3; vector-effect: non-scaling-stroke; cursor: grab; }
+    .vertex:active { cursor: grabbing; }
+    .vertex-number {
+      fill: #102f47; font-size: 16px; font-weight: 800; text-anchor: middle;
+      paint-order: stroke; stroke: #fff; stroke-width: 4px; stroke-linejoin: round;
+      pointer-events: none; user-select: none;
+    }
+    .insert-handle { cursor: pointer; outline: none; }
+    .insert-handle circle {
+      fill: #fff; stroke: #0b754b; stroke-width: 3; vector-effect: non-scaling-stroke;
+    }
+    .insert-handle line {
+      stroke: #0b754b; stroke-width: 2.5; stroke-linecap: round;
+      vector-effect: non-scaling-stroke; pointer-events: none;
+    }
+    .insert-handle:hover circle, .insert-handle:focus circle {
+      fill: #c7f5dd; stroke: #075c3a; stroke-width: 4;
+    }
+    .zone-list { display: flex; flex-direction: column; gap: .45rem; }
+    .zone-entry { display: flex; gap: .4rem; align-items: center; padding: .45rem; border: 1px solid var(--line); border-radius: 8px; }
+    .zone-entry.selected { border-color: var(--accent); box-shadow: 0 0 0 2px #1769aa20; background: #f2f8fd; }
+    .zone-select { flex: 1; text-align: left; border: 0; padding: .35rem; background: transparent; }
+    .zone-select:hover { background: transparent; }
+    .zone-index { color: var(--muted); min-width: 1.5rem; font-variant-numeric: tabular-nums; }
+    .mini-actions { display: flex; gap: .25rem; }
+    .mini-actions button { min-width: 2rem; min-height: 2rem; padding: .2rem .38rem; }
+    .label-list { display: grid; gap: .4rem; }
+    .label-row { display: grid; grid-template-columns: minmax(0, 1fr) 86px 2.2rem; gap: .35rem; align-items: center; }
+    .label-row input, .label-row select { min-height: 2.2rem; }
+    .tool-note { margin: .7rem 0 0; font-size: .82rem; color: var(--muted); }
+    .file-row { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; margin-top: .7rem; }
+    input[type="file"] { max-width: 100%; }
+    .hidden { display: none !important; }
+    @media (max-width: 950px) {
+      .top-grid, .editor-grid { grid-template-columns: 1fr; }
+      .profile-panel { order: 1; }
+      .zone-panel { order: 2; }
+      .editor-grid { margin-top: .75rem; }
+    }
+    @media (max-width: 560px) {
+      header { align-items: flex-start; flex-direction: column; }
+      header .header-actions { align-items: flex-start; }
+      .actions > button { flex: 1; }
+      .label-row { grid-template-columns: minmax(0, 1fr) 72px 2.2rem; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div>
+      <h1>DOOODS2 Overhaul</h1>
+      <div class="sub">Редактор профилей и полигональных зон</div>
+    </div>
+    <div class="header-actions">
+      <div id="capability-status" class="sub" aria-live="polite">Проверка API…</div>
+      <a href="./index.html">Классический интерфейс DOOODS2</a>
+    </div>
+  </header>
+
+  <main>
+    <div class="top-grid">
+      <section class="panel profile-panel" aria-labelledby="profile-heading">
+        <h2 id="profile-heading">Профиль</h2>
+        <label for="profile-select">Сохранённые профили</label>
+        <div class="row">
+          <select id="profile-select" class="grow" aria-label="Выбрать профиль">
+            <option value="">— выберите профиль —</option>
+          </select>
+          <button id="reload-button" type="button" title="Обновить список">↻</button>
+        </div>
+        <div class="actions">
+          <button id="new-profile-button" type="button">Новый профиль</button>
+          <button id="save-profile-button" class="primary" type="button" disabled>Сохранить</button>
+          <button id="delete-profile-button" class="danger" type="button" disabled>Удалить</button>
+        </div>
+        <label for="profile-name">Название профиля</label>
+        <input id="profile-name" type="text" maxlength="128" placeholder="Например, Подъезд">
+        <p class="tool-note">Профиль содержит упорядоченные зоны. Их порядок задаёт приоритет при совпадении детекции.</p>
+        <div id="profile-status" class="status" role="status" aria-live="polite"></div>
+      </section>
+
+      <section class="panel zone-panel" aria-labelledby="zones-heading">
+        <h2 id="zones-heading">Зоны профиля</h2>
+        <div id="zone-list" class="zone-list" aria-live="polite"></div>
+        <div class="actions">
+          <button id="add-zone-button" type="button" disabled>Добавить зону</button>
+          <button id="remove-zone-button" class="danger" type="button" disabled>Удалить выбранную</button>
+          <button id="move-zone-up-button" type="button" disabled title="Повысить приоритет">↑</button>
+          <button id="move-zone-down-button" type="button" disabled title="Понизить приоритет">↓</button>
+        </div>
+        <p class="tool-note">Первая зона в списке имеет наивысший приоритет. Если её фильтры не подходят, проверяется следующая.</p>
+      </section>
+    </div>
+
+    <div class="editor-grid">
+      <section class="panel stage-wrap" aria-labelledby="preview-heading">
+        <h2 id="preview-heading">Предпросмотр и полигон</h2>
+        <label for="camera-preview-select">Временные кадры камер</label>
+        <div class="row">
+          <select id="camera-preview-select" class="grow" aria-label="Выбрать временный кадр камеры" disabled>
+            <option value="">Подключение к API…</option>
+          </select>
+          <button id="refresh-camera-preview-button" type="button" title="Обновить список кадров" disabled>↻</button>
+        </div>
+        <div class="row" style="margin-top:.45rem">
+          <button id="clear-profile-camera-button" type="button" disabled>Снять привязку профиля</button>
+          <div id="profile-camera-status" class="muted" aria-live="polite">При сохранении профиля выбранный источник будет запомнен только для предпросмотра.</div>
+        </div>
+        <div id="source-preview-status" class="muted" aria-live="polite"></div>
+        <div id="stage" class="stage">
+          <div id="empty-stage">Выберите временный кадр камеры или загрузите локальное изображение. Кадры камеры хранятся на сервере только в оперативной памяти и не добавляются в профиль.</div>
+          <img id="preview-image" alt="Временный кадр для редактирования зон">
+          <svg id="overlay" viewBox="0 0 1000 562" role="img" aria-label="Полигоны зон профиля"></svg>
+        </div>
+        <div class="file-row">
+          <label for="image-file" style="margin:0">Локальный кадр:</label>
+          <input id="image-file" type="file" accept="image/*">
+          <button id="clear-image-button" type="button">Убрать кадр</button>
+        </div>
+        <div class="actions">
+          <button id="add-vertex-button" type="button" aria-pressed="false" disabled>Добавить вершину</button>
+          <button id="remove-vertex-button" type="button" disabled>Удалить выбранную вершину</button>
+        </div>
+        <p class="tool-note">Перетаскивайте белые точки выбранной зоны. Нажмите «Добавить вершину»: точки получат номера, а на сторонах появятся маркеры «+». Нажмите маркер на нужной стороне — новая вершина встанет между её концами; затем её можно перетащить. Кадр камеры хранится на сервере только в RAM и не сохраняется в профиль; локальная подложка остаётся только в браузере.</p>
+      </section>
+
+      <section class="panel" aria-labelledby="zone-settings-heading">
+        <h2 id="zone-settings-heading">Настройки выбранной зоны</h2>
+        <p id="no-zone-message" class="muted">Сначала выберите или добавьте зону.</p>
+        <div id="zone-settings" class="hidden">
+          <label for="zone-name">Название зоны</label>
+          <input id="zone-name" type="text" maxlength="128">
+          <label for="covers-select">Правило попадания</label>
+          <select id="covers-select">
+            <option value="false">Любое пересечение (covers=false)</option>
+            <option value="true">Вся рамка внутри (covers=true)</option>
+          </select>
+          <h3>Метки и пороги уверенности</h3>
+          <div id="label-list" class="label-list"></div>
+          <div class="actions"><button id="add-label-button" type="button">Добавить метку</button></div>
+          <p class="tool-note">Список ограничен метками всех настроенных моделей. Для каждой метки задайте порог уверенности от 0 до 100%; свободный ввод пользовательских меток пока не поддерживается.</p>
+          <div id="zone-status" class="status" role="status" aria-live="polite"></div>
+        </div>
+      </section>
+    </div>
+    <div id="global-status" class="status" role="status" aria-live="polite"></div>
+  </main>
+
+  <script>
+    "use strict";
+
+    const API_ROOT = new URL("./", window.location.href);
+    const COLORS = ["#00a6a6", "#ff9f1c", "#9b5de5", "#2a9d55", "#ef476f", "#4472ca"];
+    const $ = (id) => document.getElementById(id);
+    try { sessionStorage.removeItem("dooods2_overhaul_api_key"); } catch (_) {}
+    const state = {
+      previewSupported: null,
+      availableLabels: [],
+      profiles: [],
+      profile: null,
+      profilePreviewSourceId: null,
+      previewSelectionExplicit: false,
+      selectedZone: -1,
+      selectedVertex: -1,
+      addingVertex: false,
+      draggingVertex: -1,
+      imageUrl: null,
+      imageWidth: 1000,
+      imageHeight: 562,
+    };
+
+    function setStatus(id, message, kind = "") {
+      const element = $(id);
+      element.textContent = message;
+      element.className = `status ${kind}`.trim();
+    }
+
+    function setApiStatus(message, kind = "") {
+      const element = $("capability-status");
+      element.textContent = message;
+      element.classList.toggle("connected", kind === "success");
+      element.classList.toggle("error", kind === "error");
+    }
+
+    function apiUrl(path) {
+      const url = new URL(path.replace(/^\/+/, ""), API_ROOT);
+      url.pathname = url.pathname.replace(/\/{2,}/g, "/");
+      return url.toString();
+    }
+
+    async function apiRequest(path, options = {}) {
+      const headers = new Headers(options.headers || {});
+      const requestOptions = { ...options, headers };
+      if (Object.prototype.hasOwnProperty.call(options, "json")) {
+        headers.set("Content-Type", "application/json");
+        requestOptions.body = JSON.stringify(options.json);
+        delete requestOptions.json;
+      }
+      const response = await fetch(apiUrl(path), requestOptions);
+      const raw = await response.text();
+      let payload = null;
+      if (raw) {
+        try { payload = JSON.parse(raw); } catch (_) { payload = raw; }
+      }
+      if (!response.ok) {
+        const detail = payload && typeof payload === "object" ? payload.detail : payload;
+        throw new Error(detail || `HTTP ${response.status}`);
+      }
+      return payload;
+    }
+
+    function showPreviewBlob(blob) {
+      if (state.imageUrl) URL.revokeObjectURL(state.imageUrl);
+      state.imageUrl = URL.createObjectURL(blob);
+      const image = $("preview-image");
+      image.onload = () => {
+        state.imageWidth = image.naturalWidth || 1000;
+        state.imageHeight = image.naturalHeight || 562;
+        $("stage").style.aspectRatio = `${state.imageWidth} / ${state.imageHeight}`;
+        $("empty-stage").hidden = true;
+        image.style.display = "block";
+        drawOverlay();
+      };
+      image.onerror = () => setStatus("global-status", "Не удалось открыть изображение предпросмотра.", "error");
+      image.src = state.imageUrl;
+    }
+
+    function updatePreviewSourceUrl(sourceId) {
+      const url = new URL(window.location.href);
+      if (sourceId) url.searchParams.set("source_id", sourceId);
+      else url.searchParams.delete("source_id");
+      window.history.replaceState({}, "", url.toString());
+    }
+
+    async function loadCameraPreview(preferredSourceId = null) {
+      const select = $("camera-preview-select");
+      const refreshButton = $("refresh-camera-preview-button");
+      const querySourceId = new URLSearchParams(window.location.search).get("source_id");
+      const requestedSourceId = preferredSourceId || state.profilePreviewSourceId || querySourceId;
+      if (state.previewSupported === false) {
+        select.replaceChildren(new Option("Preview API недоступен", ""));
+        select.disabled = true;
+        refreshButton.disabled = true;
+        $("source-preview-status").textContent = "Сервер не объявляет camera_preview. Проверьте server.auth_key и версию приложения.";
+        return;
+      }
+
+      select.disabled = false;
+      refreshButton.disabled = false;
+      try {
+        const previews = await apiRequest("preview");
+        if (!Array.isArray(previews)) throw new Error("Сервер вернул неверный список кадров.");
+        select.replaceChildren(new Option("— выберите кадр камеры —", ""));
+        const nameCounts = new Map();
+        previews.forEach((preview) => {
+          const name = preview.source_name || "Камера";
+          nameCounts.set(name, (nameCounts.get(name) || 0) + 1);
+        });
+        previews.forEach((preview) => {
+          const name = preview.source_name || "Камера";
+          const duplicateSuffix = nameCounts.get(name) > 1 ? ` · ${preview.source_id.slice(-4)}` : "";
+          const remaining = Math.max(0, Math.ceil(Number(preview.expires_in) || 0));
+          select.add(new Option(`${name}${duplicateSuffix} · ещё ${remaining} с`, preview.source_id));
+        });
+
+        if (!previews.length) {
+          select.disabled = true;
+          $("source-preview-status").textContent = state.profilePreviewSourceId
+            ? "Связанный с профилем источник пока не передал кадр. Дождитесь следующего сканирования и обновите список."
+            : "Активных кадров пока нет. Дождитесь сканирования камеры и обновите список.";
+          return;
+        }
+
+        const selected = requestedSourceId
+          ? previews.find((preview) => preview.source_id === requestedSourceId)
+          : null;
+        if (!selected) {
+          select.value = "";
+          $("source-preview-status").textContent = state.profilePreviewSourceId
+            ? "Связанный с профилем источник сейчас неактивен или его кадр истёк. После следующего сканирования нажмите обновить."
+            : requestedSourceId
+              ? "Запрошенный кадр отсутствует или истёк. Выберите источник из списка или обновите его после следующего сканирования."
+              : "Выберите кадр из списка, чтобы открыть предпросмотр. Автоматический выбор камеры не выполняется.";
+          return;
+        }
+
+        select.value = selected.source_id;
+        updatePreviewSourceUrl(selected.source_id);
+        const encodedId = encodeURIComponent(selected.source_id);
+        const metadata = await apiRequest(`preview/${encodedId}/metadata`);
+        const response = await fetch(apiUrl(`preview/${encodedId}`), { cache: "no-store" });
+        if (!response.ok) {
+          const payload = await response.json().catch(() => null);
+          throw new Error(payload && payload.detail ? payload.detail : `HTTP ${response.status}`);
+        }
+        showPreviewBlob(await response.blob());
+        $("source-preview-status").textContent = `Временный кадр: ${metadata.source_name}. Срок хранения — ещё ${metadata.expires_in} с.`;
+      } catch (error) {
+        $("source-preview-status").textContent = `Кадр камеры не получен: ${error.message}`;
+      }
+    }
+
+    function currentZone() {
+      if (!state.profile || state.selectedZone < 0) return null;
+      return state.profile.zones[state.selectedZone] || null;
+    }
+
+    function generateInternalId(prefix, existingIds) {
+      const used = new Set(existingIds);
+      for (let attempt = 0; attempt < 10; attempt += 1) {
+        const randomPart = window.crypto && typeof window.crypto.randomUUID === "function"
+          ? window.crypto.randomUUID()
+          : `${Date.now()}-${Math.random().toString(36).slice(2, 12)}`;
+        const candidate = `${prefix}-${randomPart}`;
+        if (!used.has(candidate)) return candidate;
+      }
+      throw new Error("Не удалось автоматически создать уникальный ID.");
+    }
+
+    function updateButtons() {
+      const hasProfile = Boolean(state.profile);
+      const zone = currentZone();
+      const hasZone = Boolean(zone);
+      const labels = zone ? zone.labels || {} : {};
+      const hasAvailableLabel = state.availableLabels.some(
+        (label) => !Object.prototype.hasOwnProperty.call(labels, label),
+      );
+      $("save-profile-button").disabled = !hasProfile;
+      $("delete-profile-button").disabled = !hasProfile || !state.profile.saved;
+      $("add-zone-button").disabled = !hasProfile;
+      $("remove-zone-button").disabled = !hasZone;
+      $("move-zone-up-button").disabled = !hasZone || state.selectedZone <= 0;
+      $("move-zone-down-button").disabled = !hasZone || state.selectedZone >= state.profile.zones.length - 1;
+      $("add-vertex-button").disabled = !hasZone;
+      $("remove-vertex-button").disabled = !hasZone || state.selectedVertex < 0 || zone.points.length <= 3;
+      $("add-label-button").disabled = !hasZone || !hasAvailableLabel;
+      $("clear-profile-camera-button").disabled = !hasProfile || !state.profile.saved || !state.profilePreviewSourceId;
+      $("zone-settings").classList.toggle("hidden", !hasZone);
+      $("no-zone-message").classList.toggle("hidden", hasZone);
+    }
+
+    function drawOverlay() {
+      const svg = $("overlay");
+      svg.setAttribute("viewBox", `0 0 ${state.imageWidth} ${state.imageHeight}`);
+      const overlayWidth = svg.getBoundingClientRect().width || state.imageWidth;
+      const screenScale = state.imageWidth / overlayWidth;
+      while (svg.firstChild) svg.removeChild(svg.firstChild);
+      if (!state.profile) return;
+
+      state.profile.zones.forEach((zone, zoneIndex) => {
+        const points = zone.points.map((point) => `${point.left * state.imageWidth},${point.top * state.imageHeight}`).join(" ");
+        const color = COLORS[zoneIndex % COLORS.length];
+        const polygon = document.createElementNS("http://www.w3.org/2000/svg", "polygon");
+        polygon.setAttribute("points", points);
+        polygon.setAttribute("fill", zoneIndex === state.selectedZone ? `${color}36` : `${color}14`);
+        polygon.setAttribute("stroke", color);
+        polygon.setAttribute("stroke-width", zoneIndex === state.selectedZone ? "4" : "2.5");
+        polygon.setAttribute("vector-effect", "non-scaling-stroke");
+        polygon.setAttribute("stroke-linejoin", "round");
+        svg.appendChild(polygon);
+
+        if (zoneIndex !== state.selectedZone) return;
+
+        if (state.addingVertex) {
+          zone.points.forEach((start, edgeIndex) => {
+            const end = zone.points[(edgeIndex + 1) % zone.points.length];
+            const midpointX = ((start.left + end.left) / 2) * state.imageWidth;
+            const midpointY = ((start.top + end.top) / 2) * state.imageHeight;
+            const nextVertexNumber = ((edgeIndex + 1) % zone.points.length) + 1;
+            const description = `Вставить вершину между вершинами ${edgeIndex + 1} и ${nextVertexNumber}`;
+            const handle = document.createElementNS("http://www.w3.org/2000/svg", "g");
+            handle.setAttribute("class", "insert-handle");
+            handle.setAttribute("data-insert-edge", String(edgeIndex));
+            handle.setAttribute("transform", `translate(${midpointX} ${midpointY})`);
+            handle.setAttribute("role", "button");
+            handle.setAttribute("tabindex", "0");
+            handle.setAttribute("aria-label", description);
+
+            const title = document.createElementNS("http://www.w3.org/2000/svg", "title");
+            title.textContent = description;
+            handle.appendChild(title);
+
+            const marker = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+            marker.setAttribute("r", String(13 * screenScale));
+            handle.appendChild(marker);
+
+            const horizontal = document.createElementNS("http://www.w3.org/2000/svg", "line");
+            horizontal.setAttribute("x1", String(-5 * screenScale));
+            horizontal.setAttribute("x2", String(5 * screenScale));
+            horizontal.setAttribute("y1", "0");
+            horizontal.setAttribute("y2", "0");
+            handle.appendChild(horizontal);
+
+            const vertical = document.createElementNS("http://www.w3.org/2000/svg", "line");
+            vertical.setAttribute("x1", "0");
+            vertical.setAttribute("x2", "0");
+            vertical.setAttribute("y1", String(-5 * screenScale));
+            vertical.setAttribute("y2", String(5 * screenScale));
+            handle.appendChild(vertical);
+            svg.appendChild(handle);
+          });
+        }
+
+        zone.points.forEach((point, vertexIndex) => {
+          const x = point.left * state.imageWidth;
+          const y = point.top * state.imageHeight;
+          const circle = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+          circle.setAttribute("cx", String(x));
+          circle.setAttribute("cy", String(y));
+          circle.setAttribute(
+            "r",
+            String((vertexIndex === state.selectedVertex ? 8 : 6) * screenScale),
+          );
+          circle.setAttribute("class", "vertex");
+          circle.setAttribute("data-vertex", String(vertexIndex));
+          circle.setAttribute("aria-label", `Вершина ${vertexIndex + 1}`);
+          svg.appendChild(circle);
+
+          if (state.addingVertex) {
+            const number = document.createElementNS("http://www.w3.org/2000/svg", "text");
+            number.setAttribute("x", String(x + 12 * screenScale));
+            number.setAttribute("y", String(y - 10 * screenScale));
+            number.setAttribute("font-size", String(16 * screenScale));
+            number.setAttribute("class", "vertex-number");
+            number.setAttribute("aria-hidden", "true");
+            number.textContent = String(vertexIndex + 1);
+            svg.appendChild(number);
+          }
+        });
+      });
+    }
+
+    function setAddingVertex(enabled) {
+      state.addingVertex = Boolean(enabled);
+      const button = $("add-vertex-button");
+      button.textContent = state.addingVertex ? "Выбрать ребро…" : "Добавить вершину";
+      button.setAttribute("aria-pressed", String(state.addingVertex));
+      button.classList.toggle("primary", state.addingVertex);
+      drawOverlay();
+    }
+
+    function insertVertexBetween(edgeIndex) {
+      const zone = currentZone();
+      if (!zone || !Number.isInteger(edgeIndex) || edgeIndex < 0 || edgeIndex >= zone.points.length) return;
+
+      const nextIndex = (edgeIndex + 1) % zone.points.length;
+      const start = zone.points[edgeIndex];
+      const end = zone.points[nextIndex];
+      const insertionIndex = edgeIndex + 1;
+      const newPoint = {
+        left: (start.left + end.left) / 2,
+        top: (start.top + end.top) / 2,
+      };
+      zone.points.splice(insertionIndex, 0, newPoint);
+      state.selectedVertex = insertionIndex;
+      state.draggingVertex = -1;
+      setAddingVertex(false);
+      renderZoneSettings();
+      setStatus(
+        "zone-status",
+        `Новая вершина вставлена между вершинами ${edgeIndex + 1} и ${nextIndex + 1}. Перетащите её для уточнения положения и сохраните профиль.`,
+      );
+    }
+
+    function renderZoneList() {
+      const container = $("zone-list");
+      container.replaceChildren();
+      if (!state.profile || state.profile.zones.length === 0) {
+        const empty = document.createElement("p");
+        empty.className = "muted";
+        empty.textContent = state.profile ? "В профиле пока нет зон." : "Сначала создайте или выберите профиль.";
+        container.appendChild(empty);
+        drawOverlay();
+        updateButtons();
+        return;
+      }
+      state.profile.zones.forEach((zone, index) => {
+        const row = document.createElement("div");
+        row.className = `zone-entry${index === state.selectedZone ? " selected" : ""}`;
+        const number = document.createElement("span");
+        number.className = "zone-index";
+        number.textContent = `${index + 1}.`;
+        const select = document.createElement("button");
+        select.type = "button";
+        select.className = "zone-select";
+        select.textContent = zone.name || `Зона ${index + 1}`;
+        select.addEventListener("click", () => selectZone(index));
+        const actions = document.createElement("div");
+        actions.className = "mini-actions";
+        const up = document.createElement("button");
+        up.type = "button"; up.textContent = "↑"; up.title = "Повысить приоритет"; up.disabled = index === 0;
+        up.addEventListener("click", () => moveZone(index, -1));
+        const down = document.createElement("button");
+        down.type = "button"; down.textContent = "↓"; down.title = "Понизить приоритет"; down.disabled = index === state.profile.zones.length - 1;
+        down.addEventListener("click", () => moveZone(index, 1));
+        actions.append(up, down);
+        row.append(number, select, actions);
+        container.appendChild(row);
+      });
+      drawOverlay();
+      updateButtons();
+    }
+
+    function renderLabels() {
+      const zone = currentZone();
+      const container = $("label-list");
+      container.replaceChildren();
+      if (!zone) return;
+      const zoneLabels = zone.labels || {};
+      Object.entries(zoneLabels).forEach(([label, threshold]) => {
+        const row = document.createElement("div");
+        row.className = "label-row";
+        const labelSelect = document.createElement("select");
+        labelSelect.setAttribute("aria-label", "Метка настроенной модели");
+        const available = new Set(state.availableLabels);
+        const choices = [...state.availableLabels];
+        if (!available.has(label)) choices.push(label);
+        choices.forEach((choice) => {
+          const option = new Option(
+            available.has(choice) ? choice : `${choice} (нет в текущих моделях)`,
+            choice,
+          );
+          option.disabled = choice !== label && Object.prototype.hasOwnProperty.call(zoneLabels, choice);
+          labelSelect.add(option);
+        });
+        labelSelect.value = label;
+
+        const thresholdInput = document.createElement("input");
+        thresholdInput.type = "number";
+        thresholdInput.min = "0";
+        thresholdInput.max = "100";
+        thresholdInput.step = "1";
+        thresholdInput.value = String(threshold);
+        thresholdInput.setAttribute("aria-label", "Порог confidence, процентов");
+        const remove = document.createElement("button");
+        remove.type = "button";
+        remove.className = "danger";
+        remove.textContent = "×";
+        remove.title = "Удалить метку";
+        const apply = () => {
+          const nextLabel = labelSelect.value;
+          const nextThreshold = Number(thresholdInput.value);
+          if (!nextLabel || !Number.isFinite(nextThreshold) || nextThreshold < 0 || nextThreshold > 100) {
+            setStatus("zone-status", "Проверьте метку и порог 0–100.", "error");
+            return;
+          }
+          if (nextLabel !== label && Object.prototype.hasOwnProperty.call(zoneLabels, nextLabel)) {
+            setStatus("zone-status", "Эта метка уже добавлена в зону.", "error");
+            labelSelect.value = label;
+            return;
+          }
+          const labels = { ...zoneLabels };
+          delete labels[label];
+          labels[nextLabel] = nextThreshold;
+          zone.labels = labels;
+          setStatus("zone-status", "Изменения меток сохранены в форме; нажмите «Сохранить профиль».");
+          renderLabels();
+          updateButtons();
+        };
+        labelSelect.addEventListener("change", apply);
+        thresholdInput.addEventListener("change", apply);
+        remove.addEventListener("click", () => {
+          const labels = { ...zoneLabels };
+          delete labels[label];
+          zone.labels = labels;
+          renderLabels();
+          updateButtons();
+          setStatus("zone-status", "Метка удалена из формы. Не забудьте сохранить профиль.");
+        });
+        row.append(labelSelect, thresholdInput, remove);
+        container.appendChild(row);
+      });
+    }
+
+    function renderZoneSettings() {
+      const zone = currentZone();
+      if (!zone) {
+        updateButtons();
+        return;
+      }
+      $("zone-name").value = zone.name;
+      $("covers-select").value = String(Boolean(zone.covers));
+      renderLabels();
+      updateButtons();
+      drawOverlay();
+    }
+
+    function selectZone(index) {
+      state.selectedZone = index;
+      state.selectedVertex = -1;
+      setAddingVertex(false);
+      renderZoneList();
+      renderZoneSettings();
+    }
+
+    function moveZone(index, delta) {
+      const next = index + delta;
+      if (!state.profile || next < 0 || next >= state.profile.zones.length) return;
+      const [zone] = state.profile.zones.splice(index, 1);
+      state.profile.zones.splice(next, 0, zone);
+      state.selectedZone = next;
+      renderZoneList();
+      renderZoneSettings();
+    }
+
+    function updateProfileInputs() {
+      $("profile-name").value = state.profile ? state.profile.name : "";
+      updateButtons();
+    }
+
+    function updateProfileCameraStatus() {
+      const status = $("profile-camera-status");
+      if (!state.profile) {
+        status.textContent = "Выберите профиль: источник сохранится для предпросмотра при сохранении профиля.";
+      } else if (state.profilePreviewSourceId) {
+        status.textContent = "Для этого профиля сохранён источник preview. JPEG остаётся временным и в профиль не записывается.";
+      } else {
+        status.textContent = "Выберите кадр выше и сохраните профиль, чтобы запомнить источник только для предпросмотра.";
+      }
+      updateButtons();
+    }
+
+    function setProfile(profile) {
+      state.profile = profile;
+      state.profilePreviewSourceId = null;
+      state.previewSelectionExplicit = false;
+      state.selectedZone = profile && profile.zones.length ? 0 : -1;
+      state.selectedVertex = -1;
+      setAddingVertex(false);
+      updateProfileInputs();
+      renderZoneList();
+      renderZoneSettings();
+      updateProfileCameraStatus();
+      setStatus("profile-status", profile ? `Профиль «${profile.name}» открыт.` : "");
+    }
+
+    async function loadProfilePreviewSource(profileId) {
+      state.profilePreviewSourceId = null;
+      updateProfileCameraStatus();
+      try {
+        const binding = await apiRequest(
+          `profiles/${encodeURIComponent(profileId)}/preview-source`,
+        );
+        state.profilePreviewSourceId = binding && typeof binding.source_id === "string"
+          ? binding.source_id
+          : null;
+        if (!state.profilePreviewSourceId) updatePreviewSourceUrl(null);
+        updateProfileCameraStatus();
+        await loadCameraPreview(state.profilePreviewSourceId);
+      } catch (error) {
+        $("source-preview-status").textContent = `Связь источника preview не загружена: ${error.message}`;
+      }
+    }
+
+    async function loadDetectorLabels() {
+      const payload = await apiRequest("detectors");
+      const detectors = payload && Array.isArray(payload.detectors) ? payload.detectors : [];
+      const labels = new Set();
+      detectors.forEach((detector) => {
+        if (!detector || !Array.isArray(detector.labels)) return;
+        detector.labels.forEach((label) => {
+          if (typeof label === "string" && label.trim()) labels.add(label.trim());
+        });
+      });
+      state.availableLabels = [...labels].sort((left, right) => left.localeCompare(right));
+      if (currentZone()) renderLabels();
+      updateButtons();
+      if (!state.availableLabels.length) {
+        setStatus("global-status", "У настроенных моделей пока не обнаружено меток для фильтров зон.");
+      }
+    }
+
+    async function loadProfiles(selectId = "") {
+      setApiStatus("API: проверка защищённого подключения…");
+      try {
+        const profiles = await apiRequest("profiles");
+        state.profiles = profiles;
+        const select = $("profile-select");
+        select.replaceChildren(new Option("— выберите профиль —", ""));
+        const nameCounts = new Map();
+        profiles.forEach((profile) => {
+          nameCounts.set(profile.name, (nameCounts.get(profile.name) || 0) + 1);
+        });
+        const seenNames = new Map();
+        profiles.forEach((profile) => {
+          const occurrence = (seenNames.get(profile.name) || 0) + 1;
+          seenNames.set(profile.name, occurrence);
+          const suffix = nameCounts.get(profile.name) > 1 ? ` · ${occurrence}` : "";
+          select.add(new Option(`${profile.name}${suffix}`, profile.id));
+        });
+        select.value = selectId;
+        if (selectId) {
+          const selected = await apiRequest(`profiles/${encodeURIComponent(selectId)}`);
+          selected.saved = true;
+          setProfile(selected);
+          await loadProfilePreviewSource(selectId);
+        } else {
+          setProfile(null);
+        }
+        setApiStatus(`API подключён через Home Assistant · профилей: ${profiles.length}`, "success");
+      } catch (error) {
+        setApiStatus(`API: ${error.message}`, "error");
+        throw error;
+      }
+    }
+
+    async function checkCapabilities() {
+      try {
+        const payload = await apiRequest("capabilities");
+        const features = payload.features || [];
+        const supported = features.includes("profiles") && features.includes("polygon_zones");
+        state.previewSupported = features.includes("camera_preview");
+        setApiStatus(supported
+          ? `API ${payload.api_version} · защищённое подключение проверяется…`
+          : `API ${payload.api_version} · профили недоступны`, supported ? "" : "error");
+      } catch (error) {
+        state.previewSupported = null;
+        setApiStatus(`API недоступен: ${error.message}`, "error");
+      }
+    }
+
+    async function saveProfile() {
+      if (!state.profile) return;
+      const id = state.profile.id;
+      const name = $("profile-name").value.trim();
+      if (!id || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(id)) {
+        setStatus("profile-status", "Внутренний ID профиля некорректен; создайте профиль заново.", "error");
+        return;
+      }
+      if (!name) {
+        setStatus("profile-status", "Укажите название профиля.", "error");
+        return;
+      }
+      state.profile.name = name;
+      const selectedSourceId = $("camera-preview-select").value || "";
+      try {
+        const saved = await apiRequest(`profiles/${encodeURIComponent(id)}`, {
+          method: "PUT",
+          json: { id, name, zones: state.profile.zones },
+        });
+        saved.saved = true;
+        let sourceSaveError = null;
+        if (selectedSourceId && state.previewSelectionExplicit) {
+          try {
+            await apiRequest(`profiles/${encodeURIComponent(id)}/preview-source`, {
+              method: "PUT",
+              json: { source_id: selectedSourceId },
+            });
+          } catch (error) {
+            sourceSaveError = error;
+          }
+        }
+        setProfile(saved);
+        await loadProfiles(id);
+        if (sourceSaveError) {
+          setStatus(
+            "profile-status",
+            `Профиль сохранён, но источник preview не обновлён: ${sourceSaveError.message}`,
+            "error",
+          );
+        } else {
+          setStatus("profile-status", "Профиль сохранён.", "success");
+        }
+      } catch (error) {
+        setStatus("profile-status", error.message, "error");
+      }
+    }
+
+    async function deleteProfile() {
+      if (!state.profile || !state.profile.saved) return;
+      if (!window.confirm(`Удалить профиль «${state.profile.name}»?`)) return;
+      try {
+        await apiRequest(`profiles/${encodeURIComponent(state.profile.id)}`, { method: "DELETE" });
+        setProfile(null);
+        await loadProfiles();
+        setStatus("profile-status", "Профиль удалён.", "success");
+      } catch (error) {
+        setStatus("profile-status", error.message, "error");
+      }
+    }
+
+    function createProfile() {
+      const baseName = "Новый профиль";
+      const id = generateInternalId("profile", state.profiles.map((profile) => profile.id));
+      setProfile({ id, name: baseName, zones: [], saved: false });
+      $("camera-preview-select").value = "";
+      updatePreviewSourceUrl(null);
+      $("profile-name").focus();
+      setStatus("profile-status", "Введите название, выберите кадр для preview, добавьте зоны и сохраните профиль. ID создан автоматически.");
+    }
+
+    function addZone() {
+      if (!state.profile) return;
+      const id = generateInternalId("zone", state.profile.zones.map((zone) => zone.id));
+      state.profile.zones.push({
+        id,
+        name: `Зона ${state.profile.zones.length + 1}`,
+        points: [
+          { left: 0.15, top: 0.15 },
+          { left: 0.65, top: 0.15 },
+          { left: 0.65, top: 0.65 },
+          { left: 0.15, top: 0.65 },
+        ],
+        covers: false,
+        labels: {},
+      });
+      selectZone(state.profile.zones.length - 1);
+      setStatus("zone-status", "Зона добавлена. Задайте метки и нажмите «Сохранить профиль».");
+    }
+
+    function removeZone() {
+      if (!state.profile || state.selectedZone < 0) return;
+      state.profile.zones.splice(state.selectedZone, 1);
+      state.selectedZone = state.profile.zones.length ? Math.min(state.selectedZone, state.profile.zones.length - 1) : -1;
+      state.selectedVertex = -1;
+      setAddingVertex(false);
+      renderZoneList();
+      renderZoneSettings();
+      setStatus("zone-status", "Зона удалена из формы. Не забудьте сохранить профиль.");
+    }
+
+    function addLabel() {
+      const zone = currentZone();
+      if (!zone) return;
+      const labels = { ...zone.labels };
+      const label = ["person", ...state.availableLabels].find(
+        (candidate, index, candidates) =>
+          candidates.indexOf(candidate) === index
+          && state.availableLabels.includes(candidate)
+          && !Object.prototype.hasOwnProperty.call(labels, candidate),
+      );
+      if (!label) {
+        setStatus("zone-status", "Нет неиспользованных меток у настроенных моделей.", "error");
+        return;
+      }
+      labels[label] = 50;
+      zone.labels = labels;
+      renderLabels();
+      updateButtons();
+      setStatus("zone-status", `Добавлена метка «${label}» с порогом 50%. Не забудьте сохранить профиль.`);
+    }
+
+    function pointerPosition(event) {
+      const rect = $("overlay").getBoundingClientRect();
+      return {
+        left: Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width)),
+        top: Math.max(0, Math.min(1, (event.clientY - rect.top) / rect.height)),
+      };
+    }
+
+    $("overlay").addEventListener("pointerdown", (event) => {
+      const zone = currentZone();
+      if (!zone) return;
+      const insertionHandle = event.target.closest("[data-insert-edge]");
+      if (state.addingVertex && insertionHandle) {
+        insertVertexBetween(Number(insertionHandle.getAttribute("data-insert-edge")));
+        event.preventDefault();
+        return;
+      }
+      const handle = event.target.closest("[data-vertex]");
+      if (handle) {
+        state.selectedVertex = Number(handle.getAttribute("data-vertex"));
+        state.draggingVertex = state.selectedVertex;
+        $("overlay").setPointerCapture(event.pointerId);
+        drawOverlay();
+        updateButtons();
+        event.preventDefault();
+      }
+    });
+
+    $("overlay").addEventListener("keydown", (event) => {
+      if (event.key !== "Enter" && event.key !== " ") return;
+      const insertionHandle = event.target.closest("[data-insert-edge]");
+      if (!state.addingVertex || !insertionHandle) return;
+      event.preventDefault();
+      insertVertexBetween(Number(insertionHandle.getAttribute("data-insert-edge")));
+    });
+
+    $("overlay").addEventListener("pointermove", (event) => {
+      const zone = currentZone();
+      if (!zone || state.draggingVertex < 0) return;
+      zone.points[state.draggingVertex] = pointerPosition(event);
+      drawOverlay();
+    });
+
+    function stopDragging() { state.draggingVertex = -1; }
+    $("overlay").addEventListener("pointerup", stopDragging);
+    $("overlay").addEventListener("pointercancel", stopDragging);
+
+    $("zone-name").addEventListener("input", () => {
+      const zone = currentZone();
+      if (!zone) return;
+      zone.name = $("zone-name").value;
+      renderZoneList();
+    });
+    $("covers-select").addEventListener("change", () => {
+      const zone = currentZone();
+      if (zone) zone.covers = $("covers-select").value === "true";
+    });
+    $("profile-name").addEventListener("input", () => {
+      if (state.profile) state.profile.name = $("profile-name").value;
+    });
+    $("reload-button").addEventListener("click", () => loadProfiles($("profile-select").value).catch((error) => setStatus("global-status", error.message, "error")));
+    $("camera-preview-select").addEventListener("change", () => {
+      const sourceId = $("camera-preview-select").value;
+      state.previewSelectionExplicit = Boolean(sourceId);
+      if (sourceId) {
+        $("profile-camera-status").textContent = state.profile
+          ? "Выбран новый источник preview. Сохраните профиль, чтобы закрепить его здесь."
+          : "Источник выбран для предпросмотра; он не будет связан с профилем до его сохранения.";
+        loadCameraPreview(sourceId);
+      }
+    });
+    $("refresh-camera-preview-button").addEventListener("click", () => {
+      loadCameraPreview(state.profilePreviewSourceId || $("camera-preview-select").value || null);
+    });
+    $("clear-profile-camera-button").addEventListener("click", async () => {
+      if (!state.profile || !state.profile.saved || !state.profilePreviewSourceId) return;
+      const profileId = state.profile.id;
+      try {
+        await apiRequest(`profiles/${encodeURIComponent(profileId)}/preview-source`, { method: "DELETE" });
+        state.profilePreviewSourceId = null;
+        $("camera-preview-select").value = "";
+        updatePreviewSourceUrl(null);
+        updateProfileCameraStatus();
+        $("source-preview-status").textContent = "Связь источника с профилем снята. Уже показанный кадр остаётся временным и не сохраняется.";
+      } catch (error) {
+        setStatus("profile-status", error.message, "error");
+      }
+    });
+    $("profile-select").addEventListener("change", async () => {
+      const id = $("profile-select").value;
+      if (!id) {
+        setProfile(null);
+        await loadCameraPreview();
+        return;
+      }
+      try {
+        const profile = await apiRequest(`profiles/${encodeURIComponent(id)}`);
+        profile.saved = true;
+        setProfile(profile);
+        await loadProfilePreviewSource(id);
+      } catch (error) {
+        setStatus("profile-status", error.message, "error");
+      }
+    });
+    $("new-profile-button").addEventListener("click", createProfile);
+    $("save-profile-button").addEventListener("click", saveProfile);
+    $("delete-profile-button").addEventListener("click", deleteProfile);
+    $("add-zone-button").addEventListener("click", addZone);
+    $("remove-zone-button").addEventListener("click", removeZone);
+    $("move-zone-up-button").addEventListener("click", () => moveZone(state.selectedZone, -1));
+    $("move-zone-down-button").addEventListener("click", () => moveZone(state.selectedZone, 1));
+    $("add-label-button").addEventListener("click", addLabel);
+    $("add-vertex-button").addEventListener("click", () => {
+      const enabled = !state.addingVertex;
+      setAddingVertex(enabled);
+      setStatus(
+        "zone-status",
+        enabled
+          ? "Нажмите на зелёный маркер «+» нужного ребра. Номера возле точек показывают, между какими вершинами вставится новая."
+          : "Режим добавления вершины выключен.",
+      );
+    });
+    $("remove-vertex-button").addEventListener("click", () => {
+      const zone = currentZone();
+      if (!zone || state.selectedVertex < 0 || zone.points.length <= 3) return;
+      zone.points.splice(state.selectedVertex, 1);
+      state.selectedVertex = -1;
+      renderZoneSettings();
+      setStatus("zone-status", "Вершина удалена. Профиль нужно сохранить.");
+    });
+
+    $("image-file").addEventListener("change", (event) => {
+      const file = event.target.files && event.target.files[0];
+      if (!file) return;
+      showPreviewBlob(file);
+      $("source-preview-status").textContent = "Локальное изображение: оно остаётся в браузере и не отправляется на сервер.";
+    });
+    $("clear-image-button").addEventListener("click", () => {
+      if (state.imageUrl) URL.revokeObjectURL(state.imageUrl);
+      state.imageUrl = null;
+      $("preview-image").removeAttribute("src");
+      $("preview-image").style.display = "none";
+      $("empty-stage").hidden = false;
+      $("stage").style.aspectRatio = "16 / 9";
+      state.imageWidth = 1000;
+      state.imageHeight = 562;
+      drawOverlay();
+    });
+
+    async function initializeEditor() {
+      await checkCapabilities();
+      try {
+        await loadProfiles();
+      } catch (error) {
+        setStatus("global-status", `Не удалось подключить редактор через Home Assistant: ${error.message}`, "error");
+        return;
+      }
+      try {
+        await loadDetectorLabels();
+      } catch (error) {
+        setStatus("global-status", `Не удалось загрузить метки настроенных моделей: ${error.message}`, "error");
+      }
+      await loadCameraPreview();
+    }
+
+    updateButtons();
+    drawOverlay();
+    initializeEditor();
+  </script>
+</body>
+</html>
