@@ -21,7 +21,39 @@ from typing import Any
 
 import yaml
 
-from package_local_app import _IGNORED_NAMES
+try:
+    from package_local_app import _IGNORED_NAMES
+except ModuleNotFoundError as err:
+    if err.name != "package_local_app":
+        raise
+    # Keep the GitHub-validator overlay usable without bundling the App packager.
+    _IGNORED_NAMES = {
+        ".current_version",
+        ".dockerignore",
+        ".git",
+        ".gitignore",
+        ".github",
+        ".mypy_cache",
+        ".pytest_cache",
+        ".ruff_cache",
+        ".venv",
+        "LICENSE",
+        "Makefile",
+        "README.md",
+        "SOURCES.md",
+        "__pycache__",
+        "build",
+        "coverage",
+        "docker",
+        "dist",
+        "models",
+        "node_modules",
+        "out",
+        "requirements.pytorch.txt",
+        "requirements.txt",
+        "target",
+        "tests",
+    }
 
 
 ROOT = Path(__file__).resolve().parents[2]
