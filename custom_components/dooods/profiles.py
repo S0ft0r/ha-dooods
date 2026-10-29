@@ -3,7 +3,46 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from hashlib import sha256
 from typing import Any
+
+
+_FULL_FRAME_POINTS = [
+    {"left": 0.0, "top": 0.0},
+    {"left": 1.0, "top": 0.0},
+    {"left": 1.0, "top": 1.0},
+    {"left": 0.0, "top": 1.0},
+]
+
+
+def camera_profile_id(camera_entity_id: str) -> str:
+    """Сформировать стабильный API-совместимый ID профиля камеры."""
+    digest = sha256(camera_entity_id.encode("utf-8")).hexdigest()[:24]
+    return f"camera-{digest}"
+
+
+def default_camera_profile(
+    camera_entity_id: str,
+    camera_name: str | None = None,
+    *,
+    person_label: str = "person",
+) -> dict[str, Any]:
+    """Вернуть исходный профиль: весь кадр, person и порог 50 процентов."""
+    name = (camera_name or "").strip() or camera_entity_id
+    label = person_label.strip() or "person"
+    return {
+        "id": camera_profile_id(camera_entity_id),
+        "name": name[:128],
+        "zones": [
+            {
+                "id": "full-frame",
+                "name": "Весь кадр",
+                "points": [dict(point) for point in _FULL_FRAME_POINTS],
+                "covers": False,
+                "labels": {label: 50},
+            }
+        ],
+    }
 
 
 def normalize_camera_profiles(

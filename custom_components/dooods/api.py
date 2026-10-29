@@ -183,6 +183,7 @@ def _normalize_profiles(payload: Any) -> list[dict[str, Any]]:
                 "id": profile_id,
                 "name": name.strip(),
                 "labels": list(dict.fromkeys(labels)),
+                "zone_count": len(zones),
             }
         )
     return profiles
@@ -220,6 +221,101 @@ async def async_get_profiles(
     return _normalize_profiles(payload)
 
 
+def _normalize_profile_details(payload: Any, expected_id: str) -> dict[str, Any]:
+    """Проверить полный ответ API одного профиля, не теряя геометрию зон."""
+    if not isinstance(payload, dict):
+        raise DooodsInvalidResponseError("invalid_profile_entry")
+    profile_id = payload.get("id")
+    name = payload.get("name")
+    zones = payload.get("zones")
+    if (
+        not isinstance(profile_id, str)
+        or profile_id.strip() != expected_id
+        or not isinstance(name, str)
+        or not name.strip()
+        or not isinstance(zones, list)
+        or any(not isinstance(zone, dict) for zone in zones)
+    ):
+        raise DooodsInvalidResponseError("invalid_profile_metadata")
+    return {"id": profile_id.strip(), "name": name.strip(), "zones": zones}
+
+
+async def async_get_profile(
+    hass: HomeAssistant,
+    base_url: str,
+    auth_key: str,
+    profile_id: str,
+) -> dict[str, Any]:
+    """Получить профиль вместе с зонами через серверную интеграцию."""
+    headers = {"doods-auth-key": auth_key} if auth_key else {}
+    url = f"{base_url.rstrip('/')}/profiles/{quote(profile_id, safe='')}"
+    try:
+        async with async_get_clientsession(hass).get(
+            url,
+            headers=headers,
+            timeout=aiohttp.ClientTimeout(total=10),
+        ) as response:
+            if response.status in {401, 403}:
+                raise DooodsAuthError("invalid_auth")
+            if response.status == 404:
+                raise DooodsInvalidResponseError("profile_not_found")
+            if response.status != 200:
+                raise DooodsConnectionError(
+                    "http_error",
+                    {"endpoint": "GET /profiles/{id}", "status": str(response.status)},
+                )
+            try:
+                payload = await response.json()
+            except (ValueError, aiohttp.ContentTypeError) as err:
+                raise _response_json_error(err) from err
+    except DooodsApiError:
+        raise
+    except (aiohttp.ClientError, TimeoutError) as err:
+        raise DooodsConnectionError("connection_failed") from err
+    return _normalize_profile_details(payload, profile_id)
+
+
+async def async_put_profile(
+    hass: HomeAssistant,
+    base_url: str,
+    auth_key: str,
+    profile: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Создать или полностью заменить профиль, не передавая ключ в браузер."""
+    profile_id = profile.get("id")
+    if not isinstance(profile_id, str) or not profile_id.strip():
+        raise DooodsInvalidResponseError("invalid_profile_metadata")
+    headers = {"doods-auth-key": auth_key} if auth_key else {}
+    url = f"{base_url.rstrip('/')}/profiles/{quote(profile_id, safe='')}"
+    try:
+        async with async_get_clientsession(hass).put(
+            url,
+            json=dict(profile),
+            headers=headers,
+            timeout=aiohttp.ClientTimeout(total=10),
+        ) as response:
+            if response.status in {401, 403}:
+                raise DooodsAuthError("invalid_auth")
+            if response.status == 404:
+                raise DooodsInvalidResponseError("profile_not_found")
+            if response.status in {400, 422}:
+                raise DooodsInvalidResponseError("profile_save_rejected")
+            if response.status != 200:
+                raise DooodsConnectionError(
+                    "http_error",
+                    {"endpoint": "PUT /profiles/{id}", "status": str(response.status)},
+                )
+            try:
+                payload = await response.json()
+            except (ValueError, aiohttp.ContentTypeError) as err:
+                raise _response_json_error(err) from err
+    except DooodsApiError:
+        raise
+    except (aiohttp.ClientError, TimeoutError) as err:
+        raise DooodsConnectionError("connection_failed") from err
+    return _normalize_profile_details(payload, profile_id)
+
+
 async def async_get_capabilities(
     hass: HomeAssistant,
     base_url: str,
@@ -233,6 +329,8 @@ async def async_get_capabilities(
             headers=headers,
             timeout=aiohttp.ClientTimeout(total=5),
         ) as response:
+            if response.status in {401, 403}:
+                raise DooodsAuthError("invalid_auth")
             if response.status != 200:
                 return set()
             try:

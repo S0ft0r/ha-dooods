@@ -22,6 +22,11 @@ from .label_icons import label_translation_key
 _LOGGER = logging.getLogger(__name__)
 
 
+def _label_entity_unique_id(entry_id: str, camera_entity_id: str, label: str) -> str:
+    """Построить стабильный ID управляемого сенсора профильной метки."""
+    return f"{entry_id}_{camera_entity_id}_{label}"
+
+
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: ConfigEntry,
@@ -71,7 +76,7 @@ class _DooodsLabelEntityManager:
         if new_entities:
             self._async_add_entities(new_entities)
 
-        if self._entities.keys() - desired:
+        if self._entities.keys() - desired or self._stale_registry_entities(desired):
             self._schedule_stale_entity_removal()
 
     def _desired_entity_keys(self) -> set[tuple[str, str]]:
@@ -80,6 +85,37 @@ class _DooodsLabelEntityManager:
             (camera_entity_id, label)
             for camera_entity_id in self._coordinator.cameras
             for label in self._coordinator.labels_for_camera(camera_entity_id)
+        }
+
+    def _desired_unique_ids(self, desired: set[tuple[str, str]]) -> set[str]:
+        """Вернуть unique_id всех сущностей, которые нужны текущим профилям."""
+        return {
+            _label_entity_unique_id(
+                self._coordinator.entry_id,
+                camera_entity_id,
+                label,
+            )
+            for camera_entity_id, label in desired
+        }
+
+    def _stale_registry_entities(
+        self,
+        desired: set[tuple[str, str]],
+    ) -> dict[str, str]:
+        """Найти сенсоры в реестре, которых больше нет в активном профиле."""
+        registry = er.async_get(self._coordinator.hass)
+        desired_unique_ids = self._desired_unique_ids(desired)
+        integration_prefix = f"{self._coordinator.entry_id}_"
+        return {
+            registry_entry.unique_id: registry_entry.entity_id
+            for registry_entry in er.async_entries_for_config_entry(
+                registry,
+                self._coordinator.entry_id,
+            )
+            if registry_entry.platform == DOMAIN
+            and registry_entry.entity_id.startswith("binary_sensor.")
+            and registry_entry.unique_id.startswith(integration_prefix)
+            and registry_entry.unique_id not in desired_unique_ids
         }
 
     @callback
@@ -96,26 +132,46 @@ class _DooodsLabelEntityManager:
         )
 
     async def _async_remove_stale_entities(self) -> None:
-        """Удалить сущности и записи реестра меток, которых нет в профиле."""
+        """Удалить активные и сохранённые сенсоры, которых больше нет в профиле."""
         failed = False
+        registry = er.async_get(self._coordinator.hass)
         try:
-            registry = er.async_get(self._coordinator.hass)
-            while not self._stopped and (
-                stale_keys := self._entities.keys() - self._desired_entity_keys()
-            ):
-                for key in list(stale_keys):
-                    if key in self._desired_entity_keys():
+            while not self._stopped:
+                desired = self._desired_entity_keys()
+                stale_keys = self._entities.keys() - desired
+                stale_registry_entities = self._stale_registry_entities(desired)
+                tracked_by_unique_id = {
+                    entity.unique_id: (key, entity)
+                    for key, entity in self._entities.items()
+                }
+                stale_unique_ids = set(stale_registry_entities)
+                stale_unique_ids.update(
+                    entity.unique_id
+                    for key, entity in self._entities.items()
+                    if key in stale_keys
+                )
+                if not stale_unique_ids:
+                    break
+
+                for unique_id in sorted(stale_unique_ids):
+                    desired_unique_ids = self._desired_unique_ids(
+                        self._desired_entity_keys()
+                    )
+                    if unique_id in desired_unique_ids:
                         continue
-                    entity = self._entities.get(key)
-                    if entity is None:
-                        continue
+
+                    tracked = tracked_by_unique_id.get(unique_id)
+                    entity = tracked[1] if tracked is not None else None
                     entity_id = registry.async_get_entity_id(
                         "binary_sensor",
                         DOMAIN,
-                        entity.unique_id,
-                    )
+                        unique_id,
+                    ) or stale_registry_entities.get(unique_id)
+                    if entity_id is None and entity is not None:
+                        entity_id = entity.entity_id
+
                     try:
-                        if entity.hass is not None:
+                        if entity is not None and entity.hass is not None:
                             await entity.async_remove(force_remove=True)
                         elif entity_id is not None:
                             self._coordinator.hass.states.async_remove(entity_id)
@@ -128,12 +184,13 @@ class _DooodsLabelEntityManager:
                         failed = True
                         _LOGGER.exception(
                             "Не удалось удалить бинарный сенсор DOOODS "
-                            "для камеры %s и метки %s",
-                            key[0],
-                            key[1],
+                            "с unique_id %s",
+                            unique_id,
                         )
                         break
-                    self._entities.pop(key, None)
+
+                    if tracked is not None:
+                        self._entities.pop(tracked[0], None)
                 if failed:
                     break
         finally:
@@ -167,7 +224,11 @@ class DooodsLabelBinarySensor(CoordinatorEntity[DooodsCoordinator], BinarySensor
         self._attr_translation_key = label_translation_key(label)
         if self._attr_translation_key == "object":
             self._attr_name = label
-        self._attr_unique_id = f"{coordinator.entry_id}_{camera_entity_id}_{label}"
+        self._attr_unique_id = _label_entity_unique_id(
+            coordinator.entry_id,
+            camera_entity_id,
+            label,
+        )
         self._attr_device_info = camera_device_info(
             coordinator.hass,
             coordinator,

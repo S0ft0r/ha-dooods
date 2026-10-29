@@ -14,6 +14,11 @@ from typing import Any
 
 _ARCHIVE_DIRNAME = "dooods"
 _ARCHIVE_FILENAME_PREFIX = "dooods_"
+_ARCHIVE_FRAME_PATTERN = re.compile(
+    r"^dooods_(\d{8}T\d{6}\.\d{6}Z)_([0-9a-f]{8})\.jpg$"
+)
+_ARCHIVE_DATE_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+_MAX_ARCHIVE_PAGE_SIZE = 100
 _SECONDS_PER_DAY = 24 * 60 * 60
 
 
@@ -222,6 +227,203 @@ def _resolve_archive_directory(hass: Any, directory: str) -> Path:
     if path.is_absolute():
         return path
     return Path(hass.config.path(str(path)))
+
+
+def _archive_frame_timestamp(filename: str) -> datetime | None:
+    """Распознать безопасное имя кадра и извлечь время съёмки из UTC-имени."""
+    match = _ARCHIVE_FRAME_PATTERN.fullmatch(filename)
+    if match is None:
+        return None
+    try:
+        return datetime.strptime(match.group(1), "%Y%m%dT%H%M%S.%fZ").replace(
+            tzinfo=UTC
+        )
+    except ValueError:
+        return None
+
+
+def _archive_camera_directory(
+    directory: str | Path,
+    entry_id: str,
+    camera_entity_id: str,
+) -> tuple[Path, Path, Path, Path]:
+    """Сформировать каталог архива записи и камеры без использования UI-пути."""
+    root = Path(directory).expanduser()
+    namespace_root = root / _ARCHIVE_DIRNAME
+    entry_root = _archive_entry_root(root, entry_id)
+    camera_root = entry_root / _safe_component(camera_entity_id)
+    return root, namespace_root, entry_root, camera_root
+
+
+def _managed_archive_roots_are_safe(
+    namespace_root: Path,
+    entry_root: Path,
+    camera_root: Path,
+) -> bool:
+    """Не читать каталог, если одна из управляемых частей пути является симлинком."""
+    return not any(
+        path.is_symlink()
+        for path in (namespace_root, entry_root, camera_root)
+    )
+
+
+def list_archived_frames_sync(
+    directory: str | Path,
+    entry_id: str,
+    camera_entity_id: str,
+    *,
+    cursor: str = "",
+    limit: int = 40,
+) -> dict[str, Any]:
+    """Вернуть страницу JPEG одной камеры в порядке от новых кадров к старым.
+
+    В ответ не входят абсолютные пути. `frame_id` — только проверяемое имя файла;
+    `next_cursor` используется для следующей страницы.
+    """
+    cursor_timestamp = _archive_frame_timestamp(cursor) if cursor else None
+    if cursor and cursor_timestamp is None:
+        return {"frames": [], "next_cursor": ""}
+    try:
+        safe_limit = max(1, min(int(limit), _MAX_ARCHIVE_PAGE_SIZE))
+    except (TypeError, ValueError):
+        safe_limit = 40
+    _, namespace_root, entry_root, camera_root = _archive_camera_directory(
+        directory,
+        entry_id,
+        camera_entity_id,
+    )
+    if (
+        not _managed_archive_roots_are_safe(namespace_root, entry_root, camera_root)
+        or not camera_root.is_dir()
+    ):
+        return {"frames": [], "next_cursor": ""}
+
+    candidates: list[tuple[datetime, str]] = []
+    try:
+        date_directories = sorted(
+            camera_root.iterdir(),
+            key=lambda path: path.name,
+            reverse=True,
+        )
+    except FileNotFoundError:
+        return {"frames": [], "next_cursor": ""}
+
+    for date_directory in date_directories:
+        if (
+            date_directory.is_symlink()
+            or not date_directory.is_dir()
+            or _ARCHIVE_DATE_PATTERN.fullmatch(date_directory.name) is None
+        ):
+            continue
+        if cursor_timestamp and date_directory.name > cursor_timestamp.strftime("%Y-%m-%d"):
+            continue
+        try:
+            image_paths = sorted(
+                date_directory.iterdir(),
+                key=lambda path: path.name,
+                reverse=True,
+            )
+        except FileNotFoundError:
+            continue
+        for image_path in image_paths:
+            if image_path.is_symlink() or not image_path.is_file():
+                continue
+            captured_at = _archive_frame_timestamp(image_path.name)
+            if captured_at is None or captured_at.strftime("%Y-%m-%d") != date_directory.name:
+                continue
+            if cursor and image_path.name >= cursor:
+                continue
+            candidates.append((captured_at, image_path.name))
+            if len(candidates) > safe_limit:
+                break
+        if len(candidates) > safe_limit:
+            break
+
+    has_more = len(candidates) > safe_limit
+    selected = candidates[:safe_limit]
+    frames = [
+        {
+            "frame_id": filename,
+            "captured_at": captured_at.isoformat(timespec="milliseconds").replace(
+                "+00:00", "Z"
+            ),
+        }
+        for captured_at, filename in selected
+    ]
+    next_cursor = selected[-1][1] if has_more and selected else ""
+    return {"frames": frames, "next_cursor": next_cursor}
+
+
+def read_archived_frame_sync(
+    directory: str | Path,
+    entry_id: str,
+    camera_entity_id: str,
+    frame_id: str,
+) -> bytes | None:
+    """Прочитать JPEG по безопасному ID, ограничив поиск архивом записи и камеры."""
+    captured_at = _archive_frame_timestamp(frame_id)
+    if captured_at is None:
+        return None
+    _, namespace_root, entry_root, camera_root = _archive_camera_directory(
+        directory,
+        entry_id,
+        camera_entity_id,
+    )
+    date_directory = camera_root / captured_at.strftime("%Y-%m-%d")
+    if (
+        not _managed_archive_roots_are_safe(namespace_root, entry_root, camera_root)
+        or date_directory.is_symlink()
+        or not date_directory.is_dir()
+    ):
+        return None
+    image_path = date_directory / frame_id
+    if image_path.is_symlink() or not image_path.is_file():
+        return None
+    try:
+        return image_path.read_bytes()
+    except FileNotFoundError:
+        return None
+
+
+async def async_list_archived_frames(
+    hass: Any,
+    directory: str,
+    entry_id: str,
+    camera_entity_id: str,
+    *,
+    cursor: str = "",
+    limit: int = 40,
+) -> dict[str, Any]:
+    """Получить страницу архива выбранной камеры в executor Home Assistant."""
+    archive_directory = _resolve_archive_directory(hass, directory)
+    list_frames = partial(
+        list_archived_frames_sync,
+        archive_directory,
+        entry_id,
+        camera_entity_id,
+        cursor=cursor,
+        limit=limit,
+    )
+    return await hass.async_add_executor_job(list_frames)
+
+
+async def async_read_archived_frame(
+    hass: Any,
+    directory: str,
+    entry_id: str,
+    camera_entity_id: str,
+    frame_id: str,
+) -> bytes | None:
+    """Прочитать один архивный JPEG в executor Home Assistant."""
+    archive_directory = _resolve_archive_directory(hass, directory)
+    read_frame = partial(
+        read_archived_frame_sync,
+        archive_directory,
+        entry_id,
+        camera_entity_id,
+        frame_id,
+    )
+    return await hass.async_add_executor_job(read_frame)
 
 
 async def async_save_annotated_frame(

@@ -3,70 +3,26 @@
     "step": {
       "user": {
         "title": "Server connection",
-        "description": "Enter the DOODS2 base URL and optional API key. On submit, DOOODS checks GET /detectors and loads the configured detector and label choices before continuing.",
+        "description": "Enter the DOODS2 base URL and API key if one is configured on the server. DOOODS checks the detector list and automatically chooses the first detector that supports the person label.",
         "data": {
           "url": "Server URL",
           "auth_key": "API key"
         },
         "data_description": {
           "url": "Use the app's internal hostname and port, for example http://addon-hostname:8080. Do not add /detect.",
-          "auth_key": "The key is sent in the doods-auth-key header. The current DOODS2 server does not enforce it, so do not rely on it for protection."
+          "auth_key": "The key is stored in Home Assistant settings and sent to the server only in the doods-auth-key header. It is never added to a URL or sent to the browser."
         }
       },
       "cameras": {
         "title": "Cameras and schedule",
-        "description": "Choose cameras and a periodic fallback interval. You can assign an existing motion sensor to each camera on the next screen.",
+        "description": "Choose cameras and the fallback scan interval. On servers that support profiles, DOOODS creates one profile per camera with a full-frame zone, the person label, and a threshold of 50. A linked motion sensor is selected automatically when available.",
         "data": {
           "source": "Camera entities",
           "scan_interval": "Scan interval (seconds)"
         },
         "data_description": {
-          "source": "Select one or more camera entities to scan.",
+          "source": "Select one or more camera entities. A separate profile is created for each selected camera when the server supports profiles; edit its zones in the DOOODS panel.",
           "scan_interval": "Periodic fallback interval between scans of each camera, in seconds."
-        }
-      },
-      "detection": {
-        "title": "Detector and defaults",
-        "description": "Select a configured detector and set timeout and confidence defaults for camera scans.",
-        "data": {
-          "detector": "Detector",
-          "timeout": "Request timeout (seconds)",
-          "confidence": "Minimum confidence (%)"
-        },
-        "data_description": {
-          "detector": "Select one detector reported by the DOODS2 server.",
-          "timeout": "Timeout applied to camera snapshots and DOODS2 requests.",
-          "confidence": "Global confidence threshold from 0 to 100."
-        }
-      },
-      "labels": {
-        "title": "Labels",
-        "description": "Choose labels to track. Leaving the selection empty tracks every label reported by the detector.",
-        "data": {
-          "labels": "Labels to include"
-        },
-        "data_description": {
-          "labels": "Select one or more reported labels. If the server does not report labels, enter one label per line. All selected labels use the global confidence and area."
-        }
-      },
-      "area": {
-        "title": "Global detection area",
-        "description": "Set the shared area applied to every camera detection. Coordinates are normalized from 0 to 1.",
-        "sections": {
-          "area": {
-            "name": "Global detection area",
-            "description": "The defaults cover the full image.",
-            "data": {
-              "top": "Top",
-              "left": "Left",
-              "bottom": "Bottom",
-              "right": "Right",
-              "covers": "Require each detection to fit fully inside the area"
-            },
-            "data_description": {
-              "covers": "When disabled, any overlap with the area is enough."
-            }
-          }
         }
       },
       "output": {
@@ -94,26 +50,6 @@
           "url": "Use the app's internal hostname and port, for example http://addon-hostname:8080. Do not add /detect.",
           "auth_key": "The current value is shown as a masked field. Saving an empty value clears the key. The current DOODS2 server does not enforce this key."
         }
-      },
-      "motion": {
-        "title": "Motion trigger",
-        "description": "Camera {camera_name} ({camera_entity_id}), {camera_index} of {camera_count}. If exactly one motion sensor is linked to the camera device, DOOODS selects it automatically. If several are linked, choose one. If none are linked, choose an external binary_sensor. Periodic scanning remains as a fallback.",
-        "data": {
-          "motion_sensor": "Motion sensor entity"
-        },
-        "data_description": {
-          "motion_sensor": "Motion sensors linked to the camera device are preferred. Choose an external binary_sensor if the camera has no motion sensor."
-        }
-      },
-      "profiles": {
-        "title": "Camera detection profile",
-        "description": "Camera {camera_name} ({camera_entity_id}), {camera_index} of {camera_count}. Select a saved Overhaul profile. Its polygon zones and per-zone label thresholds replace the integration-wide label, confidence, and rectangular-area filters for this camera. Choose no profile to keep the existing filters.",
-        "data": {
-          "profile_id": "Detection profile"
-        },
-        "data_description": {
-          "profile_id": "A selected profile controls accepted labels, confidence thresholds, and polygon zones for this camera."
-        }
       }
     },
     "error": {
@@ -124,7 +60,8 @@
       "invalid_response": "The server replied, but the /detectors response is not valid.",
       "no_detectors": "The server did not report any configured detectors.",
       "detector_not_found": "The previously selected detector is no longer available. Select a replacement.",
-      "no_cameras": "Select at least one camera entity."
+      "no_cameras": "Select at least one camera entity.",
+      "no_person_detector": "No configured detector supports the person label. Configure one on the DOODS2 server and try again."
     },
     "abort": {
       "already_configured": "This DOODS2 server is already configured in DOOODS."
@@ -134,43 +71,31 @@
     "step": {
       "init": {
         "title": "Cameras and schedule",
-        "description": "Choose cameras and a periodic fallback interval. You can assign an existing motion sensor to each camera on the next screen.",
+        "description": "Choose cameras and the fallback scan interval. Each selected camera keeps its own profile on servers that support profiles. Configure a camera’s motion sensor in that camera device’s Settings section.",
         "data": {
           "source": "Camera entities",
           "scan_interval": "Scan interval (seconds)"
         },
         "data_description": {
-          "source": "Select one or more camera entities to scan.",
+          "source": "Select the cameras to scan. A separate profile is ensured for each selected camera when the server supports profiles.",
           "scan_interval": "Periodic fallback interval between scans of each camera, in seconds."
         }
       },
-      "detection": {
-        "title": "Detector and defaults",
-        "description": "Edit the detector, timeout, and confidence used for camera scans.",
+      "settings": {
+        "title": "Detector and archive settings",
+        "description": "Choose the detector and configure the archive and shared detection area. Timeout and confidence are managed by integration defaults. Configure each camera’s motion sensor in its device Settings section.",
         "data": {
           "detector": "Detector",
-          "timeout": "Request timeout (seconds)",
-          "confidence": "Minimum confidence (%)"
+          "file_out": "Archive root directory",
+          "archive_max_count": "Maximum frames per camera (0 = unlimited)",
+          "archive_max_age_days": "Maximum frame age in days (0 = unlimited)"
         },
         "data_description": {
-          "detector": "Select one detector reported by the DOODS2 server.",
-          "timeout": "Timeout applied to camera snapshots and DOODS2 requests.",
-          "confidence": "Global confidence threshold from 0 to 100."
-        }
-      },
-      "labels": {
-        "title": "Labels",
-        "description": "Edit the labels tracked for the selected detector. An empty selection tracks all reported labels.",
-        "data": {
-          "labels": "Labels to include"
+          "detector": "Select a detector reported by DOOODS2. If the server is unavailable, the saved detector name can be edited manually.",
+          "file_out": "Enter one archive root directory. Relative paths are resolved under the Home Assistant configuration directory. DOOODS creates entry, camera, and date subdirectories and writes uniquely named JPEG files. Previous multi-line path templates were not used; replace them with a single directory. Cleanup only touches files created inside this entry archive. Changing or clearing the directory does not delete an older archive.",
+          "archive_max_count": "When a new frame is stored, the oldest files for that camera are removed until the count is within this limit.",
+          "archive_max_age_days": "Expired files are cleaned on startup, daily, and when frames are stored. If both limits are set, exceeding either one removes the file."
         },
-        "data_description": {
-          "labels": "Select one or more reported labels. If the server does not report labels, enter one label per line."
-        }
-      },
-      "area": {
-        "title": "Global detection area",
-        "description": "Edit the shared area applied to every camera detection. Coordinates are normalized from 0 to 1.",
         "sections": {
           "area": {
             "name": "Global detection area",
@@ -186,40 +111,6 @@
               "covers": "When disabled, any overlap with the area is enough."
             }
           }
-        }
-      },
-      "output": {
-        "title": "Annotated frame archive",
-        "description": "Only frames with at least one detection that passes the active filters are stored. Leave the directory empty to disable the archive.",
-        "data": {
-          "file_out": "Archive root directory",
-          "archive_max_count": "Maximum frames per camera (0 = unlimited)",
-          "archive_max_age_days": "Maximum frame age in days (0 = unlimited)"
-        },
-        "data_description": {
-          "file_out": "Enter one archive root directory. Relative paths are resolved under the Home Assistant configuration directory. DOOODS creates entry, camera, and date subdirectories and writes uniquely named JPEG files. Previous multi-line path templates were not used; replace them with a single directory. Cleanup only touches files created inside this entry archive. Changing or clearing the directory does not delete an older archive.",
-          "archive_max_count": "When a new frame is stored, the oldest files for that camera are removed until the count is within this limit.",
-          "archive_max_age_days": "Expired files are cleaned on startup, daily, and when frames are stored. If both limits are set, exceeding either one removes the file."
-        }
-      },
-      "motion": {
-        "title": "Motion trigger",
-        "description": "Camera {camera_name} ({camera_entity_id}), {camera_index} of {camera_count}. If exactly one motion sensor is linked to the camera device, DOOODS selects it automatically. If several are linked, choose one. If none are linked, choose an external binary_sensor. Periodic scanning remains as a fallback.",
-        "data": {
-          "motion_sensor": "Motion sensor entity"
-        },
-        "data_description": {
-          "motion_sensor": "Motion sensors linked to the camera device are preferred. Choose an external binary_sensor if the camera has no motion sensor."
-        }
-      },
-      "profiles": {
-        "title": "Camera detection profile",
-        "description": "Camera {camera_name} ({camera_entity_id}), {camera_index} of {camera_count}. Select a saved Overhaul profile. Its polygon zones and per-zone label thresholds replace the integration-wide label, confidence, and rectangular-area filters for this camera. Choose no profile to keep the existing filters.",
-        "data": {
-          "profile_id": "Detection profile"
-        },
-        "data_description": {
-          "profile_id": "A selected profile controls accepted labels, confidence thresholds, and polygon zones for this camera."
         }
       }
     },
@@ -531,6 +422,14 @@
       },
       "object": {
         "name": "Detected object"
+      }
+    },
+    "select": {
+      "motion_sensor": {
+        "name": "Motion sensor",
+        "state": {
+          "none": "Do not use"
+        }
       }
     }
   },

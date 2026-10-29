@@ -9,7 +9,7 @@ from typing import Any
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import EVENT_HOMEASSISTANT_STARTED, Platform
 from homeassistant.core import Event, HomeAssistant, callback
-from homeassistant.exceptions import ConfigEntryNotReady
+from homeassistant.exceptions import ConfigEntryNotReady, HomeAssistantError
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.device_registry import DeviceInfo
@@ -48,15 +48,25 @@ from .const import (
     DEFAULT_SCAN_INTERVAL,
     DEFAULT_TIMEOUT,
     DOMAIN,
+    MOTION_SENSOR_NONE,
 )
 from .coordinator import DooodsCoordinator
+from .panel_url import build_profile_manager_url
 from .motion import resolve_motion_sensors
+from .profile_panel import (
+    async_ensure_camera_profiles,
+    async_register_profile_camera_archive_view,
+    async_register_profile_camera_preview_view,
+    async_register_profile_panel,
+    async_register_profile_panel_commands,
+    async_unregister_profile_panel_if_unused,
+)
 from .profiles import normalize_camera_profiles, profile_labels_for_detector
 from .services import async_register_services
 
 _LOGGER = logging.getLogger(__name__)
 _PROFILE_FEATURES = {"profiles", "polygon_zones"}
-PLATFORMS = (Platform.BINARY_SENSOR, Platform.SENSOR, Platform.IMAGE)
+PLATFORMS = (Platform.BINARY_SENSOR, Platform.SENSOR, Platform.IMAGE, Platform.SELECT)
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
 
@@ -64,8 +74,21 @@ type DooodsConfigEntry = ConfigEntry[DooodsCoordinator]
 
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
-    """Зарегистрировать действия интеграции до загрузки её записей."""
+    """Зарегистрировать сервис, панель и защищённые endpoint просмотра камеры и архива."""
     async_register_services(hass)
+    async_register_profile_panel_commands(hass)
+    try:
+        await async_register_profile_camera_preview_view(hass)
+    except Exception:
+        _LOGGER.exception("Не удалось зарегистрировать preview камеры DOOODS")
+    try:
+        await async_register_profile_camera_archive_view(hass)
+    except Exception:
+        _LOGGER.exception("Не удалось зарегистрировать endpoint архива DOOODS")
+    try:
+        await async_register_profile_panel(hass)
+    except Exception:  # Camera detection can still run if sidebar setup fails.
+        _LOGGER.exception("Не удалось зарегистрировать панель профилей DOOODS")
     return True
 
 
@@ -87,7 +110,6 @@ def _label_list(value: Any) -> list[str]:
 def _register_server_device(
     hass: HomeAssistant,
     entry: ConfigEntry,
-    base_url: str,
 ) -> tuple[str, str]:
     """Зарегистрировать виртуальное устройство-службу DOOODS2 и вернуть его идентификатор и ключ."""
     identifier = f"server:{entry.entry_id}"
@@ -96,9 +118,10 @@ def _register_server_device(
         "identifiers": {(DOMAIN, identifier)},
         "manufacturer": "DOOODS",
         "model": "DOOODS2",
-        "configuration_url": base_url,
         "entry_type": dr.DeviceEntryType.SERVICE,
     }
+    if panel_url := build_profile_manager_url(hass):
+        device_info_values["configuration_url"] = panel_url
     if "translation_key" in device_info_fields:
         device_info_values["translation_key"] = "doods_server"
     else:
@@ -179,7 +202,8 @@ def _setup_motion_triggers(
         if (
             camera_entity_id in coordinator.cameras
             and isinstance(motion_entity_id, str)
-            and motion_entity_id
+            and motion_entity_id.startswith("binary_sensor.")
+            and motion_entity_id != MOTION_SENSOR_NONE
         ):
             cameras_by_motion_sensor.setdefault(motion_entity_id, set()).add(
                 camera_entity_id
@@ -272,18 +296,73 @@ async def async_setup_entry(hass: HomeAssistant, entry: DooodsConfigEntry) -> bo
     cameras = options.get(CONF_SOURCE, [])
     if not isinstance(cameras, list):
         cameras = []
+    cameras = list(
+        dict.fromkeys(
+            camera for camera in cameras if isinstance(camera, str) and camera
+        )
+    )
     camera_profiles = normalize_camera_profiles(
         options.get(CONF_CAMERA_PROFILES, {}),
         cameras,
     )
     camera_labels: dict[str, list[str]] = {}
     profiles_by_id: dict[str, dict[str, Any]] = {}
-    if camera_profiles:
-        if not auth_key or not _PROFILE_FEATURES.issubset(capabilities):
+    profiles_supported = bool(auth_key) and _PROFILE_FEATURES.issubset(capabilities)
+    if cameras and profiles_supported:
+        try:
+            profile_person_label = next(
+                (
+                    label
+                    for label in detector["labels"]
+                    if label.casefold() == "person"
+                ),
+                "person",
+            )
+            camera_profiles = await async_ensure_camera_profiles(
+                hass,
+                entry,
+                cameras,
+                camera_profiles,
+                person_label=profile_person_label,
+            )
+        except DooodsAuthError as err:
             raise ConfigEntryNotReady(
                 translation_domain=DOMAIN,
-                translation_key="setup_profiles_unsupported",
-            )
+                translation_key="setup_auth_failed",
+            ) from err
+        except HomeAssistantError as err:
+            raise ConfigEntryNotReady(
+                translation_domain=DOMAIN,
+                translation_key="setup_profiles_failed",
+            ) from err
+        if camera_profiles != options.get(CONF_CAMERA_PROFILES, {}):
+            options = dict(options)
+            options[CONF_CAMERA_PROFILES] = camera_profiles
+            hass.config_entries.async_update_entry(entry, options=options)
+    elif camera_profiles:
+        profile_person_label = next(
+            (
+                label
+                for label in detector["labels"]
+                if label.casefold() == "person"
+            ),
+            "person",
+        )
+        _LOGGER.warning(
+            "Profiles API недоступен; для камер записи %s используются legacy-defaults",
+            entry.entry_id,
+        )
+        camera_profiles = {}
+        options = dict(options)
+        options[CONF_CAMERA_PROFILES] = {}
+        options[CONF_LABELS] = [profile_person_label]
+        options[CONF_CONFIDENCE] = 50
+        options[CONF_AREA] = dict(DEFAULT_AREA)
+        hass.config_entries.async_update_entry(entry, options=options)
+        labels = [profile_person_label]
+        normalized_area = dict(DEFAULT_AREA)
+
+    if camera_profiles:
         try:
             available_profiles = await async_get_profiles(
                 hass,
@@ -307,7 +386,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: DooodsConfigEntry) -> bo
         missing_profile_ids = set(camera_profiles.values()) - set(profiles_by_id)
         if missing_profile_ids:
             _LOGGER.error(
-                "В настройках DOOODS выбраны отсутствующие профили: %s",
+                "Профили камер DOOODS не найдены после проверки сервера: %s",
                 ", ".join(sorted(missing_profile_ids)),
             )
             raise ConfigEntryNotReady(
@@ -320,9 +399,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: DooodsConfigEntry) -> bo
                 detector["labels"],
             )
 
-    parent_device_id, parent_device_identifier = _register_server_device(
-        hass, entry, base_url
-    )
+    parent_device_id, parent_device_identifier = _register_server_device(hass, entry)
     coordinator = DooodsCoordinator(
         hass,
         entry,
@@ -357,6 +434,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: DooodsConfigEntry) -> bo
     entry.runtime_data = coordinator
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     _remove_stale_camera_devices(hass, entry, parent_device_id, cameras)
+    try:
+        await async_register_profile_panel(hass)
+    except Exception:  # Keep camera detection available if panel registration fails.
+        _LOGGER.exception("Не удалось зарегистрировать панель профилей DOOODS")
     motion_sensors = resolve_motion_sensors(
         hass,
         cameras,
@@ -407,4 +488,8 @@ async def async_unload_entry(hass: HomeAssistant, entry: DooodsConfigEntry) -> b
         return False
     if coordinator := getattr(entry, "runtime_data", None):
         await coordinator.async_shutdown()
+    await async_unregister_profile_panel_if_unused(
+        hass,
+        unloading_entry_id=entry.entry_id,
+    )
     return True

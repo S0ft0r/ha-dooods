@@ -7,7 +7,6 @@ CONF_URL = "url"
 CONF_AUTH_KEY = "auth_key"
 CONF_SOURCE = "source"
 CONF_MOTION_SENSORS = "motion_sensors"
-CONF_MOTION_SENSOR = "motion_sensor"
 CONF_CAMERA_PROFILES = "camera_profiles"
 CONF_PROFILE_ID = "profile_id"
 CONF_DETECTOR = "detector"
@@ -19,6 +18,9 @@ CONF_AREA = "area"
 CONF_FILE_OUT = "file_out"
 CONF_ARCHIVE_MAX_COUNT = "archive_max_count"
 CONF_ARCHIVE_MAX_AGE_DAYS = "archive_max_age_days"
+
+# Явная настройка камеры без сканирования по событиям движения.
+MOTION_SENSOR_NONE = "none"
 
 DEFAULT_ARCHIVE_MAX_COUNT = 10
 DEFAULT_ARCHIVE_MAX_AGE_DAYS = 0

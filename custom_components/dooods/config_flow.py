@@ -29,13 +29,10 @@ from homeassistant.helpers.selector import (
 )
 
 from .api import (
-    DooodsApiError,
     DooodsAuthError,
     DooodsConnectionError,
     DooodsInvalidResponseError,
-    async_get_capabilities,
     async_get_detectors,
-    async_get_profiles,
 )
 from .archive import normalize_archive_directory, normalize_archive_limit
 from .const import (
@@ -44,7 +41,6 @@ from .const import (
     CONF_ARCHIVE_MAX_COUNT,
     CONF_AUTH_KEY,
     CONF_CAMERA_PROFILES,
-    CONF_PROFILE_ID,
     CONF_BOTTOM,
     CONF_CONFIDENCE,
     CONF_COVERS,
@@ -52,7 +48,6 @@ from .const import (
     CONF_FILE_OUT,
     CONF_LABELS,
     CONF_LEFT,
-    CONF_MOTION_SENSOR,
     CONF_MOTION_SENSORS,
     CONF_RIGHT,
     CONF_SCAN_INTERVAL,
@@ -68,12 +63,10 @@ from .const import (
     DEFAULT_TIMEOUT,
     DOMAIN,
 )
-from .motion import camera_motion_sensors
+from .motion import resolve_motion_sensors
 from .profiles import normalize_camera_profiles
 
 _LOGGER = logging.getLogger(__name__)
-NO_PROFILE_VALUE = "__no_profile__"
-_PROFILE_FEATURES = {"profiles", "polygon_zones"}
 
 AREA_SCHEMA = probatio.Schema(
     {
@@ -117,38 +110,28 @@ CAMERA_SCHEDULE_SCHEMA = probatio.Schema(
     }
 )
 
-MOTION_SENSOR_SCHEMA = probatio.Schema(
-    {
-        probatio.Optional(CONF_MOTION_SENSOR): EntitySelector(
-            EntitySelectorConfig(domain="binary_sensor")
-        ),
-    }
-)
+AREA_OPTIONS_FIELDS = {
+    probatio.Required(CONF_AREA, default=dict(DEFAULT_AREA)): section(
+        AREA_SCHEMA,
+        {"collapsed": True},
+    ),
+}
+AREA_OPTIONS_SCHEMA = probatio.Schema(AREA_OPTIONS_FIELDS)
 
-AREA_OPTIONS_SCHEMA = probatio.Schema(
-    {
-        probatio.Required(CONF_AREA, default=dict(DEFAULT_AREA)): section(
-            AREA_SCHEMA,
-            {"collapsed": True},
-        ),
-    }
-)
-
-OUTPUT_SCHEMA = probatio.Schema(
-    {
-        probatio.Required(CONF_FILE_OUT, default=""): TextSelector(
-            TextSelectorConfig(multiline=False)
-        ),
-        probatio.Required(
-            CONF_ARCHIVE_MAX_COUNT,
-            default=DEFAULT_ARCHIVE_MAX_COUNT,
-        ): probatio.All(probatio.Coerce(int), probatio.Range(min=0, max=100000)),
-        probatio.Required(
-            CONF_ARCHIVE_MAX_AGE_DAYS,
-            default=DEFAULT_ARCHIVE_MAX_AGE_DAYS,
-        ): probatio.All(probatio.Coerce(int), probatio.Range(min=0, max=36500)),
-    }
-)
+OUTPUT_FIELDS = {
+    probatio.Required(CONF_FILE_OUT, default=""): TextSelector(
+        TextSelectorConfig(multiline=False)
+    ),
+    probatio.Required(
+        CONF_ARCHIVE_MAX_COUNT,
+        default=DEFAULT_ARCHIVE_MAX_COUNT,
+    ): probatio.All(probatio.Coerce(int), probatio.Range(min=0, max=100000)),
+    probatio.Required(
+        CONF_ARCHIVE_MAX_AGE_DAYS,
+        default=DEFAULT_ARCHIVE_MAX_AGE_DAYS,
+    ): probatio.All(probatio.Coerce(int), probatio.Range(min=0, max=36500)),
+}
+OUTPUT_SCHEMA = probatio.Schema(OUTPUT_FIELDS)
 
 
 def _normalize_server_url(value: str) -> str | None:
@@ -206,11 +189,11 @@ async def _async_get_detectors(
         return None, "cannot_connect"
 
 
-def _detector_schema(
+def _detector_fields(
     detectors: list[dict[str, Any]],
     default_detector: str,
-) -> probatio.Schema:
-    """Создать список детекторов и общие параметры распознавания."""
+) -> dict[Any, Any]:
+    """Создать поле выбора детектора, возвращённого сервером DOODS2."""
     options = [
         SelectOptionDict(
             value=detector["name"],
@@ -222,157 +205,36 @@ def _detector_schema(
         )
         for detector in detectors
     ]
-    return probatio.Schema(
-        {
-            probatio.Required(CONF_DETECTOR, default=default_detector): SelectSelector(
-                SelectSelectorConfig(
-                    options=options,
-                    mode=SelectSelectorMode.DROPDOWN,
-                )
-            ),
-            probatio.Required(CONF_TIMEOUT, default=DEFAULT_TIMEOUT): probatio.All(
-                probatio.Coerce(int), probatio.Range(min=1, max=3600)
-            ),
-            probatio.Required(
-                CONF_CONFIDENCE, default=DEFAULT_CONFIDENCE
-            ): probatio.All(probatio.Coerce(float), probatio.Range(min=0, max=100)),
-        }
-    )
-
-
-def _manual_detection_schema(default_detector: str) -> probatio.Schema:
-    """Разрешить редактирование сохранённых параметров детектора при временной недоступности сервера."""
-    return probatio.Schema(
-        {
-            probatio.Required(CONF_DETECTOR, default=default_detector): TextSelector(
-                TextSelectorConfig()
-            ),
-            probatio.Required(CONF_TIMEOUT, default=DEFAULT_TIMEOUT): probatio.All(
-                probatio.Coerce(int), probatio.Range(min=1, max=3600)
-            ),
-            probatio.Required(
-                CONF_CONFIDENCE, default=DEFAULT_CONFIDENCE
-            ): probatio.All(probatio.Coerce(float), probatio.Range(min=0, max=100)),
-        }
-    )
-
-
-def _labels_schema(labels: list[str] | None) -> probatio.Schema:
-    """Создать список выбора известных меток или текстовое поле для ручного ввода."""
-    if labels:
-        selector = SelectSelector(
+    return {
+        probatio.Required(CONF_DETECTOR, default=default_detector): SelectSelector(
             SelectSelectorConfig(
-                options=[
-                    SelectOptionDict(value=label, label=label) for label in labels
-                ],
-                multiple=True,
+                options=options,
                 mode=SelectSelectorMode.DROPDOWN,
             )
         )
-        default: list[str] | str = []
-    else:
-        selector = TextSelector(TextSelectorConfig(multiline=True))
-        default = ""
-    return probatio.Schema({probatio.Required(CONF_LABELS, default=default): selector})
+    }
 
 
-def _profile_schema(
-    profiles: list[dict[str, Any]],
-    current_profile_id: str | None,
-) -> probatio.Schema:
-    """Создать список профилей с безопасным вариантом оставить legacy-фильтр."""
-    options = [SelectOptionDict(value=NO_PROFILE_VALUE, label="Без профиля")]
-    profile_ids: set[str] = set()
-    for profile in profiles:
-        profile_id = profile["id"]
-        profile_ids.add(profile_id)
-        options.append(
-            SelectOptionDict(
-                value=profile_id,
-                label=f"{profile['name']} ({profile_id})",
-            )
+def _manual_detection_fields(default_detector: str) -> dict[Any, Any]:
+    """Оставить возможность изменить имя детектора при недоступности сервера."""
+    return {
+        probatio.Required(CONF_DETECTOR, default=default_detector): TextSelector(
+            TextSelectorConfig()
         )
-    if current_profile_id and current_profile_id not in profile_ids:
-        options.append(
-            SelectOptionDict(
-                value=current_profile_id,
-                label=f"Сохранённый профиль недоступен ({current_profile_id})",
-            )
-        )
-    default = current_profile_id or NO_PROFILE_VALUE
-    return probatio.Schema(
-        {
-            probatio.Required(CONF_PROFILE_ID, default=default): SelectSelector(
-                SelectSelectorConfig(
-                    options=options,
-                    mode=SelectSelectorMode.DROPDOWN,
-                )
-            )
-        }
-    )
+    }
 
 
-def _motion_sensor_schema(
-    candidates: list[dict[str, str]],
-    current_entity_id: str | None,
-) -> probatio.Schema:
-    """Ограничить выбор сенсорами, зарегистрированными на устройстве камеры."""
-    candidate_ids = {candidate["entity_id"] for candidate in candidates}
-    if not candidates or (
-        current_entity_id and current_entity_id not in candidate_ids
-    ):
-        return MOTION_SENSOR_SCHEMA
-
-    selector = SelectSelector(
-        SelectSelectorConfig(
-            options=[
-                SelectOptionDict(
-                    value=candidate["entity_id"],
-                    label=f"{candidate['name']} ({candidate['entity_id']})",
-                )
-                for candidate in candidates
-            ],
-            mode=SelectSelectorMode.DROPDOWN,
-        )
-    )
-    if len(candidates) == 1:
-        default = current_entity_id or candidates[0]["entity_id"]
-        return probatio.Schema(
-            {probatio.Required(CONF_MOTION_SENSOR, default=default): selector}
-        )
-    return probatio.Schema({probatio.Optional(CONF_MOTION_SENSOR): selector})
-
-
-async def _async_get_available_profiles(
-    hass: HomeAssistant,
-    base_url: str,
-    auth_key: str,
-) -> list[dict[str, Any]]:
-    """Загрузить профили только при объявленной поддержке и не ломать legacy-серверы."""
-    if not auth_key:
-        return []
-    features = await async_get_capabilities(hass, base_url, auth_key)
-    if not _PROFILE_FEATURES.issubset(features):
-        return []
-    try:
-        return await async_get_profiles(hass, base_url, auth_key)
-    except DooodsApiError as err:
-        _LOGGER.debug("Не удалось получить профили DOOODS2: %s", err)
-        return []
+def _options_settings_schema(detector_fields: Mapping[Any, Any]) -> probatio.Schema:
+    """Объединить детектор, область распознавания и настройки архива в одну форму."""
+    fields = dict(detector_fields)
+    fields.update(AREA_OPTIONS_FIELDS)
+    fields.update(OUTPUT_FIELDS)
+    return probatio.Schema(fields)
 
 
 def _lines(value: str) -> list[str]:
     """Преобразовать многострочное поле формы в список непустых строк."""
     return [line.strip() for line in value.splitlines() if line.strip()]
-
-
-def _multiline(value: Any) -> str:
-    """Подготовить сохранённый список или строку для многострочного текстового поля."""
-    if isinstance(value, str):
-        return value
-    if isinstance(value, list):
-        return "\n".join(str(item) for item in value)
-    return ""
 
 
 def _label_values(value: Any) -> list[str]:
@@ -407,31 +269,27 @@ def _normalize_motion_sensors(
     }
 
 
-def _camera_display_name(hass: HomeAssistant, camera_entity_id: str) -> str:
-    """Получить отображаемое имя камеры для подсказки по настройке датчика движения."""
-    state = hass.states.get(camera_entity_id)
-    if state is not None:
-        friendly_name = state.attributes.get("friendly_name")
-        if isinstance(friendly_name, str) and friendly_name.strip():
-            return friendly_name.strip()
-    return camera_entity_id
-
-
-def _labels_for_detector(
-    detectors: list[dict[str, Any]] | None,
-    detector_name: str,
-) -> list[str] | None:
-    """Вернуть известные метки детектора либо None, если список недоступен."""
-    if detectors is None:
-        return None
+def _first_person_detector(
+    detectors: list[dict[str, Any]],
+) -> tuple[dict[str, Any], str] | None:
+    """Выбрать первый детектор с меткой person и вернуть точное имя этой метки."""
     for detector in detectors:
-        if detector["name"] == detector_name:
-            return detector["labels"]
+        labels = detector.get("labels", [])
+        person_label = next(
+            (
+                label
+                for label in labels
+                if isinstance(label, str) and label.strip().casefold() == "person"
+            ),
+            None,
+        )
+        if person_label is not None:
+            return detector, person_label
     return None
 
 
 def _options_for_form(options: Mapping[str, Any]) -> dict[str, Any]:
-    """Подготовить сохранённые параметры и значения по умолчанию для экранов мастера."""
+    """Подготовить сохранённые параметры и значения по умолчанию для мастеров."""
     area = options.get(CONF_AREA, {})
     cameras = options.get(CONF_SOURCE, [])
     if not isinstance(cameras, list):
@@ -530,15 +388,24 @@ class DooodsConfigFlow(ConfigFlow, domain=DOMAIN):
                     errors["base"] = connection_error
                 elif not self._available_detectors:
                     errors["base"] = "no_detectors"
+                elif (
+                    person_detector := _first_person_detector(self._available_detectors)
+                ) is None:
+                    errors["base"] = "no_person_detector"
                 else:
+                    detector, person_label = person_detector
                     self._server_data = {
                         CONF_URL: server_url,
                         CONF_AUTH_KEY: auth_key,
                     }
-                    self._draft_options = _options_for_form({})
-                    self._draft_options[CONF_DETECTOR] = self._available_detectors[0][
-                        "name"
-                    ]
+                    self._draft_options = _options_for_form(
+                        {
+                            CONF_DETECTOR: detector["name"],
+                            CONF_CONFIDENCE: 50,
+                            CONF_LABELS: [person_label],
+                            CONF_AREA: dict(DEFAULT_AREA),
+                        }
+                    )
                     return await self.async_step_cameras()
 
         return self.async_show_form(
@@ -565,208 +432,24 @@ class DooodsConfigFlow(ConfigFlow, domain=DOMAIN):
                     errors={"base": "no_cameras"},
                 )
             self._draft_options.update(user_input)
-            self._draft_options[CONF_MOTION_SENSORS] = _normalize_motion_sensors(
-                self._draft_options.get(CONF_MOTION_SENSORS, {}),
-                self._draft_options[CONF_SOURCE],
+            cameras = self._draft_options[CONF_SOURCE]
+            self._draft_options[CONF_MOTION_SENSORS] = resolve_motion_sensors(
+                self.hass,
+                cameras,
+                _normalize_motion_sensors(
+                    self._draft_options.get(CONF_MOTION_SENSORS, {}), cameras
+                ),
             )
-            self._motion_camera_index = 0
-            return await self.async_step_motion()
+            self._draft_options[CONF_CAMERA_PROFILES] = normalize_camera_profiles(
+                self._draft_options.get(CONF_CAMERA_PROFILES, {}),
+                cameras,
+            )
+            return await self.async_step_output()
 
         return self.async_show_form(
             step_id="cameras",
             data_schema=self.add_suggested_values_to_schema(
                 CAMERA_SCHEDULE_SCHEMA,
-                self._draft_options,
-            ),
-        )
-
-    @override
-    async def async_step_motion(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        """Найти сенсор движения камеры или предложить выбрать внешний."""
-        cameras = self._draft_options.get(CONF_SOURCE, [])
-        if not cameras:
-            return await self.async_step_detection()
-
-        camera_index = getattr(self, "_motion_camera_index", 0)
-        motion_sensors = dict(self._draft_options.get(CONF_MOTION_SENSORS, {}))
-        if user_input is not None:
-            camera_entity_id = cameras[camera_index]
-            motion_entity_id = user_input.get(CONF_MOTION_SENSOR)
-            if isinstance(motion_entity_id, str) and motion_entity_id.strip():
-                motion_sensors[camera_entity_id] = motion_entity_id.strip()
-            else:
-                motion_sensors.pop(camera_entity_id, None)
-            self._draft_options[CONF_MOTION_SENSORS] = motion_sensors
-            camera_index += 1
-            if camera_index >= len(cameras):
-                self._motion_camera_index = 0
-                self._profile_camera_index = 0
-                self._available_profiles = await _async_get_available_profiles(
-                    self.hass,
-                    self._server_data[CONF_URL],
-                    self._server_data.get(CONF_AUTH_KEY, ""),
-                )
-                return await self.async_step_profiles()
-            self._motion_camera_index = camera_index
-
-        camera_entity_id = cameras[camera_index]
-        motion_entity_id = motion_sensors.get(camera_entity_id)
-        motion_candidates = camera_motion_sensors(self.hass, camera_entity_id)
-        candidate_ids = {candidate["entity_id"] for candidate in motion_candidates}
-        if motion_candidates and motion_entity_id not in candidate_ids:
-            motion_entity_id = (
-                motion_candidates[0]["entity_id"]
-                if len(motion_candidates) == 1
-                else None
-            )
-        suggested_values = (
-            {CONF_MOTION_SENSOR: motion_entity_id} if motion_entity_id else {}
-        )
-        camera_name = _camera_display_name(self.hass, camera_entity_id)
-        return self.async_show_form(
-            step_id="motion",
-            data_schema=self.add_suggested_values_to_schema(
-                _motion_sensor_schema(motion_candidates, motion_entity_id),
-                suggested_values,
-            ),
-            description_placeholders={
-                "camera_name": camera_name,
-                "camera_entity_id": camera_entity_id,
-                "camera_index": str(camera_index + 1),
-                "camera_count": str(len(cameras)),
-            },
-        )
-
-    @override
-    async def async_step_profiles(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        """Назначить каждой камере один профиль полигональной фильтрации."""
-        cameras = self._draft_options.get(CONF_SOURCE, [])
-        if not cameras:
-            return await self.async_step_detection()
-
-        profiles = getattr(self, "_available_profiles", [])
-        profile_map = normalize_camera_profiles(
-            self._draft_options.get(CONF_CAMERA_PROFILES, {}),
-            cameras,
-        )
-        if not profiles and not profile_map:
-            self._draft_options[CONF_CAMERA_PROFILES] = {}
-            return await self.async_step_detection()
-
-        camera_index = getattr(self, "_profile_camera_index", 0)
-        if user_input is not None:
-            camera_entity_id = cameras[camera_index]
-            selected_profile_id = user_input.get(CONF_PROFILE_ID, NO_PROFILE_VALUE)
-            if selected_profile_id == NO_PROFILE_VALUE:
-                profile_map.pop(camera_entity_id, None)
-            else:
-                profile_map[camera_entity_id] = selected_profile_id
-            self._draft_options[CONF_CAMERA_PROFILES] = profile_map
-            camera_index += 1
-            if camera_index >= len(cameras):
-                self._profile_camera_index = 0
-                return await self.async_step_detection()
-            self._profile_camera_index = camera_index
-
-        camera_entity_id = cameras[camera_index]
-        current_profile_id = profile_map.get(camera_entity_id)
-        return self.async_show_form(
-            step_id="profiles",
-            data_schema=self.add_suggested_values_to_schema(
-                _profile_schema(profiles, current_profile_id),
-                {
-                    CONF_PROFILE_ID: current_profile_id or NO_PROFILE_VALUE,
-                },
-            ),
-            description_placeholders={
-                "camera_name": _camera_display_name(self.hass, camera_entity_id),
-                "camera_entity_id": camera_entity_id,
-                "camera_index": str(camera_index + 1),
-                "camera_count": str(len(cameras)),
-            },
-        )
-
-    @override
-    async def async_step_detection(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        """Выбрать детектор и сохранить значения порога уверенности и тайм-аута по умолчанию."""
-        detector_names = [detector["name"] for detector in self._available_detectors]
-        if user_input is not None:
-            previous_detector = self._draft_options.get(CONF_DETECTOR)
-            self._draft_options.update(user_input)
-            if self._draft_options[CONF_DETECTOR] != previous_detector:
-                self._draft_options[CONF_LABELS] = []
-            return await self.async_step_labels()
-
-        selected_detector = self._draft_options.get(CONF_DETECTOR)
-        if selected_detector not in detector_names:
-            selected_detector = detector_names[0]
-            self._draft_options[CONF_DETECTOR] = selected_detector
-            self._draft_options[CONF_LABELS] = []
-
-        return self.async_show_form(
-            step_id="detection",
-            data_schema=self.add_suggested_values_to_schema(
-                _detector_schema(self._available_detectors, selected_detector),
-                self._draft_options,
-            ),
-        )
-
-    @override
-    async def async_step_labels(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        """Выбрать метки, поддерживаемые выбранным детектором."""
-        if user_input is not None:
-            self._draft_options.update(user_input)
-            self._draft_options[CONF_LABELS] = _label_values(
-                self._draft_options.get(CONF_LABELS, [])
-            )
-            return await self.async_step_area()
-
-        selected_detector = self._draft_options[CONF_DETECTOR]
-        available_labels = _labels_for_detector(
-            self._available_detectors,
-            selected_detector,
-        )
-        selected_labels = _label_values(self._draft_options.get(CONF_LABELS, []))
-        if available_labels:
-            selected_labels = [
-                label for label in selected_labels if label in available_labels
-            ]
-            suggested_values = {**self._draft_options, CONF_LABELS: selected_labels}
-        else:
-            suggested_values = {
-                **self._draft_options,
-                CONF_LABELS: _multiline(selected_labels),
-            }
-
-        return self.async_show_form(
-            step_id="labels",
-            data_schema=self.add_suggested_values_to_schema(
-                _labels_schema(available_labels),
-                suggested_values,
-            ),
-        )
-
-    @override
-    async def async_step_area(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        """Получить общую область распознавания."""
-        if user_input is not None:
-            self._draft_options.update(user_input)
-            return await self.async_step_output()
-
-        return self.async_show_form(
-            step_id="area",
-            data_schema=self.add_suggested_values_to_schema(
-                AREA_OPTIONS_SCHEMA,
                 self._draft_options,
             ),
         )
@@ -846,7 +529,7 @@ class DooodsConfigFlow(ConfigFlow, domain=DOMAIN):
 
 
 class DooodsOptionsFlow(OptionsFlowWithReload):
-    """Сохранять параметры настройки, введённые на нескольких экранах мастера."""
+    """Изменять общие параметры и сохранять профильные настройки камер."""
 
     def _get_draft_options(self) -> dict[str, Any]:
         """Вернуть текущий черновик, заполненный сохранёнными параметрами интеграции."""
@@ -871,21 +554,11 @@ class DooodsOptionsFlow(OptionsFlowWithReload):
                 self._detector_error = "no_detectors"
         return self._available_detectors, self._detector_error
 
-    async def _async_get_available_profiles(self) -> list[dict[str, Any]]:
-        """Получить поддерживаемые профили один раз за цикл мастера параметров."""
-        if not hasattr(self, "_available_profiles"):
-            self._available_profiles = await _async_get_available_profiles(
-                self.hass,
-                self.config_entry.data[CONF_URL],
-                self.config_entry.data.get(CONF_AUTH_KEY, ""),
-            )
-        return self._available_profiles
-
     @override
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Изменить список камер и расписание сканирования."""
+        """Изменить камеры и перейти к общим настройкам детектора и архива."""
         draft = self._get_draft_options()
         if user_input is not None:
             if not user_input.get(CONF_SOURCE):
@@ -898,12 +571,19 @@ class DooodsOptionsFlow(OptionsFlowWithReload):
                     errors={"base": "no_cameras"},
                 )
             draft.update(user_input)
-            draft[CONF_MOTION_SENSORS] = _normalize_motion_sensors(
-                draft.get(CONF_MOTION_SENSORS, {}),
-                draft[CONF_SOURCE],
+            cameras = draft[CONF_SOURCE]
+            draft[CONF_MOTION_SENSORS] = resolve_motion_sensors(
+                self.hass,
+                cameras,
+                _normalize_motion_sensors(
+                    draft.get(CONF_MOTION_SENSORS, {}), cameras
+                ),
             )
-            self._motion_camera_index = 0
-            return await self.async_step_motion()
+            draft[CONF_CAMERA_PROFILES] = normalize_camera_profiles(
+                draft.get(CONF_CAMERA_PROFILES, {}),
+                cameras,
+            )
+            return await self.async_step_settings()
 
         return self.async_show_form(
             step_id="init",
@@ -914,218 +594,44 @@ class DooodsOptionsFlow(OptionsFlowWithReload):
         )
 
     @override
-    async def async_step_motion(
+    async def async_step_settings(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Найти сенсор движения камеры или предложить выбрать внешний."""
-        draft = self._get_draft_options()
-        cameras = draft.get(CONF_SOURCE, [])
-        if not cameras:
-            return await self.async_step_detection()
-
-        camera_index = getattr(self, "_motion_camera_index", 0)
-        motion_sensors = dict(draft.get(CONF_MOTION_SENSORS, {}))
-        if user_input is not None:
-            camera_entity_id = cameras[camera_index]
-            motion_entity_id = user_input.get(CONF_MOTION_SENSOR)
-            if isinstance(motion_entity_id, str) and motion_entity_id.strip():
-                motion_sensors[camera_entity_id] = motion_entity_id.strip()
-            else:
-                motion_sensors.pop(camera_entity_id, None)
-            draft[CONF_MOTION_SENSORS] = motion_sensors
-            camera_index += 1
-            if camera_index >= len(cameras):
-                self._motion_camera_index = 0
-                self._profile_camera_index = 0
-                await self._async_get_available_profiles()
-                return await self.async_step_profiles()
-            self._motion_camera_index = camera_index
-
-        camera_entity_id = cameras[camera_index]
-        motion_entity_id = motion_sensors.get(camera_entity_id)
-        motion_candidates = camera_motion_sensors(self.hass, camera_entity_id)
-        candidate_ids = {candidate["entity_id"] for candidate in motion_candidates}
-        if motion_candidates and motion_entity_id not in candidate_ids:
-            motion_entity_id = (
-                motion_candidates[0]["entity_id"]
-                if len(motion_candidates) == 1
-                else None
-            )
-        suggested_values = (
-            {CONF_MOTION_SENSOR: motion_entity_id} if motion_entity_id else {}
-        )
-        return self.async_show_form(
-            step_id="motion",
-            data_schema=self.add_suggested_values_to_schema(
-                _motion_sensor_schema(motion_candidates, motion_entity_id),
-                suggested_values,
-            ),
-            description_placeholders={
-                "camera_name": _camera_display_name(self.hass, camera_entity_id),
-                "camera_entity_id": camera_entity_id,
-                "camera_index": str(camera_index + 1),
-                "camera_count": str(len(cameras)),
-            },
-        )
-
-    @override
-    async def async_step_profiles(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        """Назначить выбранный профиль полигональной фильтрации каждой камере."""
-        draft = self._get_draft_options()
-        cameras = draft.get(CONF_SOURCE, [])
-        if not cameras:
-            return await self.async_step_detection()
-
-        profiles = await self._async_get_available_profiles()
-        profile_map = normalize_camera_profiles(
-            draft.get(CONF_CAMERA_PROFILES, {}),
-            cameras,
-        )
-        if not profiles and not profile_map:
-            draft[CONF_CAMERA_PROFILES] = {}
-            return await self.async_step_detection()
-
-        camera_index = getattr(self, "_profile_camera_index", 0)
-        if user_input is not None:
-            camera_entity_id = cameras[camera_index]
-            selected_profile_id = user_input.get(CONF_PROFILE_ID, NO_PROFILE_VALUE)
-            if selected_profile_id == NO_PROFILE_VALUE:
-                profile_map.pop(camera_entity_id, None)
-            else:
-                profile_map[camera_entity_id] = selected_profile_id
-            draft[CONF_CAMERA_PROFILES] = profile_map
-            camera_index += 1
-            if camera_index >= len(cameras):
-                self._profile_camera_index = 0
-                return await self.async_step_detection()
-            self._profile_camera_index = camera_index
-
-        camera_entity_id = cameras[camera_index]
-        current_profile_id = profile_map.get(camera_entity_id)
-        return self.async_show_form(
-            step_id="profiles",
-            data_schema=self.add_suggested_values_to_schema(
-                _profile_schema(profiles, current_profile_id),
-                {
-                    CONF_PROFILE_ID: current_profile_id or NO_PROFILE_VALUE,
-                },
-            ),
-            description_placeholders={
-                "camera_name": _camera_display_name(self.hass, camera_entity_id),
-                "camera_entity_id": camera_entity_id,
-                "camera_index": str(camera_index + 1),
-                "camera_count": str(len(cameras)),
-            },
-        )
-
-    @override
-    async def async_step_detection(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        """Изменить детектор, тайм-аут и порог уверенности."""
+        """Изменить детектор и настройки архива на одной форме."""
         draft = self._get_draft_options()
         detectors, detector_error = await self._async_get_available_detectors()
         if user_input is not None:
             previous_detector = draft.get(CONF_DETECTOR, "")
             draft.update(user_input)
-            if draft[CONF_DETECTOR] != previous_detector:
+            if draft.get(CONF_DETECTOR) != previous_detector:
+                # Старый список меток может не относиться к новому детектору.
                 draft[CONF_LABELS] = []
-            return await self.async_step_labels()
+            return self.async_create_entry(
+                title="",
+                data=_normalize_options(draft),
+            )
 
         errors: dict[str, str] = {}
+        selected_detector = draft.get(CONF_DETECTOR, "")
         if detectors:
             detector_names = [detector["name"] for detector in detectors]
-            selected_detector = draft.get(CONF_DETECTOR, "")
             if selected_detector not in detector_names:
                 if selected_detector:
                     errors["base"] = "detector_not_found"
                 selected_detector = detector_names[0]
                 draft[CONF_DETECTOR] = selected_detector
                 draft[CONF_LABELS] = []
-            schema = _detector_schema(detectors, selected_detector)
+            detector_fields = _detector_fields(detectors, selected_detector)
         else:
-            schema = _manual_detection_schema(draft.get(CONF_DETECTOR, ""))
+            detector_fields = _manual_detection_fields(selected_detector)
             if detector_error is not None:
                 errors["base"] = detector_error
 
         return self.async_show_form(
-            step_id="detection",
-            data_schema=self.add_suggested_values_to_schema(schema, draft),
-            errors=errors,
-        )
-
-    @override
-    async def async_step_labels(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        """Изменить метки, поддерживаемые выбранным детектором."""
-        draft = self._get_draft_options()
-        detectors, detector_error = await self._async_get_available_detectors()
-        if user_input is not None:
-            draft.update(user_input)
-            draft[CONF_LABELS] = _label_values(draft.get(CONF_LABELS, []))
-            return await self.async_step_area()
-
-        available_labels = _labels_for_detector(
-            detectors,
-            draft.get(CONF_DETECTOR, ""),
-        )
-        selected_labels = _label_values(draft.get(CONF_LABELS, []))
-        if available_labels:
-            selected_labels = [
-                label for label in selected_labels if label in available_labels
-            ]
-            suggested_values = {**draft, CONF_LABELS: selected_labels}
-        else:
-            suggested_values = {**draft, CONF_LABELS: _multiline(selected_labels)}
-
-        errors = {"base": detector_error} if detector_error else {}
-        return self.async_show_form(
-            step_id="labels",
+            step_id="settings",
             data_schema=self.add_suggested_values_to_schema(
-                _labels_schema(available_labels),
-                suggested_values,
-            ),
-            errors=errors,
-        )
-
-    @override
-    async def async_step_area(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        """Изменить общую область распознавания."""
-        draft = self._get_draft_options()
-        if user_input is not None:
-            draft.update(user_input)
-            return await self.async_step_output()
-
-        return self.async_show_form(
-            step_id="area",
-            data_schema=self.add_suggested_values_to_schema(
-                AREA_OPTIONS_SCHEMA,
+                _options_settings_schema(detector_fields),
                 draft,
             ),
-        )
-
-    @override
-    async def async_step_output(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        """Изменить пути вывода и сохранить параметры интеграции."""
-        draft = self._get_draft_options()
-        if user_input is not None:
-            draft.update(user_input)
-            return self.async_create_entry(
-                title="",
-                data=_normalize_options(draft),
-            )
-
-        return self.async_show_form(
-            step_id="output",
-            data_schema=self.add_suggested_values_to_schema(
-                OUTPUT_SCHEMA,
-                draft,
-            ),
+            errors=errors,
         )
