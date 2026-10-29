@@ -10,11 +10,11 @@ from detectors.tflite import TensorflowLite
 
 try:
     from .annotations import AnnotationCanvas, AnnotationTranslations
-    from .box_merging import build_display_boxes
+    from .box_merging import build_display_boxes, pad_display_box
     from .zones import filter_detections_by_zones
 except ImportError:  # запуск приложения как набора модулей из каталога application
     from annotations import AnnotationCanvas, AnnotationTranslations
-    from box_merging import build_display_boxes
+    from box_merging import build_display_boxes, pad_display_box
     from zones import filter_detections_by_zones
 
 logger = logging.getLogger('doods.doods')
@@ -314,16 +314,25 @@ class Doods:
                         )
 
         if self.config.boxes.enabled:
-            display_boxes = build_display_boxes(
-                ret.detections,
-                merge_overlapping=getattr(
-                    self.config.boxes,
-                    "mergeOverlapping",
-                    True,
-                ),
-            )
+            display_boxes = [
+                pad_display_box(
+                    box,
+                    getattr(self.config.boxes, "boxPaddingPercent", 0.0),
+                )
+                for box in build_display_boxes(
+                    ret.detections,
+                    merge_overlapping=getattr(
+                        self.config.boxes,
+                        "mergeOverlapping",
+                        True,
+                    ),
+                )
+            ]
             for box in display_boxes:
-                if self.config.boxes.fontThickness:
+                if (
+                    getattr(self.config.boxes, "showLabels", True)
+                    and self.config.boxes.fontThickness
+                ):
                     label_text = display_label(box.label)
                     if box.count > 1:
                         label_text += f" ×{box.count}"

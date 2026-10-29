@@ -1,19 +1,14 @@
-name: "DOOODS2 Overhaul"
+name: "DOOODS2"
 slug: "dooods2"
-version: "0.1.11-dev"
-description: "Экспериментальный DOOODS2 с редактором профилей и интерфейсом Home Assistant Ingress"
+version: "0.1.15.2-dev"
+description: ""
 arch:
   - aarch64
   - amd64
 startup: services
 boot: auto
 stage: experimental
-ingress: true
-ingress_port: 8080
-ingress_entry: /profiles.html
-ingress_stream: true
-panel_icon: mdi:eye
-panel_title: "DOOODS2 Overhaul"
+ingress: false
 watchdog: "http://[HOST]:8080/health"
 map:
   - type: share
@@ -33,7 +28,9 @@ options:
     annotation_labels: "{}"
     boxes:
       enabled: true
+      showLabels: true
       mergeOverlapping: true
+      boxPaddingPercent: 0
       boxColor: "#00ff00"
       boxThickness: 1
       fontScale: 1.2
@@ -74,7 +71,9 @@ schema:
     annotation_labels: str?
     boxes:
       enabled: bool
+      showLabels: bool?
       mergeOverlapping: bool?
+      boxPaddingPercent: float?
       boxColor: str
       boxThickness: float
       fontScale: float

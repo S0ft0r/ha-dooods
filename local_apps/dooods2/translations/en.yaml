@@ -40,9 +40,15 @@ configuration:
         fields:
           enabled:
             name: Draw boxes
+          showLabels:
+            name: Show object labels
+            description: Show the object class and confidence, or the merged-object count, above each detection box. Hiding the label does not hide the box or change API results.
           mergeOverlapping:
             name: Merge overlapping boxes of the same type
             description: Draw one box and one count label for overlapping detections of the same class. API detections and counts remain unchanged.
+          boxPaddingPercent:
+            name: Box padding (%)
+            description: Expand each side by this percentage of the detected box width or height. The padding affects only the annotated image, not API detections or zone filtering; it is clipped to the image bounds.
           boxColor:
             name: Box color
           boxThickness:

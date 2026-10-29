@@ -85,6 +85,7 @@ def main():
         logger.error("Could not initialize server.auth_key: %s", err)
         raise SystemExit(1) from None
 
+    # The App exposes only its protected API; the HA integration provides the UI.
     # Initialize the versioned profile store and detection service.
     profiles_file = config.server.profiles_file or "/data/profiles.json"
     profile_store = ProfileStore(profiles_file)

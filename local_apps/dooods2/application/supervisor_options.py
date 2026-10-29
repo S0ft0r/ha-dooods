@@ -74,20 +74,24 @@ def _request_supervisor(
     return data
 
 
-def _get_app_options(token: str, opener: Callable[..., Any] | None) -> dict[str, Any]:
-    """Получить собственные сохранённые настройки App, включая парольные поля."""
+def _get_app_info(token: str, opener: Callable[..., Any] | None) -> dict[str, Any]:
+    """Получить сведения о собственном App и проверить его настройки."""
     app_info = _request_supervisor(
         "GET",
         _APP_INFO_PATH,
         token,
         opener=opener,
     )
-    options = app_info.get("options")
-    if not isinstance(options, dict):
+    if not isinstance(app_info.get("options"), dict):
         raise SupervisorOptionsError(
             "Supervisor API не вернул настройки этого App."
         )
-    return copy.deepcopy(options)
+    return app_info
+
+
+def _get_app_options(token: str, opener: Callable[..., Any] | None) -> dict[str, Any]:
+    """Получить собственные сохранённые настройки App, включая парольные поля."""
+    return copy.deepcopy(_get_app_info(token, opener)["options"])
 
 
 def ensure_api_key(

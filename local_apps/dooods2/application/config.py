@@ -15,7 +15,9 @@ class DoodsDetectorConfig(BaseSettings):
 
 class DoodsBoxesConfig(BaseSettings):
     enabled: Optional[bool] = True
+    showLabels: Optional[bool] = True
     mergeOverlapping: Optional[bool] = True
+    boxPaddingPercent: Optional[float] = 0.0
     boxColor: Optional[Union[List[int], str]] = [0, 255, 0]
     boxThickness: Optional[int] = 1
     fontScale: Optional[float] = 1.2

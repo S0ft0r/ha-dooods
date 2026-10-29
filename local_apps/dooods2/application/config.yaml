@@ -2,6 +2,8 @@ doods:
   annotation_labels: "{}"
   boxes:
     enabled: True
+    showLabels: True
+    boxPaddingPercent: 0
     boxColor: [0, 255, 0]
     boxThickness: 1
     fontScale: 1.2

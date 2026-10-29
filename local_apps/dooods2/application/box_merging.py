@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
+import math
 from typing import Any
 
 
@@ -18,6 +19,38 @@ class DisplayBox:
     right: float
     bottom: float
     count: int = 1
+
+
+def pad_display_box(box: DisplayBox, padding_percent: object) -> DisplayBox:
+    """Расширить рамку только для изображения, не выходя за границы кадра.
+
+    Процент применяется к ширине и высоте исходной рамки отдельно с каждой
+    стороны. Невалидное значение трактуется как нулевой отступ; диапазон
+    ограничен 0–100 процентов.
+    """
+    try:
+        percent = float(padding_percent)
+    except (TypeError, ValueError, OverflowError):
+        percent = 0.0
+    if not math.isfinite(percent):
+        percent = 0.0
+    ratio = min(100.0, max(0.0, percent)) / 100.0
+
+    width = max(0.0, box.right - box.left)
+    height = max(0.0, box.bottom - box.top)
+    left = max(0.0, box.left - width * ratio)
+    top = max(0.0, box.top - height * ratio)
+    right = min(1.0, box.right + width * ratio)
+    bottom = min(1.0, box.bottom + height * ratio)
+    return DisplayBox(
+        label=box.label,
+        confidence=box.confidence,
+        left=left,
+        top=top,
+        right=right,
+        bottom=bottom,
+        count=box.count,
+    )
 
 
 def build_display_boxes(
