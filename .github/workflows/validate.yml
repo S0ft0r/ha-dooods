@@ -1,0 +1,49 @@
+name: Repository validation
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: Tests and static checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: analysis/requirements-test.txt
+
+      - name: Install lightweight test dependencies
+        run: python -m pip install -r analysis/requirements-test.txt
+
+      - name: Validate repository structure and release archives
+        run: python analysis/scripts/validate_repository.py
+
+      - name: Run tests
+        run: python -m pytest -q -rs analysis/tests
+
+      - name: Compile Python sources
+        run: python -m compileall -q analysis/application custom_integration/dooods analysis/tests analysis/scripts
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Check external and inline JavaScript syntax
+        run: python analysis/scripts/validate_javascript.py
