@@ -35,12 +35,14 @@ from .api import (
     async_get_detectors,
 )
 from .archive import normalize_archive_directory, normalize_archive_limit
+from .camera_scan_intervals import normalize_camera_scan_intervals
 from .const import (
     CONF_AREA,
     CONF_ARCHIVE_MAX_AGE_DAYS,
     CONF_ARCHIVE_MAX_COUNT,
     CONF_AUTH_KEY,
     CONF_CAMERA_PROFILES,
+    CONF_CAMERA_SCAN_INTERVALS,
     CONF_BOTTOM,
     CONF_CONFIDENCE,
     CONF_COVERS,
@@ -50,7 +52,6 @@ from .const import (
     CONF_LEFT,
     CONF_MOTION_SENSORS,
     CONF_RIGHT,
-    CONF_SCAN_INTERVAL,
     CONF_SOURCE,
     CONF_TIMEOUT,
     CONF_TOP,
@@ -59,7 +60,6 @@ from .const import (
     DEFAULT_ARCHIVE_MAX_COUNT,
     DEFAULT_AREA,
     DEFAULT_CONFIDENCE,
-    DEFAULT_SCAN_INTERVAL,
     DEFAULT_TIMEOUT,
     DOMAIN,
 )
@@ -99,14 +99,11 @@ USER_SCHEMA = probatio.Schema(
 
 RECONFIGURE_SCHEMA = USER_SCHEMA
 
-CAMERA_SCHEDULE_SCHEMA = probatio.Schema(
+CAMERA_SELECTION_SCHEMA = probatio.Schema(
     {
         probatio.Required(CONF_SOURCE, default=[]): EntitySelector(
             EntitySelectorConfig(domain="camera", multiple=True)
         ),
-        probatio.Required(
-            CONF_SCAN_INTERVAL, default=DEFAULT_SCAN_INTERVAL
-        ): probatio.All(probatio.Coerce(int), probatio.Range(min=1, max=86400)),
     }
 )
 
@@ -302,9 +299,11 @@ def _options_for_form(options: Mapping[str, Any]) -> dict[str, Any]:
         CONF_CAMERA_PROFILES: normalize_camera_profiles(
             options.get(CONF_CAMERA_PROFILES, {}), cameras
         ),
+        CONF_CAMERA_SCAN_INTERVALS: normalize_camera_scan_intervals(
+            options.get(CONF_CAMERA_SCAN_INTERVALS, {}), cameras
+        ),
         CONF_DETECTOR: options.get(CONF_DETECTOR, ""),
         CONF_TIMEOUT: options.get(CONF_TIMEOUT, DEFAULT_TIMEOUT),
-        CONF_SCAN_INTERVAL: options.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL),
         CONF_CONFIDENCE: options.get(CONF_CONFIDENCE, DEFAULT_CONFIDENCE),
         CONF_LABELS: _label_values(options.get(CONF_LABELS, [])),
         CONF_AREA: {**DEFAULT_AREA, **area}
@@ -339,9 +338,11 @@ def _normalize_options(options: Mapping[str, Any]) -> dict[str, Any]:
         CONF_CAMERA_PROFILES: normalize_camera_profiles(
             options.get(CONF_CAMERA_PROFILES, {}), cameras
         ),
+        CONF_CAMERA_SCAN_INTERVALS: normalize_camera_scan_intervals(
+            options.get(CONF_CAMERA_SCAN_INTERVALS, {}), cameras
+        ),
         CONF_DETECTOR: options.get(CONF_DETECTOR, ""),
         CONF_TIMEOUT: options.get(CONF_TIMEOUT, DEFAULT_TIMEOUT),
-        CONF_SCAN_INTERVAL: options.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL),
         CONF_CONFIDENCE: options.get(CONF_CONFIDENCE, DEFAULT_CONFIDENCE),
         CONF_LABELS: _label_values(options.get(CONF_LABELS, [])),
         CONF_AREA: normalized_area,
@@ -420,13 +421,13 @@ class DooodsConfigFlow(ConfigFlow, domain=DOMAIN):
     async def async_step_cameras(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Получить список камер и интервал периодического сканирования."""
+        """Получить список камер для текущей записи интеграции."""
         if user_input is not None:
             if not user_input.get(CONF_SOURCE):
                 return self.async_show_form(
                     step_id="cameras",
                     data_schema=self.add_suggested_values_to_schema(
-                        CAMERA_SCHEDULE_SCHEMA,
+                        CAMERA_SELECTION_SCHEMA,
                         user_input,
                     ),
                     errors={"base": "no_cameras"},
@@ -449,7 +450,7 @@ class DooodsConfigFlow(ConfigFlow, domain=DOMAIN):
         return self.async_show_form(
             step_id="cameras",
             data_schema=self.add_suggested_values_to_schema(
-                CAMERA_SCHEDULE_SCHEMA,
+                CAMERA_SELECTION_SCHEMA,
                 self._draft_options,
             ),
         )
@@ -565,7 +566,7 @@ class DooodsOptionsFlow(OptionsFlowWithReload):
                 return self.async_show_form(
                     step_id="init",
                     data_schema=self.add_suggested_values_to_schema(
-                        CAMERA_SCHEDULE_SCHEMA,
+                        CAMERA_SELECTION_SCHEMA,
                         user_input,
                     ),
                     errors={"base": "no_cameras"},
@@ -588,7 +589,7 @@ class DooodsOptionsFlow(OptionsFlowWithReload):
         return self.async_show_form(
             step_id="init",
             data_schema=self.add_suggested_values_to_schema(
-                CAMERA_SCHEDULE_SCHEMA,
+                CAMERA_SELECTION_SCHEMA,
                 draft,
             ),
         )

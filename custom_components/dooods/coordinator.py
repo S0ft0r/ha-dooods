@@ -31,6 +31,7 @@ from .archive import (
     normalize_archive_directory,
 )
 from .camera_result import CameraScanResult, retain_last_accepted_image
+from .camera_scan_intervals import camera_scan_interval
 from .const import (
     CONF_BOTTOM,
     CONF_COVERS,
@@ -69,7 +70,7 @@ class DooodsCoordinator(DataUpdateCoordinator[dict[str, CameraScanResult]]):
         confidence: float,
         area: Mapping[str, Any],
         timeout: int,
-        scan_interval: int,
+        camera_scan_intervals: Mapping[str, int] | None,
         parent_device_id: str,
         parent_device_identifier: str,
         preview_enabled: bool = False,
@@ -111,7 +112,18 @@ class DooodsCoordinator(DataUpdateCoordinator[dict[str, CameraScanResult]]):
         self.confidence = confidence
         self.area = dict(area)
         self.timeout = timeout
-        self.scan_interval = scan_interval
+        configured_intervals = (
+            camera_scan_intervals
+            if isinstance(camera_scan_intervals, Mapping)
+            else {}
+        )
+        self.camera_scan_intervals = {
+            camera_entity_id: camera_scan_interval(
+                camera_entity_id,
+                configured_intervals,
+            )
+            for camera_entity_id in cameras
+        }
         self.parent_device_id = parent_device_id
         self.parent_device_identifier = parent_device_identifier
         self.preview_enabled = preview_enabled and bool(auth_key)
@@ -128,7 +140,8 @@ class DooodsCoordinator(DataUpdateCoordinator[dict[str, CameraScanResult]]):
         self._pending_camera_scans: set[str] = set()
         self._force_full_scan = False
         self._active_full_scan = False
-        self._cancel_periodic_scan: Callable[[], None] | None = None
+        self._periodic_scanning_started = False
+        self._cancel_periodic_scans: dict[str, Callable[[], None]] = {}
         self._camera_retry_unsubscribers: dict[str, Callable[[], None]] = {}
         self._camera_retry_delays: dict[str, int] = {}
         self._initial_scan_task: asyncio.Task[Any] | None = None
@@ -191,18 +204,33 @@ class DooodsCoordinator(DataUpdateCoordinator[dict[str, CameraScanResult]]):
                 self._async_handle_profile_labels_refresh,
                 _PROFILE_LABEL_REFRESH_INTERVAL,
             )
-        if self._cancel_periodic_scan is not None:
+        if self._periodic_scanning_started:
             return
         if self._config_entry.pref_disable_polling:
             _LOGGER.debug(
                 "Периодическое сканирование DOOODS отключено: %s", self.entry_id
             )
             return
-        self._cancel_periodic_scan = async_track_time_interval(
-            self.hass,
-            self._async_handle_periodic_scan,
-            timedelta(seconds=self.scan_interval),
-        )
+        self._periodic_scanning_started = True
+
+        for camera_entity_id in self.cameras:
+            interval = camera_scan_interval(
+                camera_entity_id,
+                self.camera_scan_intervals,
+            )
+
+            @callback
+            def _handle_camera_scan(
+                now: datetime,
+                camera_id: str = camera_entity_id,
+            ) -> None:
+                self._async_handle_periodic_camera_scan(camera_id, now)
+
+            self._cancel_periodic_scans[camera_entity_id] = async_track_time_interval(
+                self.hass,
+                _handle_camera_scan,
+                timedelta(seconds=interval),
+            )
 
     @callback
     def _schedule_archive_cleanup(self) -> None:
@@ -368,11 +396,14 @@ class DooodsCoordinator(DataUpdateCoordinator[dict[str, CameraScanResult]]):
         self._camera_retry_delays.pop(camera_entity_id, None)
 
     @callback
-    def _async_handle_periodic_scan(self, now: datetime) -> None:
-        """Добавить все камеры в очередь по истечении интервала резервного сканирования."""
-        if self._active_full_scan:
-            return
-        self.request_camera_scans(self.cameras, full_scan=True)
+    def _async_handle_periodic_camera_scan(
+        self,
+        camera_entity_id: str,
+        _now: datetime,
+    ) -> None:
+        """Добавить одну камеру в очередь по её индивидуальному интервалу."""
+        if not self._is_shutting_down and camera_entity_id in self.cameras:
+            self.request_camera_scans([camera_entity_id])
 
     @callback
     def request_camera_scans(
@@ -399,9 +430,9 @@ class DooodsCoordinator(DataUpdateCoordinator[dict[str, CameraScanResult]]):
     async def async_shutdown(self) -> None:
         """Остановить таймеры и завершить начальный скан при выгрузке записи."""
         self._is_shutting_down = True
-        if self._cancel_periodic_scan is not None:
-            self._cancel_periodic_scan()
-            self._cancel_periodic_scan = None
+        for cancel_scan in self._cancel_periodic_scans.values():
+            cancel_scan()
+        self._cancel_periodic_scans.clear()
         if self._archive_cleanup_unsubscribe is not None:
             self._archive_cleanup_unsubscribe()
             self._archive_cleanup_unsubscribe = None

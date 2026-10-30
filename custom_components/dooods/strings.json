@@ -14,15 +14,13 @@
         }
       },
       "cameras": {
-        "title": "Cameras and schedule",
-        "description": "Choose cameras and the fallback scan interval. On servers that support profiles, DOOODS creates one profile per camera with a full-frame zone, the person label, and a threshold of 50. A linked motion sensor is selected automatically when available.",
+        "title": "Cameras",
+        "description": "Choose cameras. Set each camera’s periodic scan interval in that camera device’s Settings section; cameras without a saved value use 30 seconds. On servers that support profiles, DOOODS creates one profile per camera with a full-frame zone, the person label, and a threshold of 50. A linked motion sensor is selected automatically when available.",
         "data": {
-          "source": "Camera entities",
-          "scan_interval": "Scan interval (seconds)"
+          "source": "Camera entities"
         },
         "data_description": {
-          "source": "Select one or more camera entities. A separate profile is created for each selected camera when the server supports profiles; edit its zones in the DOOODS panel.",
-          "scan_interval": "Periodic fallback interval between scans of each camera, in seconds."
+          "source": "Select one or more camera entities. Configure each camera’s own interval in its device Settings. A separate profile is created for each selected camera when the server supports profiles; edit its zones in the DOOODS panel."
         }
       },
       "output": {
@@ -70,15 +68,13 @@
   "options": {
     "step": {
       "init": {
-        "title": "Cameras and schedule",
-        "description": "Choose cameras and the fallback scan interval. Each selected camera keeps its own profile on servers that support profiles. Configure a camera’s motion sensor in that camera device’s Settings section.",
+        "title": "Cameras",
+        "description": "Choose cameras. Set each camera’s periodic scan interval in that camera device’s Settings section; cameras without a saved value use 30 seconds. Each selected camera keeps its own profile on servers that support profiles. Configure a camera’s motion sensor in that camera device’s Settings section.",
         "data": {
-          "source": "Camera entities",
-          "scan_interval": "Scan interval (seconds)"
+          "source": "Camera entities"
         },
         "data_description": {
-          "source": "Select the cameras to scan. A separate profile is ensured for each selected camera when the server supports profiles.",
-          "scan_interval": "Periodic fallback interval between scans of each camera, in seconds."
+          "source": "Select the cameras to scan. Configure each camera’s own interval in its device Settings. A separate profile is ensured for each selected camera when the server supports profiles."
         }
       },
       "settings": {
@@ -430,6 +426,11 @@
         "state": {
           "none": "Do not use"
         }
+      }
+    },
+    "number": {
+      "camera_scan_interval": {
+        "name": "Scan interval"
       }
     }
   },

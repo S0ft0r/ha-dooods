@@ -26,18 +26,19 @@ from .api import (
     async_get_profiles,
 )
 from .archive import normalize_archive_directory, normalize_archive_limit
+from .camera_scan_intervals import normalize_camera_scan_intervals
 from .const import (
     CONF_AREA,
     CONF_ARCHIVE_MAX_AGE_DAYS,
     CONF_ARCHIVE_MAX_COUNT,
     CONF_AUTH_KEY,
     CONF_CAMERA_PROFILES,
+    CONF_CAMERA_SCAN_INTERVALS,
     CONF_CONFIDENCE,
     CONF_DETECTOR,
     CONF_FILE_OUT,
     CONF_LABELS,
     CONF_MOTION_SENSORS,
-    CONF_SCAN_INTERVAL,
     CONF_SOURCE,
     CONF_TIMEOUT,
     CONF_URL,
@@ -45,7 +46,6 @@ from .const import (
     DEFAULT_ARCHIVE_MAX_COUNT,
     DEFAULT_AREA,
     DEFAULT_CONFIDENCE,
-    DEFAULT_SCAN_INTERVAL,
     DEFAULT_TIMEOUT,
     DOMAIN,
     MOTION_SENSOR_NONE,
@@ -66,7 +66,13 @@ from .services import async_register_services
 
 _LOGGER = logging.getLogger(__name__)
 _PROFILE_FEATURES = {"profiles", "polygon_zones"}
-PLATFORMS = (Platform.BINARY_SENSOR, Platform.SENSOR, Platform.IMAGE, Platform.SELECT)
+PLATFORMS = (
+    Platform.BINARY_SENSOR,
+    Platform.SENSOR,
+    Platform.IMAGE,
+    Platform.SELECT,
+    Platform.NUMBER,
+)
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
 
@@ -301,6 +307,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: DooodsConfigEntry) -> bo
             camera for camera in cameras if isinstance(camera, str) and camera
         )
     )
+    camera_scan_intervals = normalize_camera_scan_intervals(
+        options.get(CONF_CAMERA_SCAN_INTERVALS, {}),
+        cameras,
+    )
     camera_profiles = normalize_camera_profiles(
         options.get(CONF_CAMERA_PROFILES, {}),
         cameras,
@@ -412,7 +422,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: DooodsConfigEntry) -> bo
         confidence=float(options.get(CONF_CONFIDENCE, DEFAULT_CONFIDENCE)),
         area=normalized_area,
         timeout=int(options.get(CONF_TIMEOUT, DEFAULT_TIMEOUT)),
-        scan_interval=int(options.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL)),
+        camera_scan_intervals=camera_scan_intervals,
         parent_device_id=parent_device_id,
         parent_device_identifier=parent_device_identifier,
         preview_enabled=preview_enabled,
