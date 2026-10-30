@@ -36,13 +36,16 @@ from .api import (
 )
 from .archive import normalize_archive_directory, normalize_archive_limit
 from .camera_scan_intervals import normalize_camera_scan_intervals
+from .camera_switches import normalize_camera_switches
 from .const import (
     CONF_AREA,
     CONF_ARCHIVE_MAX_AGE_DAYS,
     CONF_ARCHIVE_MAX_COUNT,
     CONF_AUTH_KEY,
+    CONF_CAMERA_DETECTION_ENABLED,
     CONF_CAMERA_PROFILES,
     CONF_CAMERA_SCAN_INTERVALS,
+    CONF_CAMERA_STREAM_ENABLED,
     CONF_BOTTOM,
     CONF_CONFIDENCE,
     CONF_COVERS,
@@ -302,6 +305,16 @@ def _options_for_form(options: Mapping[str, Any]) -> dict[str, Any]:
         CONF_CAMERA_SCAN_INTERVALS: normalize_camera_scan_intervals(
             options.get(CONF_CAMERA_SCAN_INTERVALS, {}), cameras
         ),
+        CONF_CAMERA_DETECTION_ENABLED: normalize_camera_switches(
+            options.get(CONF_CAMERA_DETECTION_ENABLED, {}),
+            cameras,
+            default=None,
+        ),
+        CONF_CAMERA_STREAM_ENABLED: normalize_camera_switches(
+            options.get(CONF_CAMERA_STREAM_ENABLED, {}),
+            cameras,
+            default=None,
+        ),
         CONF_DETECTOR: options.get(CONF_DETECTOR, ""),
         CONF_TIMEOUT: options.get(CONF_TIMEOUT, DEFAULT_TIMEOUT),
         CONF_CONFIDENCE: options.get(CONF_CONFIDENCE, DEFAULT_CONFIDENCE),
@@ -340,6 +353,16 @@ def _normalize_options(options: Mapping[str, Any]) -> dict[str, Any]:
         ),
         CONF_CAMERA_SCAN_INTERVALS: normalize_camera_scan_intervals(
             options.get(CONF_CAMERA_SCAN_INTERVALS, {}), cameras
+        ),
+        CONF_CAMERA_DETECTION_ENABLED: normalize_camera_switches(
+            options.get(CONF_CAMERA_DETECTION_ENABLED, {}),
+            cameras,
+            default=None,
+        ),
+        CONF_CAMERA_STREAM_ENABLED: normalize_camera_switches(
+            options.get(CONF_CAMERA_STREAM_ENABLED, {}),
+            cameras,
+            default=None,
         ),
         CONF_DETECTOR: options.get(CONF_DETECTOR, ""),
         CONF_TIMEOUT: options.get(CONF_TIMEOUT, DEFAULT_TIMEOUT),

@@ -27,13 +27,16 @@ from .api import (
 )
 from .archive import normalize_archive_directory, normalize_archive_limit
 from .camera_scan_intervals import normalize_camera_scan_intervals
+from .camera_switches import normalize_camera_switches
 from .const import (
     CONF_AREA,
     CONF_ARCHIVE_MAX_AGE_DAYS,
     CONF_ARCHIVE_MAX_COUNT,
     CONF_AUTH_KEY,
+    CONF_CAMERA_DETECTION_ENABLED,
     CONF_CAMERA_PROFILES,
     CONF_CAMERA_SCAN_INTERVALS,
+    CONF_CAMERA_STREAM_ENABLED,
     CONF_CONFIDENCE,
     CONF_DETECTOR,
     CONF_FILE_OUT,
@@ -72,6 +75,7 @@ PLATFORMS = (
     Platform.IMAGE,
     Platform.SELECT,
     Platform.NUMBER,
+    Platform.SWITCH,
 )
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
@@ -202,7 +206,7 @@ def _setup_motion_triggers(
     coordinator: DooodsCoordinator,
     motion_sensors: Mapping[str, Any],
 ) -> None:
-    """Отслеживать внешние датчики движения и запрашивать сканирование связанных камер."""
+    """Использовать HA motion-сенсор только пока RTSP gate камеры не активен."""
     cameras_by_motion_sensor: dict[str, set[str]] = {}
     for camera_entity_id, motion_entity_id in motion_sensors.items():
         if (
@@ -220,19 +224,24 @@ def _setup_motion_triggers(
 
     @callback
     def _handle_motion_state_change(event: Event) -> None:
-        """Запросить сканирование только при переходе выбранного датчика движения из off в on."""
+        """Запросить сканирование при переходе выбранного датчика движения в on."""
         old_state = event.data.get("old_state")
         new_state = event.data.get("new_state")
-        if (
-            old_state is None
-            or old_state.state != "off"
-            or new_state is None
-            or new_state.state != "on"
-        ):
-            return
         camera_entity_ids = cameras_by_motion_sensor.get(event.data["entity_id"])
-        if camera_entity_ids:
-            coordinator.request_camera_scans(camera_entity_ids)
+        if not camera_entity_ids:
+            return
+        sensor_state = new_state.state if new_state is not None else None
+        for camera_entity_id in camera_entity_ids:
+            coordinator.motion_sensor_state_changed(camera_entity_id, sensor_state)
+        if (
+            new_state is not None
+            and new_state.state == "on"
+            and (old_state is None or old_state.state != "on")
+        ):
+            scan_camera_ids = coordinator.camera_ids_for_ha_motion_trigger(
+                camera_entity_ids
+            )
+            coordinator.request_camera_scans(scan_camera_ids)
 
     entry.async_on_unload(
         async_track_state_change_event(
@@ -268,10 +277,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: DooodsConfigEntry) -> bo
     capabilities = await async_get_capabilities(hass, base_url, auth_key)
     preview_enabled = bool(auth_key) and "camera_preview" in capabilities
     annotation_localization_enabled = "localized_annotations" in capabilities
+    motion_stream_enabled = bool(auth_key) and "rtsp_motion_stream" in capabilities
     if preview_enabled:
         _LOGGER.debug("Сервер DOOODS2 объявил поддержку временного preview API")
     if annotation_localization_enabled:
         _LOGGER.debug("Сервер DOOODS2 объявил поддержку локализованных JPEG-аннотаций")
+    if motion_stream_enabled:
+        _LOGGER.debug("Сервер DOOODS2 поддерживает непрерывный RTSP motion stream")
 
     if not detectors:
         raise ConfigEntryNotReady(
@@ -307,9 +319,23 @@ async def async_setup_entry(hass: HomeAssistant, entry: DooodsConfigEntry) -> bo
             camera for camera in cameras if isinstance(camera, str) and camera
         )
     )
+    motion_sensors = resolve_motion_sensors(
+        hass,
+        cameras,
+        options.get(CONF_MOTION_SENSORS, {}),
+    )
     camera_scan_intervals = normalize_camera_scan_intervals(
         options.get(CONF_CAMERA_SCAN_INTERVALS, {}),
         cameras,
+    )
+    camera_detection_enabled = normalize_camera_switches(
+        options.get(CONF_CAMERA_DETECTION_ENABLED, {}),
+        cameras,
+    )
+    camera_stream_enabled = normalize_camera_switches(
+        options.get(CONF_CAMERA_STREAM_ENABLED, {}),
+        cameras,
+        default=None,
     )
     camera_profiles = normalize_camera_profiles(
         options.get(CONF_CAMERA_PROFILES, {}),
@@ -427,6 +453,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: DooodsConfigEntry) -> bo
         parent_device_identifier=parent_device_identifier,
         preview_enabled=preview_enabled,
         annotation_localization_enabled=annotation_localization_enabled,
+        motion_stream_enabled=motion_stream_enabled,
+        motion_sensors=motion_sensors,
+        camera_detection_enabled=camera_detection_enabled,
+        camera_stream_enabled=camera_stream_enabled,
         camera_profiles=camera_profiles,
         camera_labels=camera_labels,
         archive_directory=normalize_archive_directory(
@@ -448,11 +478,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: DooodsConfigEntry) -> bo
         await async_register_profile_panel(hass)
     except Exception:  # Keep camera detection available if panel registration fails.
         _LOGGER.exception("Не удалось зарегистрировать панель профилей DOOODS")
-    motion_sensors = resolve_motion_sensors(
-        hass,
-        cameras,
-        options.get(CONF_MOTION_SENSORS, {}),
-    )
     if motion_sensors:
         _setup_motion_triggers(hass, entry, coordinator, motion_sensors)
     start_listener_pending = False

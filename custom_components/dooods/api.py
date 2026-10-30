@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import base64
 import binascii
-from collections.abc import Mapping
+import json
+import math
+from collections.abc import AsyncIterator, Mapping
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit, urlunsplit
 
 import aiohttp
 from homeassistant.core import HomeAssistant
@@ -49,7 +52,7 @@ class DooodsAuthError(DooodsApiError):
 
 
 class DooodsInvalidResponseError(DooodsApiError):
-    """Исключение при неожиданной структуре ответа сервера."""
+    """Исключение при неожиданной структуре ответа."""
 
 
 class DooodsDetectionError(DooodsApiError):
@@ -522,3 +525,127 @@ async def async_detect(
         detections=detections,
         annotated_image=_decode_annotated_image(payload.get("image")),
     )
+
+
+async def async_iter_motion_stream_events(
+    hass: HomeAssistant,
+    base_url: str,
+    auth_key: str,
+    *,
+    source_id: str,
+    stream_source: str,
+    roi_polygons: list[list[list[float]]],
+) -> AsyncIterator[dict[str, Any]]:
+    """Yield authenticated status and JPEG-candidate events from the App RTSP reader.
+
+    The RTSP URL is sent in the websocket message body, never in the URL or logs.
+    """
+    if not auth_key:
+        raise DooodsAuthError("invalid_auth")
+    parsed = urlsplit(base_url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise DooodsConnectionError("connection_failed")
+    ws_scheme = "wss" if parsed.scheme == "https" else "ws"
+    ws_path = f"{parsed.path.rstrip('/')}/motion/stream"
+    ws_url = urlunsplit((ws_scheme, parsed.netloc, ws_path, "", ""))
+    headers = {"doods-auth-key": auth_key}
+    request_payload = {
+        "source_id": source_id,
+        "stream_source": stream_source,
+        "sample_interval": 0.2,
+        "candidate_interval": 0.5,
+        "max_width": 320,
+        "pixel_threshold": 22,
+        "changed_fraction": 0.004,
+        "confirm_frames": 1,
+        "quiet_frames": 4,
+        "roi_polygons": roi_polygons,
+    }
+    session = async_get_clientsession(hass)
+    ws_connect_options: dict[str, Any] = {
+        "headers": headers,
+        "heartbeat": 20,
+        "max_msg_size": 12_000_000,
+    }
+    ws_timeout_type = getattr(aiohttp, "ClientWSTimeout", None)
+    if ws_timeout_type is not None:
+        ws_connect_options["timeout"] = ws_timeout_type(
+            ws_receive=None,
+            ws_close=10,
+        )
+    else:
+        # Compatibility with the older aiohttp releases still used by HA.
+        ws_connect_options["timeout"] = 10
+        ws_connect_options["receive_timeout"] = None
+    try:
+        async with session.ws_connect(ws_url, **ws_connect_options) as websocket:
+            await websocket.send_json(request_payload)
+            async for message in websocket:
+                if message.type == aiohttp.WSMsgType.TEXT:
+                    try:
+                        event = json.loads(message.data)
+                    except (TypeError, ValueError) as err:
+                        raise DooodsInvalidResponseError(
+                            "invalid_motion_stream_event"
+                        ) from err
+                    if (
+                        not isinstance(event, dict)
+                        or event.get("source_id") != source_id
+                        or event.get("type")
+                        not in {"status", "motion", "candidate", "error"}
+                    ):
+                        raise DooodsInvalidResponseError("invalid_motion_stream_event")
+                    if event["type"] == "candidate":
+                        encoded = event.get("image")
+                        timestamp = event.get("captured_at")
+                        score = event.get("motion_score")
+                        if (
+                            not isinstance(encoded, str)
+                            or len(encoded) > 12_000_000
+                            or not isinstance(timestamp, str)
+                            or isinstance(score, bool)
+                            or not isinstance(score, (int, float))
+                            or not math.isfinite(score)
+                            or score < 0
+                        ):
+                            raise DooodsInvalidResponseError(
+                                "invalid_motion_stream_event"
+                            )
+                        try:
+                            image = base64.b64decode(encoded, validate=True)
+                            captured_at = datetime.fromisoformat(
+                                timestamp.replace("Z", "+00:00")
+                            )
+                        except (binascii.Error, ValueError) as err:
+                            raise DooodsInvalidResponseError(
+                                "invalid_motion_stream_event"
+                            ) from err
+                        if (
+                            not image.startswith(b"\xff\xd8")
+                            or captured_at.tzinfo is None
+                        ):
+                            raise DooodsInvalidResponseError(
+                                "invalid_motion_stream_event"
+                            )
+                        event = {
+                            "type": "candidate",
+                            "source_id": source_id,
+                            "image": image,
+                            "captured_at": captured_at.astimezone(UTC),
+                            "motion_score": float(score),
+                        }
+                    yield event
+                elif message.type in {
+                    aiohttp.WSMsgType.CLOSE,
+                    aiohttp.WSMsgType.CLOSED,
+                    aiohttp.WSMsgType.ERROR,
+                }:
+                    raise DooodsConnectionError("connection_failed")
+    except DooodsApiError:
+        raise
+    except aiohttp.WSServerHandshakeError as err:
+        if err.status in {401, 403}:
+            raise DooodsAuthError("invalid_auth") from err
+        raise DooodsConnectionError("connection_failed") from err
+    except (aiohttp.ClientError, TimeoutError) as err:
+        raise DooodsConnectionError("connection_failed") from err
