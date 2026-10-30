@@ -139,3 +139,15 @@ def resolve_motion_sensors(
             resolved[camera_entity_id] = sensor_entity_id
 
     return resolved
+
+
+def motion_sensor_is_usable(hass: Any, entity_id: Any) -> bool:
+    """Считать выбранный HA motion-сенсор рабочим при конкретном состоянии on/off."""
+    if (
+        not isinstance(entity_id, str)
+        or not entity_id.startswith("binary_sensor.")
+        or entity_id == MOTION_SENSOR_NONE
+    ):
+        return False
+    state = hass.states.get(entity_id)
+    return state is not None and state.state in {"on", "off"}
