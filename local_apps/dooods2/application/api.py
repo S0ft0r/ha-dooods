@@ -4,6 +4,9 @@ import json
 import base64
 import logging
 import asyncio
+import math
+import threading
+from urllib.parse import urlsplit
 from fastapi import (
     status,
     FastAPI,
@@ -16,6 +19,8 @@ from fastapi import (
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from streamer import Streamer
+from motion_gate import MotionGate
+from motion_stream import MotionStreamWorker
 from capabilities import capabilities_payload
 from auth import api_key_matches, is_authenticated_ingress_request
 from profiles import ProfileStoreError, ProfileValidationError
@@ -111,6 +116,7 @@ class API():
                 "/detect",
                 "/image",
                 "/stream",
+                "/motion/stream",
                 "/memory",
                 "/metrics",
                 "/docs",
@@ -167,6 +173,7 @@ class API():
                 profiles_enabled=profiles_enabled(),
                 preview_enabled=preview_enabled(),
                 localized_annotations_enabled=True,
+                motion_stream_enabled=bool(self.auth_key),
             )
 
         @self.api.get("/health")
@@ -643,6 +650,172 @@ class API():
                         streamer.send(True) # Stop the streamer
                 except StopIteration:
                     pass
+
+        @self.api.websocket("/motion/stream")
+        async def motion_stream(websocket: WebSocket):
+            """Постоянно читать RTSP и передавать HA только кадры-кандидаты."""
+            if not await authorize_websocket(websocket):
+                return
+            if not self.auth_key:
+                await websocket.close(
+                    code=1008,
+                    reason="API authentication is required for RTSP motion streaming.",
+                )
+                return
+
+            await websocket.accept()
+            source_id = "unknown"
+            stop_event = threading.Event()
+            worker_thread = None
+            receive_task = None
+            try:
+                raw_request = await websocket.receive_json()
+                if not isinstance(raw_request, dict):
+                    raise ValueError("invalid_request")
+                request = odrpc.MotionStreamRequest(**raw_request)
+                source_id = request.source_id.strip()
+                if (
+                    not source_id
+                    or source_id != request.source_id
+                    or len(source_id) > 128
+                ):
+                    raise ValueError("invalid_source_id")
+                if (
+                    not isinstance(request.stream_source, str)
+                    or len(request.stream_source) > 2048
+                ):
+                    raise ValueError("invalid_stream_source")
+                parsed_source = urlsplit(request.stream_source)
+                if (
+                    parsed_source.scheme.lower() not in {"rtsp", "rtsps"}
+                    or not parsed_source.hostname
+                ):
+                    raise ValueError("unsupported_stream_source")
+                if (
+                    not math.isfinite(request.sample_interval)
+                    or not 0.05 <= request.sample_interval <= 2.0
+                    or not math.isfinite(request.candidate_interval)
+                    or not 0.2 <= request.candidate_interval <= 15.0
+                    or not 64 <= request.max_width <= 640
+                    or not 1 <= request.pixel_threshold <= 100
+                    or not math.isfinite(request.changed_fraction)
+                    or not 0.0001 <= request.changed_fraction <= 0.25
+                    or not 1 <= request.confirm_frames <= 10
+                    or not 1 <= request.quiet_frames <= 50
+                    or len(request.roi_polygons) > 128
+                    or any(len(polygon) > 256 for polygon in request.roi_polygons)
+                ):
+                    raise ValueError("invalid_motion_settings")
+                gate = MotionGate(
+                    max_width=request.max_width,
+                    pixel_threshold=request.pixel_threshold,
+                    changed_fraction=request.changed_fraction,
+                    confirm_frames=request.confirm_frames,
+                    quiet_frames=request.quiet_frames,
+                    roi_polygons=request.roi_polygons,
+                )
+            except Exception as err:
+                # Do not include the payload or stream URL: it may contain credentials.
+                self.logger.warning(
+                    "Rejected RTSP motion-stream request (%s)",
+                    type(err).__name__,
+                )
+                try:
+                    await websocket.send_json(
+                        {"type": "error", "error": "invalid_motion_stream_request"}
+                    )
+                    await websocket.close(code=1008)
+                except Exception:
+                    pass
+                return
+
+            loop = asyncio.get_running_loop()
+            event_queue: asyncio.Queue[dict] = asyncio.Queue(maxsize=4)
+
+            def publish(event: dict) -> None:
+                """Forward worker events without blocking its RTSP-reader thread."""
+                def enqueue() -> None:
+                    if event_queue.full():
+                        try:
+                            event_queue.get_nowait()
+                        except asyncio.QueueEmpty:
+                            pass
+                    try:
+                        event_queue.put_nowait(event)
+                    except asyncio.QueueFull:
+                        pass
+
+                try:
+                    loop.call_soon_threadsafe(enqueue)
+                except RuntimeError:
+                    stop_event.set()
+
+            worker = MotionStreamWorker(request, gate, stop_event, publish)
+
+            def run_worker() -> None:
+                try:
+                    worker.run()
+                except Exception as err:
+                    self.logger.warning(
+                        "RTSP motion reader stopped unexpectedly (%s)",
+                        type(err).__name__,
+                    )
+                    publish(
+                        {
+                            "type": "status",
+                            "source_id": source_id,
+                            "state": "error",
+                        }
+                    )
+
+            worker_thread = threading.Thread(
+                target=run_worker,
+                name=f"doods-rtsp-motion-{source_id[:32]}",
+                daemon=True,
+            )
+            worker_thread.start()
+            receive_task = asyncio.create_task(websocket.receive())
+            event_task = None
+
+            try:
+                while True:
+                    event_task = asyncio.create_task(event_queue.get())
+                    done, _pending = await asyncio.wait(
+                        {event_task, receive_task},
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+                    if receive_task in done:
+                        try:
+                            incoming = receive_task.result()
+                        except WebSocketDisconnect:
+                            break
+                        if incoming.get("type") == "websocket.disconnect":
+                            break
+                        if (
+                            incoming.get("type") == "websocket.receive"
+                            and incoming.get("text") == "stop"
+                        ):
+                            break
+                        receive_task = asyncio.create_task(websocket.receive())
+                    if event_task in done:
+                        event = event_task.result()
+                        await websocket.send_json(event)
+                    else:
+                        event_task.cancel()
+                        await asyncio.gather(event_task, return_exceptions=True)
+            except (WebSocketDisconnect, RuntimeError):
+                pass
+            finally:
+                stop_event.set()
+                if event_task is not None:
+                    if not event_task.done():
+                        event_task.cancel()
+                    await asyncio.gather(event_task, return_exceptions=True)
+                if receive_task is not None and not receive_task.done():
+                    receive_task.cancel()
+                    await asyncio.gather(receive_task, return_exceptions=True)
+                if worker_thread is not None:
+                    await asyncio.to_thread(worker_thread.join, 6.0)
 
         @self.api.get("/memory")
         async def memory():
