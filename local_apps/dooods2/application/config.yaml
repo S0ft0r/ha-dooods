@@ -32,4 +32,4 @@ doods:
       labelFile: models/coco_labels1.txt
     - name: pytorch
       type: pytorch
-      modelFile: ultralytics/yolov5,yolov5s
+      modelFile: ultralytics/yolov5:v7.0,yolov5s

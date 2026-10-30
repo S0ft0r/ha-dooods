@@ -35,6 +35,19 @@ class MqttDetectRequest(DetectRequest):
     binary_images: Optional[bool] = False
 
 @dataclass
+class MotionStreamRequest:
+    source_id: str
+    stream_source: str
+    sample_interval: float = 0.2
+    candidate_interval: float = 0.5
+    max_width: int = 320
+    pixel_threshold: int = 22
+    changed_fraction: float = 0.004
+    confirm_frames: int = 1
+    quiet_frames: int = 4
+    roi_polygons: List[List[List[float]]] = field(default_factory=list)
+
+@dataclass
 class Detector:
     name: str
     type: str
