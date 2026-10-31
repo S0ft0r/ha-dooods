@@ -35,6 +35,9 @@ from .api import (
     async_get_detectors,
 )
 from .archive import normalize_archive_directory, normalize_archive_limit
+from .camera_motion_recheck_intervals import (
+    normalize_camera_motion_recheck_intervals,
+)
 from .camera_scan_intervals import normalize_camera_scan_intervals
 from .camera_switches import normalize_camera_switches
 from .const import (
@@ -43,6 +46,7 @@ from .const import (
     CONF_ARCHIVE_MAX_COUNT,
     CONF_AUTH_KEY,
     CONF_CAMERA_DETECTION_ENABLED,
+    CONF_CAMERA_MOTION_RECHECK_INTERVALS,
     CONF_CAMERA_PROFILES,
     CONF_CAMERA_SCAN_INTERVALS,
     CONF_CAMERA_STREAM_ENABLED,
@@ -305,6 +309,12 @@ def _options_for_form(options: Mapping[str, Any]) -> dict[str, Any]:
         CONF_CAMERA_SCAN_INTERVALS: normalize_camera_scan_intervals(
             options.get(CONF_CAMERA_SCAN_INTERVALS, {}), cameras
         ),
+        CONF_CAMERA_MOTION_RECHECK_INTERVALS: (
+            normalize_camera_motion_recheck_intervals(
+                options.get(CONF_CAMERA_MOTION_RECHECK_INTERVALS, {}),
+                cameras,
+            )
+        ),
         CONF_CAMERA_DETECTION_ENABLED: normalize_camera_switches(
             options.get(CONF_CAMERA_DETECTION_ENABLED, {}),
             cameras,
@@ -354,6 +364,12 @@ def _normalize_options(options: Mapping[str, Any]) -> dict[str, Any]:
         CONF_CAMERA_SCAN_INTERVALS: normalize_camera_scan_intervals(
             options.get(CONF_CAMERA_SCAN_INTERVALS, {}), cameras
         ),
+        CONF_CAMERA_MOTION_RECHECK_INTERVALS: (
+            normalize_camera_motion_recheck_intervals(
+                options.get(CONF_CAMERA_MOTION_RECHECK_INTERVALS, {}),
+                cameras,
+            )
+        ),
         CONF_CAMERA_DETECTION_ENABLED: normalize_camera_switches(
             options.get(CONF_CAMERA_DETECTION_ENABLED, {}),
             cameras,
@@ -384,7 +400,7 @@ def _normalize_options(options: Mapping[str, Any]) -> dict[str, Any]:
 class DooodsConfigFlow(ConfigFlow, domain=DOMAIN):
     """Управлять первоначальной настройкой и перенастройкой записи DOOODS."""
 
-    VERSION = 1
+    VERSION = 2
 
     @override
     async def async_step_user(

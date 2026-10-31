@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
+import time
 from collections import Counter
 from collections.abc import Callable, Iterable, Mapping
 from datetime import UTC, datetime, timedelta
@@ -34,12 +35,15 @@ from .archive import (
     has_accepted_annotated_frame,
     normalize_archive_directory,
 )
+from .camera_motion_recheck_intervals import (
+    camera_motion_recheck_interval,
+    normalize_camera_motion_recheck_intervals,
+)
 from .camera_result import CameraScanResult, retain_last_accepted_image
 from .camera_scan_intervals import camera_scan_interval
 from .const import (
     CONF_BOTTOM,
     CONF_CAMERA_DETECTION_ENABLED,
-    CONF_CAMERA_STREAM_ENABLED,
     CONF_COVERS,
     CONF_LEFT,
     CONF_RIGHT,
@@ -81,6 +85,7 @@ class DooodsCoordinator(DataUpdateCoordinator[dict[str, CameraScanResult]]):
         camera_scan_intervals: Mapping[str, int] | None,
         parent_device_id: str,
         parent_device_identifier: str,
+        camera_motion_recheck_intervals: Mapping[str, int] | None = None,
         preview_enabled: bool = False,
         annotation_localization_enabled: bool = False,
         motion_stream_enabled: bool = False,
@@ -142,6 +147,12 @@ class DooodsCoordinator(DataUpdateCoordinator[dict[str, CameraScanResult]]):
             )
             for camera_entity_id in cameras
         }
+        self.camera_motion_recheck_intervals = (
+            normalize_camera_motion_recheck_intervals(
+                camera_motion_recheck_intervals or {},
+                cameras,
+            )
+        )
         self.parent_device_id = parent_device_id
         self.parent_device_identifier = parent_device_identifier
         self.preview_enabled = preview_enabled and bool(auth_key)
@@ -156,6 +167,8 @@ class DooodsCoordinator(DataUpdateCoordinator[dict[str, CameraScanResult]]):
         self._profile_labels_unsubscribe: Callable[[], None] | None = None
         self._profile_labels_task: asyncio.Task[Any] | None = None
         self._pending_camera_scans: set[str] = set()
+        self._pending_motion_camera_scans: set[str] = set()
+        self._motion_candidate_cooldowns: dict[str, float] = {}
         self._force_full_scan = False
         self._active_full_scan = False
         self._periodic_scanning_started = False
@@ -235,14 +248,9 @@ class DooodsCoordinator(DataUpdateCoordinator[dict[str, CameraScanResult]]):
 
     @callback
     def camera_stream_processing_is_enabled(self, camera_entity_id: str) -> bool:
-        """Return an explicit stream setting or the hybrid sensor-aware default."""
+        """Return whether the direct source selector chose RTSP for this camera."""
         enabled = getattr(self, "camera_stream_enabled", {}).get(camera_entity_id)
-        if isinstance(enabled, bool):
-            return enabled
-        if not getattr(self, "motion_stream_enabled", False):
-            return False
-        motion_entity_id = getattr(self, "motion_sensors", {}).get(camera_entity_id)
-        return not motion_sensor_is_usable(self.hass, motion_entity_id)
+        return enabled is True
 
     @callback
     def camera_uses_rtsp_motion_gate(self, camera_entity_id: str) -> bool:
@@ -540,25 +548,6 @@ class DooodsCoordinator(DataUpdateCoordinator[dict[str, CameraScanResult]]):
                     checked_at=None,
                 )
                 self.async_set_updated_data(results)
-        elif option_key == CONF_CAMERA_STREAM_ENABLED:
-            self.camera_stream_enabled[camera_entity_id] = enabled
-            self._pending_motion_candidates.pop(camera_entity_id, None)
-            self._pending_camera_scans.discard(camera_entity_id)
-            self._reconcile_motion_streams()
-            if (
-                not enabled
-                and self.camera_recognition_is_enabled(camera_entity_id)
-                and self.camera_uses_ha_motion_trigger(camera_entity_id)
-            ):
-                motion_entity_id = self.motion_sensors.get(camera_entity_id)
-                motion_state = (
-                    self.hass.states.get(motion_entity_id)
-                    if isinstance(motion_entity_id, str)
-                    else None
-                )
-                if motion_state is not None and motion_state.state == "on":
-                    self.request_camera_scans([camera_entity_id])
-
     @callback
     def _reconcile_motion_streams(self) -> None:
         """Make an enabled RTSP gate the exclusive motion trigger for its camera."""
@@ -638,6 +627,20 @@ class DooodsCoordinator(DataUpdateCoordinator[dict[str, CameraScanResult]]):
         task = getattr(self, "_motion_stream_tasks", {}).pop(camera_entity_id, None)
         if task is not None and not task.done():
             task.cancel()
+        getattr(self, "_motion_candidate_cooldowns", {}).pop(
+            camera_entity_id,
+            None,
+        )
+        pending_motion_scans = getattr(self, "_pending_motion_camera_scans", None)
+        pending_candidates = getattr(self, "_pending_motion_candidates", None)
+        if isinstance(pending_candidates, dict):
+            pending_candidates.pop(camera_entity_id, None)
+        if (
+            isinstance(pending_motion_scans, set)
+            and camera_entity_id in pending_motion_scans
+        ):
+            pending_motion_scans.discard(camera_entity_id)
+            getattr(self, "_pending_camera_scans", set()).discard(camera_entity_id)
         self._update_motion_gate_diagnostics(
             camera_entity_id,
             connection_state="disabled",
@@ -862,6 +865,46 @@ class DooodsCoordinator(DataUpdateCoordinator[dict[str, CameraScanResult]]):
                 retry_delay = min(retry_delay * 2, _MAX_CAMERA_RETRY_DELAY)
 
     @callback
+    def _motion_candidate_cooldown_is_active(self, camera_entity_id: str) -> bool:
+        """Return whether positive detection currently throttles RTSP candidates."""
+        cooldowns = getattr(self, "_motion_candidate_cooldowns", None)
+        if not isinstance(cooldowns, dict):
+            return False
+        deadline = cooldowns.get(camera_entity_id)
+        if not isinstance(deadline, (int, float)) or isinstance(deadline, bool):
+            cooldowns.pop(camera_entity_id, None)
+            return False
+        if time.monotonic() < deadline:
+            return True
+        cooldowns.pop(camera_entity_id, None)
+        return False
+
+    @callback
+    def _start_motion_candidate_cooldown(self, camera_entity_id: str) -> None:
+        """Delay another RTSP candidate scan after a successful positive result."""
+        if not self.camera_uses_rtsp_motion_gate(camera_entity_id):
+            return
+        delay = camera_motion_recheck_interval(
+            camera_entity_id,
+            getattr(self, "camera_motion_recheck_intervals", {}),
+        )
+        if delay <= 0:
+            return
+        cooldowns = getattr(self, "_motion_candidate_cooldowns", None)
+        if not isinstance(cooldowns, dict):
+            return
+        cooldowns[camera_entity_id] = time.monotonic() + delay
+
+        pending_motion_scans = getattr(self, "_pending_motion_camera_scans", set())
+        if camera_entity_id in pending_motion_scans:
+            pending_motion_scans.discard(camera_entity_id)
+            getattr(self, "_pending_camera_scans", set()).discard(camera_entity_id)
+            getattr(self, "_pending_motion_candidates", {}).pop(
+                camera_entity_id,
+                None,
+            )
+
+    @callback
     def request_camera_candidate(
         self,
         camera_entity_id: str,
@@ -878,9 +921,14 @@ class DooodsCoordinator(DataUpdateCoordinator[dict[str, CameraScanResult]]):
         ):
             return
         self._pending_motion_candidates[camera_entity_id] = image
+        if self._motion_candidate_cooldown_is_active(camera_entity_id):
+            return
         if camera_entity_id in self._pending_camera_scans:
             return
         self._pending_camera_scans.add(camera_entity_id)
+        pending_motion_scans = getattr(self, "_pending_motion_camera_scans", None)
+        if isinstance(pending_motion_scans, set):
+            pending_motion_scans.add(camera_entity_id)
         self._config_entry.async_create_background_task(
             self.hass,
             self.async_request_refresh(),
@@ -1087,6 +1135,9 @@ class DooodsCoordinator(DataUpdateCoordinator[dict[str, CameraScanResult]]):
         if isinstance(pending_candidates, dict):
             for camera_entity_id in camera_ids:
                 pending_candidates.pop(camera_entity_id, None)
+        pending_motion_scans = getattr(self, "_pending_motion_camera_scans", None)
+        if isinstance(pending_motion_scans, set):
+            pending_motion_scans.difference_update(camera_ids)
         self._pending_camera_scans.update(camera_ids)
         if not new_camera_ids and not full_scan:
             return
@@ -1132,6 +1183,8 @@ class DooodsCoordinator(DataUpdateCoordinator[dict[str, CameraScanResult]]):
         if motion_stream_tasks:
             await asyncio.gather(*motion_stream_tasks, return_exceptions=True)
         getattr(self, "_pending_motion_candidates", {}).clear()
+        getattr(self, "_motion_candidate_cooldowns", {}).clear()
+        getattr(self, "_pending_motion_camera_scans", set()).clear()
         await self._cancel_initial_scan_task()
         await super().async_shutdown()
 
@@ -1144,6 +1197,9 @@ class DooodsCoordinator(DataUpdateCoordinator[dict[str, CameraScanResult]]):
             else:
                 requested_camera_ids = self._pending_camera_scans.copy()
             self._pending_camera_scans.difference_update(requested_camera_ids)
+            pending_motion_scans = getattr(self, "_pending_motion_camera_scans", None)
+            if isinstance(pending_motion_scans, set):
+                pending_motion_scans.difference_update(requested_camera_ids)
             pending_candidates = getattr(self, "_pending_motion_candidates", {})
             candidate_images = {
                 camera_entity_id: pending_candidates.pop(camera_entity_id)
@@ -1187,6 +1243,8 @@ class DooodsCoordinator(DataUpdateCoordinator[dict[str, CameraScanResult]]):
                         continue
                     if scan_result.error is None:
                         self._clear_camera_retry(camera_entity_id)
+                        if scan_result.detections:
+                            self._start_motion_candidate_cooldown(camera_entity_id)
                         if (
                             self.camera_recognition_is_enabled(camera_entity_id)
                             and has_accepted_annotated_frame(
@@ -1199,6 +1257,7 @@ class DooodsCoordinator(DataUpdateCoordinator[dict[str, CameraScanResult]]):
                                 camera_entity_id,
                                 scan_result.annotated_image,
                                 scan_result.checked_at,
+                                scan_result.detections,
                             )
                     else:
                         self._schedule_camera_retry(camera_entity_id)
@@ -1236,8 +1295,9 @@ class DooodsCoordinator(DataUpdateCoordinator[dict[str, CameraScanResult]]):
         camera_entity_id: str,
         image: bytes,
         checked_at: datetime,
+        detections: Iterable[Mapping[str, Any]],
     ) -> None:
-        """Сохранить JPEG только при детекциях, прошедших активные фильтры камеры."""
+        """Сохранить JPEG и метаданные прошедших фильтры детекций."""
         if not self.archive_directory:
             return
         try:
@@ -1248,6 +1308,7 @@ class DooodsCoordinator(DataUpdateCoordinator[dict[str, CameraScanResult]]):
                 camera_entity_id,
                 image,
                 checked_at,
+                detections=tuple(detections),
                 max_count=self.archive_max_count,
                 max_age_days=self.archive_max_age_days,
             )
