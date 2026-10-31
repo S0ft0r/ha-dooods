@@ -1,0 +1,329 @@
+{
+  "entity": {
+    "binary_sensor": {
+      "label_person": {
+        "default": "mdi:human"
+      },
+      "label_human": {
+        "default": "mdi:human"
+      },
+      "label_people": {
+        "default": "mdi:human-male-female"
+      },
+      "label_pedestrian": {
+        "default": "mdi:walk"
+      },
+      "label_animal": {
+        "default": "mdi:paw"
+      },
+      "label_bicycle": {
+        "default": "mdi:bicycle"
+      },
+      "label_car": {
+        "default": "mdi:car"
+      },
+      "label_vehicle": {
+        "default": "mdi:car-side"
+      },
+      "label_car_side": {
+        "default": "mdi:car-side"
+      },
+      "label_motorcycle": {
+        "default": "mdi:motorbike"
+      },
+      "label_motorbike": {
+        "default": "mdi:motorbike"
+      },
+      "label_airplane": {
+        "default": "mdi:airplane"
+      },
+      "label_bus": {
+        "default": "mdi:bus"
+      },
+      "label_train": {
+        "default": "mdi:train"
+      },
+      "label_truck": {
+        "default": "mdi:truck"
+      },
+      "label_boat": {
+        "default": "mdi:sail-boat"
+      },
+      "label_traffic_light": {
+        "default": "mdi:traffic-light"
+      },
+      "label_fire_hydrant": {
+        "default": "mdi:fire-hydrant"
+      },
+      "label_stop_sign": {
+        "default": "mdi:octagon"
+      },
+      "label_parking_meter": {
+        "default": "mdi:meter-electric"
+      },
+      "label_bench": {
+        "default": "mdi:bench"
+      },
+      "label_bird": {
+        "default": "mdi:bird"
+      },
+      "label_cat": {
+        "default": "mdi:cat"
+      },
+      "label_dog": {
+        "default": "mdi:dog"
+      },
+      "label_horse": {
+        "default": "mdi:horse"
+      },
+      "label_sheep": {
+        "default": "mdi:sheep"
+      },
+      "label_cow": {
+        "default": "mdi:cow"
+      },
+      "label_elephant": {
+        "default": "mdi:elephant"
+      },
+      "label_bear": {
+        "default": "mdi:teddy-bear"
+      },
+      "label_zebra": {
+        "default": "mdi:horse-variant"
+      },
+      "label_giraffe": {
+        "default": "mdi:horse-variant"
+      },
+      "label_backpack": {
+        "default": "mdi:bag-personal"
+      },
+      "label_umbrella": {
+        "default": "mdi:umbrella"
+      },
+      "label_handbag": {
+        "default": "mdi:purse"
+      },
+      "label_tie": {
+        "default": "mdi:tie"
+      },
+      "label_suitcase": {
+        "default": "mdi:bag-suitcase"
+      },
+      "label_frisbee": {
+        "default": "mdi:disc"
+      },
+      "label_ski": {
+        "default": "mdi:ski"
+      },
+      "label_skis": {
+        "default": "mdi:ski"
+      },
+      "label_snowboard": {
+        "default": "mdi:snowboard"
+      },
+      "label_sports_ball": {
+        "default": "mdi:soccer"
+      },
+      "label_kite": {
+        "default": "mdi:kite"
+      },
+      "label_baseball_bat": {
+        "default": "mdi:baseball-bat"
+      },
+      "label_baseball_glove": {
+        "default": "mdi:boxing-glove"
+      },
+      "label_skateboard": {
+        "default": "mdi:skateboard"
+      },
+      "label_surfboard": {
+        "default": "mdi:surfing"
+      },
+      "label_tennis_racket": {
+        "default": "mdi:tennis"
+      },
+      "label_bottle": {
+        "default": "mdi:bottle-soda"
+      },
+      "label_wine_glass": {
+        "default": "mdi:glass-wine"
+      },
+      "label_cup": {
+        "default": "mdi:cup"
+      },
+      "label_fork": {
+        "default": "mdi:silverware-fork"
+      },
+      "label_knife": {
+        "default": "mdi:knife"
+      },
+      "label_spoon": {
+        "default": "mdi:silverware-spoon"
+      },
+      "label_bowl": {
+        "default": "mdi:bowl"
+      },
+      "label_banana": {
+        "default": "mdi:food-croissant"
+      },
+      "label_apple": {
+        "default": "mdi:food-apple"
+      },
+      "label_sandwich": {
+        "default": "mdi:bread-slice"
+      },
+      "label_orange": {
+        "default": "mdi:fruit-citrus"
+      },
+      "label_broccoli": {
+        "default": "mdi:leaf"
+      },
+      "label_carrot": {
+        "default": "mdi:carrot"
+      },
+      "label_hot_dog": {
+        "default": "mdi:food-hot-dog"
+      },
+      "label_pizza": {
+        "default": "mdi:pizza"
+      },
+      "label_donut": {
+        "default": "mdi:chart-donut"
+      },
+      "label_cake": {
+        "default": "mdi:cake"
+      },
+      "label_chair": {
+        "default": "mdi:chair-school"
+      },
+      "label_couch": {
+        "default": "mdi:sofa"
+      },
+      "label_potted_plant": {
+        "default": "mdi:pot-mix"
+      },
+      "label_bed": {
+        "default": "mdi:bed"
+      },
+      "label_dining_table": {
+        "default": "mdi:table-chair"
+      },
+      "label_toilet": {
+        "default": "mdi:toilet"
+      },
+      "label_tv": {
+        "default": "mdi:television"
+      },
+      "label_laptop": {
+        "default": "mdi:laptop"
+      },
+      "label_mouse": {
+        "default": "mdi:mouse"
+      },
+      "label_remote": {
+        "default": "mdi:remote"
+      },
+      "label_keyboard": {
+        "default": "mdi:keyboard"
+      },
+      "label_cell_phone": {
+        "default": "mdi:cellphone"
+      },
+      "label_cellphone": {
+        "default": "mdi:cellphone"
+      },
+      "label_microwave": {
+        "default": "mdi:microwave"
+      },
+      "label_oven": {
+        "default": "mdi:stove"
+      },
+      "label_toaster": {
+        "default": "mdi:toaster"
+      },
+      "label_sink": {
+        "default": "mdi:countertop"
+      },
+      "label_refrigerator": {
+        "default": "mdi:fridge"
+      },
+      "label_book": {
+        "default": "mdi:book"
+      },
+      "label_clock": {
+        "default": "mdi:clock"
+      },
+      "label_vase": {
+        "default": "mdi:pot"
+      },
+      "label_scissors": {
+        "default": "mdi:scissors-cutting"
+      },
+      "label_teddy_bear": {
+        "default": "mdi:teddy-bear"
+      },
+      "label_hair_drier": {
+        "default": "mdi:hair-dryer"
+      },
+      "label_toothbrush": {
+        "default": "mdi:toothbrush"
+      },
+      "label_egg": {
+        "default": "mdi:egg"
+      },
+      "label_flower": {
+        "default": "mdi:flower"
+      },
+      "label_plant": {
+        "default": "mdi:sprout"
+      },
+      "label_van": {
+        "default": "mdi:van-utility"
+      },
+      "object": {
+        "default": "mdi:shape-outline"
+      }
+    },
+    "number": {
+      "camera_scan_interval": {
+        "default": "mdi:timer-outline"
+      },
+      "camera_motion_recheck_interval": {
+        "default": "mdi:timer-refresh-outline"
+      }
+    },
+    "sensor": {
+      "camera_detections": {
+        "default": "mdi:shape-outline"
+      },
+      "motion_gate_state": {
+        "default": "mdi:lan-connect"
+      },
+      "motion_gate_last_score": {
+        "default": "mdi:chart-line"
+      },
+      "motion_gate_max_score": {
+        "default": "mdi:chart-bell-curve-cumulative"
+      },
+      "motion_gate_sampled_frames": {
+        "default": "mdi:video-check-outline"
+      },
+      "motion_gate_candidate_frames": {
+        "default": "mdi:video-plus-outline"
+      },
+      "motion_gate_last_trigger": {
+        "default": "mdi:motion-sensor"
+      }
+    },
+    "image": {
+      "annotated_detections": {
+        "default": "mdi:image-marker-outline"
+      }
+    }
+  },
+  "services": {
+    "scan": {
+      "service": "mdi:camera-control"
+    }
+  }
+}
