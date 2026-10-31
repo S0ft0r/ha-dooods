@@ -1,0 +1,101 @@
+name: "DOOODS2"
+slug: "dooods2"
+version: "0.1.17-dev"
+description: ""
+arch:
+  - aarch64
+  - amd64
+startup: services
+boot: auto
+stage: experimental
+ingress: false
+watchdog: "http://[HOST]:8080/health"
+map:
+  - type: share
+    read_only: true
+options:
+  logger:
+    level: info
+  server:
+    host: "0.0.0.0"
+    port: 8080
+    auth_key: ""
+    profiles_file: /data/profiles.json
+    metrics: false
+    trace: false
+  doods:
+    log: detections
+    annotation_labels: "{}"
+    boxes:
+      enabled: true
+      showLabels: true
+      mergeOverlapping: true
+      boxPaddingPercent: 0
+      boxColor: "#00ff00"
+      boxThickness: 1
+      fontScale: 1.2
+      fontColor: "#00ff00"
+      fontThickness: 2
+    regions:
+      enabled: true
+      boxColor: "#ff00ff"
+      boxThickness: 1
+      fontScale: 1.2
+      fontColor: "#ff00ff"
+      fontThickness: 2
+    globals:
+      enabled: true
+      fontScale: 1.2
+      fontColor: "#ffff00"
+      fontThickness: 2
+    detectors:
+      - name: default
+        type: tflite
+        modelFile: models/coco_ssd_mobilenet_v1_1.0_quant.tflite
+        labelFile: models/coco_labels0.txt
+        labelsStartFromZero: false
+        hwAccel: false
+        numThreads: 2
+schema:
+  logger:
+    level: str?
+  server:
+    host: str?
+    port: int?
+    auth_key: password?
+    profiles_file: str?
+    metrics: bool?
+    trace: bool?
+  doods:
+    log: str?
+    annotation_labels: str?
+    boxes:
+      enabled: bool
+      showLabels: bool?
+      mergeOverlapping: bool?
+      boxPaddingPercent: float?
+      boxColor: str
+      boxThickness: float
+      fontScale: float
+      fontColor: str
+      fontThickness: float
+    regions:
+      enabled: bool
+      boxColor: str
+      boxThickness: float
+      fontScale: float
+      fontColor: str
+      fontThickness: float
+    globals:
+      enabled: bool
+      fontScale: float
+      fontColor: str
+      fontThickness: float
+    detectors:
+      - name: str
+        type: str
+        modelFile: str
+        labelFile: str?
+        labelsStartFromZero: bool?
+        hwAccel: bool?
+        numThreads: int?

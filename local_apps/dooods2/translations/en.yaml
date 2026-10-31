@@ -1,0 +1,107 @@
+configuration:
+  logger:
+    name: Logging
+    fields:
+      level:
+        name: Log level
+        description: Verbosity of application logs.
+  server:
+    name: API server
+    description: API and storage settings for the internal service.
+    fields:
+      host:
+        name: Listen address
+        description: Keep 0.0.0.0 so Home Assistant Ingress can reach the web UI.
+      port:
+        name: Internal port
+        description: Keep 8080; this is the container port used by Ingress.
+      auth_key:
+        name: API key
+        description: If empty, a random key is generated on first start and saved in the App options through Supervisor. Copy it to the dooods integration settings; never put it in a URL, logs, or the browser editor.
+      profiles_file:
+        name: Profiles file
+        description: Persistent JSON file inside the app data directory.
+      metrics:
+        name: Prometheus metrics
+      trace:
+        name: Memory tracing
+        description: Diagnostic tracing; keep disabled for normal operation.
+  doods:
+    name: Detection
+    description: Default detector and annotation settings.
+    fields:
+      log:
+        name: Detection logging
+      annotation_labels:
+        name: Custom annotation labels (JSON)
+        description: Optional JSON object mapping source labels to display names by language, for example {"ru":{"door":"дверь"},"en":{"door":"door"}}. Detector labels in API responses stay unchanged.
+      boxes:
+        name: Detection boxes
+        fields:
+          enabled:
+            name: Draw boxes
+          showLabels:
+            name: Show object labels
+            description: Show the object class and confidence, or the merged-object count, above each detection box. Hiding the label does not hide the box or change API results.
+          mergeOverlapping:
+            name: Merge overlapping boxes of the same type
+            description: Draw one box and one count label for overlapping detections of the same class. API detections and counts remain unchanged.
+          boxPaddingPercent:
+            name: Box padding (%)
+            description: Expand each side by this percentage of the detected box width or height. The padding affects only the annotated image, not API detections or zone filtering; it is clipped to the image bounds.
+          boxColor:
+            name: Box color
+          boxThickness:
+            name: Box thickness
+          fontScale:
+            name: Label font scale
+          fontColor:
+            name: Label color
+          fontThickness:
+            name: Label thickness
+      regions:
+        name: Region annotations
+        description: In profile mode, draw polygon zone outlines and names; in legacy mode, draw rectangular regions.
+        fields:
+          enabled:
+            name: Draw zones and regions
+          boxColor:
+            name: Region color
+          boxThickness:
+            name: Region thickness
+          fontScale:
+            name: Label font scale
+          fontColor:
+            name: Label color
+          fontThickness:
+            name: Label thickness
+      globals:
+        name: Diagnostic annotations
+        description: Global threshold labels are shown only when the log level is Debug.
+        fields:
+          enabled:
+            name: Show global thresholds in debug
+          fontScale:
+            name: Label font scale
+          fontColor:
+            name: Label color
+          fontThickness:
+            name: Label thickness
+      detectors:
+        name: Detectors
+        description: The initial configuration enables one CPU TFLite model.
+        fields:
+          name:
+            name: Detector name
+          type:
+            name: Backend type
+          modelFile:
+            name: Model file
+          labelFile:
+            name: Label file
+          labelsStartFromZero:
+            name: Labels start at zero
+          hwAccel:
+            name: Hardware acceleration
+          numThreads:
+            name: CPU threads
