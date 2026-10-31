@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 from collections import Counter
 from collections.abc import Callable, Iterable, Mapping
 from datetime import UTC, datetime, timedelta
@@ -58,6 +59,7 @@ _LOGGER = logging.getLogger(__name__)
 _INITIAL_CAMERA_RETRY_DELAY = 5
 _MAX_CAMERA_RETRY_DELAY = 300
 _PROFILE_LABEL_REFRESH_INTERVAL = timedelta(minutes=1)
+_MOTION_GATE_DEFAULT_THRESHOLD = 0.004
 
 
 class DooodsCoordinator(DataUpdateCoordinator[dict[str, CameraScanResult]]):
@@ -162,6 +164,33 @@ class DooodsCoordinator(DataUpdateCoordinator[dict[str, CameraScanResult]]):
         self._camera_retry_delays: dict[str, int] = {}
         self._initial_scan_task: asyncio.Task[Any] | None = None
         self._is_shutting_down = False
+        self._motion_gate_listeners: set[Callable[[str], None]] = set()
+        self._motion_gate_diagnostics = {
+            camera_entity_id: {
+                "state": (
+                    "connecting"
+                    if self.camera_uses_rtsp_motion_gate(camera_entity_id)
+                    else "disabled"
+                ),
+                "connection_state": (
+                    "connecting"
+                    if self.camera_uses_rtsp_motion_gate(camera_entity_id)
+                    else "disabled"
+                ),
+                "gate_active": False,
+                "active_source": self._motion_source_for_camera(camera_entity_id),
+                "last_score": None,
+                "max_score_interval": None,
+                "threshold": _MOTION_GATE_DEFAULT_THRESHOLD,
+                "sampled_frames_total": 0,
+                "candidate_frames_total": 0,
+                "last_motion_at": None,
+                "last_candidate_at": None,
+                "last_error": None,
+                "updated_at": datetime.now(UTC).isoformat(),
+            }
+            for camera_entity_id in self.cameras
+        }
 
     @callback
     def set_initial_scan_task(self, task: asyncio.Task[Any]) -> None:
@@ -239,6 +268,176 @@ class DooodsCoordinator(DataUpdateCoordinator[dict[str, CameraScanResult]]):
             for camera_entity_id in camera_entity_ids
             if self.camera_uses_ha_motion_trigger(camera_entity_id)
         }
+
+    @callback
+    def async_add_motion_gate_listener(
+        self,
+        listener: Callable[[str], None],
+    ) -> Callable[[], None]:
+        """Subscribe to per-camera RTSP diagnostic updates and return an unsubscribe."""
+        self._motion_gate_listeners.add(listener)
+
+        @callback
+        def _unsubscribe() -> None:
+            self._motion_gate_listeners.discard(listener)
+
+        return _unsubscribe
+
+    @callback
+    def motion_gate_diagnostics_for_camera(
+        self,
+        camera_entity_id: str,
+    ) -> dict[str, Any]:
+        """Return a snapshot of the RTSP diagnostics for one camera."""
+        return dict(self._motion_gate_diagnostics.get(camera_entity_id, {}))
+
+    @callback
+    def _motion_source_for_camera(self, camera_entity_id: str) -> str:
+        """Return the currently selected trigger source for diagnostics."""
+        if self.camera_uses_rtsp_motion_gate(camera_entity_id):
+            return "rtsp_gate"
+        motion_entity_id = getattr(self, "motion_sensors", {}).get(camera_entity_id)
+        if motion_sensor_is_usable(self.hass, motion_entity_id):
+            return "ha_motion"
+        return "none"
+
+    @callback
+    def _update_motion_gate_diagnostics(
+        self,
+        camera_entity_id: str,
+        *,
+        connection_state: str | None = None,
+        gate_active: bool | None = None,
+        last_score: Any = None,
+        max_score_interval: Any = None,
+        threshold: Any = None,
+        sampled_frames_total: Any = None,
+        candidate_frames_total: Any = None,
+        last_motion_at: Any = None,
+        last_candidate_at: Any = None,
+        last_error: Any = None,
+        increment_candidates: bool = False,
+        reset: bool = False,
+        active_source: str | None = None,
+    ) -> None:
+        """Update one camera's gate telemetry and notify diagnostic sensor entities."""
+        if camera_entity_id not in self.cameras:
+            return
+        diagnostics_by_camera = getattr(self, "_motion_gate_diagnostics", None)
+        if not isinstance(diagnostics_by_camera, dict):
+            return
+        diagnostics = diagnostics_by_camera.setdefault(camera_entity_id, {})
+        if reset:
+            diagnostics.update(
+                {
+                    "state": "connecting",
+                    "connection_state": "connecting",
+                    "gate_active": False,
+                    "last_score": None,
+                    "max_score_interval": None,
+                    "threshold": _MOTION_GATE_DEFAULT_THRESHOLD,
+                    "sampled_frames_total": 0,
+                    "candidate_frames_total": 0,
+                    "last_motion_at": None,
+                    "last_candidate_at": None,
+                    "last_error": None,
+                }
+            )
+        if active_source is not None:
+            diagnostics["active_source"] = active_source
+        else:
+            diagnostics["active_source"] = self._motion_source_for_camera(
+                camera_entity_id
+            )
+
+        if connection_state in {
+            "disabled",
+            "connecting",
+            "connected",
+            "reconnecting",
+            "error",
+        }:
+            diagnostics["connection_state"] = connection_state
+        if isinstance(gate_active, bool):
+            diagnostics["gate_active"] = gate_active
+
+        current_connection_state = diagnostics.get("connection_state")
+        if (
+            current_connection_state
+            in {"disabled", "connecting", "reconnecting", "error"}
+            and not isinstance(gate_active, bool)
+        ):
+            diagnostics["gate_active"] = False
+        if current_connection_state == "connected":
+            diagnostics["state"] = (
+                "active" if diagnostics.get("gate_active") else "idle"
+            )
+        elif current_connection_state in {
+            "disabled",
+            "connecting",
+            "reconnecting",
+        }:
+            diagnostics["state"] = current_connection_state
+        elif current_connection_state == "error":
+            diagnostics["state"] = "reconnecting"
+
+        for key, value in (
+            ("last_score", last_score),
+            ("max_score_interval", max_score_interval),
+            ("threshold", threshold),
+        ):
+            if (
+                not isinstance(value, bool)
+                and isinstance(value, (int, float))
+                and math.isfinite(value)
+                and 0 <= value <= 1
+            ):
+                diagnostics[key] = float(value)
+
+        for key, value in (
+            ("sampled_frames_total", sampled_frames_total),
+            ("candidate_frames_total", candidate_frames_total),
+        ):
+            if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+                old_value = diagnostics.get(key, 0)
+                diagnostics[key] = (
+                    value if reset else max(old_value, value)
+                )
+        if increment_candidates:
+            diagnostics["candidate_frames_total"] = (
+                diagnostics.get("candidate_frames_total", 0) + 1
+            )
+
+        for key, value in (
+            ("last_motion_at", last_motion_at),
+            ("last_candidate_at", last_candidate_at),
+        ):
+            parsed = None
+            if isinstance(value, datetime):
+                parsed = value
+            elif isinstance(value, str):
+                try:
+                    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+                except ValueError:
+                    parsed = None
+            if parsed is not None and parsed.tzinfo is not None:
+                diagnostics[key] = parsed.astimezone(UTC).isoformat()
+        if last_error is not None:
+            diagnostics["last_error"] = (
+                str(last_error)[:64] if isinstance(last_error, str) else "error"
+            )
+        elif current_connection_state == "connected":
+            diagnostics["last_error"] = None
+
+        diagnostics["updated_at"] = datetime.now(UTC).isoformat()
+        for listener in tuple(getattr(self, "_motion_gate_listeners", ())):
+            try:
+                listener(camera_entity_id)
+            except Exception:
+                _LOGGER.exception(
+                    "Could not update RTSP diagnostics for camera %s",
+                    camera_entity_id,
+                )
 
     @callback
     def start_periodic_scanning(self) -> None:
@@ -404,6 +603,12 @@ class DooodsCoordinator(DataUpdateCoordinator[dict[str, CameraScanResult]]):
             or not self.camera_uses_rtsp_motion_gate(camera_entity_id)
         ):
             return
+        self._update_motion_gate_diagnostics(
+            camera_entity_id,
+            reset=True,
+            connection_state="connecting",
+            active_source="rtsp_gate",
+        )
         task = self._config_entry.async_create_background_task(
             self.hass,
             self._async_motion_stream_loop(camera_entity_id),
@@ -433,6 +638,12 @@ class DooodsCoordinator(DataUpdateCoordinator[dict[str, CameraScanResult]]):
         task = getattr(self, "_motion_stream_tasks", {}).pop(camera_entity_id, None)
         if task is not None and not task.done():
             task.cancel()
+        self._update_motion_gate_diagnostics(
+            camera_entity_id,
+            connection_state="disabled",
+            gate_active=False,
+            active_source=self._motion_source_for_camera(camera_entity_id),
+        )
 
     async def _async_motion_stream_loop(self, camera_entity_id: str) -> None:
         """Resolve a camera RTSP URL and forward only motion-candidate JPEGs to YOLO."""
@@ -446,6 +657,12 @@ class DooodsCoordinator(DataUpdateCoordinator[dict[str, CameraScanResult]]):
                 "Home Assistant has no async_get_stream_source API; "
                 "RTSP motion gate disabled for %s",
                 camera_entity_id,
+            )
+            self._update_motion_gate_diagnostics(
+                camera_entity_id,
+                connection_state="error",
+                gate_active=False,
+                last_error="unsupported_stream_source_api",
             )
             return
 
@@ -487,6 +704,12 @@ class DooodsCoordinator(DataUpdateCoordinator[dict[str, CameraScanResult]]):
                 or parsed_source.scheme.lower() not in {"rtsp", "rtsps"}
                 or not parsed_source.hostname
             ):
+                self._update_motion_gate_diagnostics(
+                    camera_entity_id,
+                    connection_state="reconnecting",
+                    gate_active=False,
+                    last_error="invalid_stream_source",
+                )
                 await asyncio.sleep(retry_delay)
                 retry_delay = min(retry_delay * 2, _MAX_CAMERA_RETRY_DELAY)
                 continue
@@ -508,21 +731,84 @@ class DooodsCoordinator(DataUpdateCoordinator[dict[str, CameraScanResult]]):
                     ):
                         return
                     if event.get("type") == "status":
-                        if event.get("state") == "connected":
+                        status_state = event.get("state")
+                        connection_state = status_state
+                        if status_state == "stopped":
+                            connection_state = (
+                                "reconnecting"
+                                if self.camera_uses_rtsp_motion_gate(camera_entity_id)
+                                else "disabled"
+                            )
+                        if status_state == "connected":
                             retry_delay = _INITIAL_CAMERA_RETRY_DELAY
+                        if connection_state in {
+                            "disabled",
+                            "connecting",
+                            "connected",
+                            "reconnecting",
+                            "error",
+                        }:
+                            self._update_motion_gate_diagnostics(
+                                camera_entity_id,
+                                connection_state=connection_state,
+                                gate_active=event.get("gate_active")
+                                if isinstance(event.get("gate_active"), bool)
+                                else None,
+                                last_score=event.get("last_score"),
+                                max_score_interval=event.get("max_score_interval"),
+                                threshold=event.get("threshold"),
+                                sampled_frames_total=event.get(
+                                    "sampled_frames_total"
+                                ),
+                                candidate_frames_total=event.get(
+                                    "candidate_frames_total"
+                                ),
+                                last_motion_at=event.get("last_motion_at"),
+                                last_candidate_at=event.get("last_candidate_at"),
+                            )
+                        elif status_state == "frame_encode_failed":
+                            self._update_motion_gate_diagnostics(
+                                camera_entity_id,
+                                last_error=status_state,
+                            )
                         _LOGGER.debug(
                             "RTSP motion stream for %s: %s",
                             camera_entity_id,
-                            event.get("state", "unknown"),
+                            status_state or "unknown",
                         )
+                    elif event.get("type") == "motion":
+                        motion_state = event.get("state")
+                        if motion_state in {"active", "idle"}:
+                            self._update_motion_gate_diagnostics(
+                                camera_entity_id,
+                                connection_state="connected",
+                                gate_active=motion_state == "active",
+                                last_score=event.get("score"),
+                                last_motion_at=event.get("occurred_at")
+                                if motion_state == "active"
+                                else None,
+                            )
                     elif event.get("type") == "candidate":
                         candidate = event.get("image")
+                        self._update_motion_gate_diagnostics(
+                            camera_entity_id,
+                            connection_state="connected",
+                            gate_active=True,
+                            last_score=event.get("motion_score"),
+                            last_candidate_at=event.get("captured_at"),
+                            increment_candidates=True,
+                        )
                         if isinstance(candidate, bytes):
                             self.request_camera_candidate(
                                 camera_entity_id,
                                 candidate,
                             )
                     elif event.get("type") == "error":
+                        self._update_motion_gate_diagnostics(
+                            camera_entity_id,
+                            connection_state="error",
+                            last_error=event.get("error", "motion_stream_error"),
+                        )
                         _LOGGER.debug(
                             "RTSP motion stream reported an error for %s",
                             camera_entity_id,
@@ -530,6 +816,12 @@ class DooodsCoordinator(DataUpdateCoordinator[dict[str, CameraScanResult]]):
             except asyncio.CancelledError:
                 raise
             except DooodsAuthError as err:
+                self._update_motion_gate_diagnostics(
+                    camera_entity_id,
+                    connection_state="error",
+                    gate_active=False,
+                    last_error="authentication_failed",
+                )
                 _LOGGER.error(
                     "Authentication rejected the RTSP motion stream for %s: %s",
                     camera_entity_id,
@@ -537,12 +829,24 @@ class DooodsCoordinator(DataUpdateCoordinator[dict[str, CameraScanResult]]):
                 )
                 return
             except DooodsApiError as err:
+                self._update_motion_gate_diagnostics(
+                    camera_entity_id,
+                    connection_state="reconnecting",
+                    gate_active=False,
+                    last_error="api_disconnected",
+                )
                 _LOGGER.debug(
                     "RTSP motion stream disconnected for %s: %s",
                     camera_entity_id,
                     err,
                 )
             except (HomeAssistantError, OSError, TimeoutError) as err:
+                self._update_motion_gate_diagnostics(
+                    camera_entity_id,
+                    connection_state="reconnecting",
+                    gate_active=False,
+                    last_error=type(err).__name__,
+                )
                 _LOGGER.debug(
                     "Could not start RTSP motion stream for %s (%s)",
                     camera_entity_id,

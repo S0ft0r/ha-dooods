@@ -129,6 +129,24 @@
     "sensor": {
       "camera_detections": {
         "name": "Detected objects"
+      },
+      "motion_gate_state": {
+        "name": "RTSP gate state"
+      },
+      "motion_gate_last_score": {
+        "name": "RTSP motion score"
+      },
+      "motion_gate_max_score": {
+        "name": "RTSP maximum motion score (last interval)"
+      },
+      "motion_gate_sampled_frames": {
+        "name": "RTSP sampled frames"
+      },
+      "motion_gate_candidate_frames": {
+        "name": "RTSP candidate frames"
+      },
+      "motion_gate_last_trigger": {
+        "name": "RTSP last trigger"
       }
     },
     "image": {

@@ -287,6 +287,24 @@
     "sensor": {
       "camera_detections": {
         "default": "mdi:shape-outline"
+      },
+      "motion_gate_state": {
+        "default": "mdi:lan-connect"
+      },
+      "motion_gate_last_score": {
+        "default": "mdi:chart-line"
+      },
+      "motion_gate_max_score": {
+        "default": "mdi:chart-bell-curve-cumulative"
+      },
+      "motion_gate_sampled_frames": {
+        "default": "mdi:video-check-outline"
+      },
+      "motion_gate_candidate_frames": {
+        "default": "mdi:video-plus-outline"
+      },
+      "motion_gate_last_trigger": {
+        "default": "mdi:motion-sensor"
       }
     },
     "image": {
