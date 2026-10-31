@@ -41,6 +41,7 @@ from .const import (
     CONF_CAMERA_PROFILES,
     CONF_FILE_OUT,
     CONF_DETECTOR,
+    CONF_LABELS,
     CONF_SOURCE,
     CONF_URL,
     DOMAIN,
@@ -256,6 +257,28 @@ async def async_ensure_camera_profiles(
         return result
 
 
+def _archive_labels_for_camera(entry: Any, camera_entity_id: str) -> list[str]:
+    """Вернуть настроенные метки камеры для локального фильтра архива."""
+    options = entry.options if isinstance(entry.options, Mapping) else {}
+    coordinator = getattr(entry, "runtime_data", None)
+    labels_for_camera = getattr(coordinator, "labels_for_camera", None)
+    if callable(labels_for_camera):
+        labels = labels_for_camera(camera_entity_id)
+    elif isinstance(getattr(coordinator, "camera_labels", None), Mapping):
+        labels = coordinator.camera_labels.get(camera_entity_id, [])
+    else:
+        labels = options.get(CONF_LABELS, [])
+    if not isinstance(labels, (list, tuple)):
+        return []
+    return list(
+        dict.fromkeys(
+            label.strip()
+            for label in labels
+            if isinstance(label, str) and label.strip()
+        )
+    )
+
+
 async def async_get_profile_panel_data(hass: HomeAssistant) -> dict[str, Any]:
     """Собрать список записей и выбранных камер для встроенного редактора."""
     result: list[dict[str, Any]] = []
@@ -293,6 +316,10 @@ async def async_get_profile_panel_data(hass: HomeAssistant) -> dict[str, Any]:
                     {
                         "entity_id": camera_entity_id,
                         "name": _camera_name(hass, camera_entity_id),
+                        "archive_labels": _archive_labels_for_camera(
+                            entry,
+                            camera_entity_id,
+                        ),
                         "profile_ready": profile_map.get(camera_entity_id)
                         in available_profile_ids,
                     }
@@ -371,13 +398,23 @@ async def async_get_camera_archive_data(
     camera_entity_id: str,
     cursor: str = "",
     limit: int = 40,
+    label: str = "",
 ) -> dict[str, Any]:
     """Вернуть безопасную страницу локального архива выбранной камеры."""
     entry = _entry_for_id(hass, entry_id)
     if camera_entity_id not in _cameras_for_entry(entry):
         raise HomeAssistantError("Эта камера не выбрана в указанной записи DOOODS.")
-    if not isinstance(cursor, str) or isinstance(limit, bool) or not isinstance(limit, int):
+    if (
+        not isinstance(cursor, str)
+        or isinstance(limit, bool)
+        or not isinstance(limit, int)
+        or not isinstance(label, str)
+        or len(label) > 128
+    ):
         raise HomeAssistantError("Параметры страницы архива некорректны.")
+    label = label.strip()
+    if label and label not in _archive_labels_for_camera(entry, camera_entity_id):
+        raise HomeAssistantError("Эта метка не настроена для выбранной камеры.")
     options = entry.options if isinstance(entry.options, Mapping) else {}
     archive_directory = normalize_archive_directory(options.get(CONF_FILE_OUT))
     if not archive_directory:
@@ -390,6 +427,7 @@ async def async_get_camera_archive_data(
             camera_entity_id,
             cursor=cursor,
             limit=limit,
+            label=label,
         )
     except (OSError, TypeError, ValueError) as err:
         raise HomeAssistantError("Не удалось прочитать локальный архив DOOODS.") from err
@@ -657,6 +695,7 @@ async def websocket_profile_editor_data(
         probatio.Required("camera_entity_id"): str,
         probatio.Required("cursor"): str,
         probatio.Required("limit"): int,
+        probatio.Optional("label", default=""): str,
     }
 )
 @websocket_api.require_admin
@@ -673,6 +712,7 @@ async def websocket_profile_archive_data(
         camera_entity_id=msg["camera_entity_id"],
         cursor=msg["cursor"],
         limit=msg["limit"],
+        label=msg.get("label", ""),
     )
     connection.send_result(msg["id"], result)
 
