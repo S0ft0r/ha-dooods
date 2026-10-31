@@ -117,6 +117,7 @@ class _DooodsMotionGateSensor(CoordinatorEntity[DooodsCoordinator], SensorEntity
 
     _attr_has_entity_name = True
     _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_entity_registry_enabled_default = False
 
     def __init__(
         self,

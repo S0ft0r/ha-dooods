@@ -15,12 +15,12 @@
       },
       "cameras": {
         "title": "Cameras",
-        "description": "Choose cameras. Set each camera’s periodic scan interval, Recognition switch, Stream processing switch, and motion sensor in that camera device’s Settings section. Recognition off disables all scans. When Stream processing is on and supported, the RTSP motion gate takes priority over the selected HA motion sensor. By default, a working HA sensor is preferred; the RTSP gate defaults on when no usable sensor is available.",
+        "description": "Choose cameras. Configure each camera’s scan interval, Recognition switch, and motion source in that camera device’s Settings. The selector offers an HA motion sensor, RTSP stream (when supported), or no motion trigger. The selected source is used directly: an unavailable HA sensor does not trigger an RTSP fallback. On initial setup, a working HA sensor is selected by default; otherwise RTSP is selected when supported. Recognition off disables all scans.",
         "data": {
           "source": "Camera entities"
         },
         "data_description": {
-          "source": "Select one or more camera entities. Configure each camera’s own interval, recognition, RTSP motion gate, and motion sensor in its device Settings. When enabled and supported, the RTSP gate takes priority over HA motion; without an explicit switch choice, a working HA sensor is preferred and RTSP is enabled by default when no usable sensor is available. A separate profile is created for each selected camera when supported; edit its zones in the DOOODS panel."
+          "source": "Select one or more camera entities. Configure each camera’s interval, recognition, and motion source in its device Settings. Choose an HA motion sensor, RTSP (when supported), or no trigger; the selected source is exclusive and does not fall back if unavailable. Initial setup prefers a working HA sensor, otherwise RTSP when supported. A separate profile is created for each selected camera when supported; edit its zones in the DOOODS panel."
         }
       },
       "output": {
@@ -69,17 +69,17 @@
     "step": {
       "init": {
         "title": "Cameras",
-        "description": "Choose cameras. Set each camera’s periodic scan interval in that camera device’s Settings section; cameras without a saved value use 30 seconds. Each selected camera keeps its own profile on servers that support profiles. Configure each camera’s recognition, RTSP stream processing, and motion sensor in its device Settings. A working HA motion sensor is the default; when Stream processing is explicitly enabled and supported, the RTSP gate takes priority.",
+        "description": "Choose cameras. Set each camera’s scan interval in its device Settings (30 seconds by default), Recognition, and motion source. The selector chooses an HA sensor, RTSP stream when supported, or no trigger. The selected source is used directly; there is no runtime fallback if an HA sensor becomes unavailable. Each selected camera keeps its own profile on servers that support profiles.",
         "data": {
           "source": "Camera entities"
         },
         "data_description": {
-          "source": "Select the cameras to scan. Configure each camera’s own interval, recognition, RTSP motion gate, and motion sensor in its device Settings. A working HA motion sensor is preferred by default; if it is unavailable, RTSP processing defaults on when supported. An enabled RTSP gate takes priority over HA motion. A separate profile is ensured for each selected camera when supported."
+          "source": "Select the cameras to scan. Choose each camera’s motion source in its device Settings: an HA sensor, RTSP stream, or no trigger. Initial setup prefers a usable HA sensor and otherwise selects RTSP when supported. After selection, the source is used directly without fallback. A separate profile is ensured for each selected camera when supported."
         }
       },
       "settings": {
         "title": "Detector and archive settings",
-        "description": "Choose the detector and configure the archive and shared detection area. Timeout and confidence are managed by integration defaults. Configure each camera’s recognition, RTSP stream processing, and motion sensor in that camera device’s Settings section. If enabled and supported, RTSP motion processing takes priority over the selected HA motion sensor.",
+        "description": "Choose the detector and configure the archive and shared detection area. Timeout and confidence are managed by integration defaults. Configure recognition and the direct motion source in each camera device’s Settings; choose an HA sensor, RTSP stream, or no trigger. Select RTSP in the source selector to enable RTSP motion processing.",
         "data": {
           "detector": "Detector",
           "file_out": "Archive root directory",
@@ -439,24 +439,25 @@
       }
     },
     "select": {
-      "motion_sensor": {
-        "name": "Motion sensor",
+      "motion_source": {
+        "name": "Motion source",
         "state": {
-          "none": "Do not use"
+          "none": "Do not use",
+          "rtsp_stream": "RTSP stream"
         }
       }
     },
     "number": {
       "camera_scan_interval": {
         "name": "Scan interval"
+      },
+      "camera_motion_recheck_interval": {
+        "name": "Positive-detection recheck delay"
       }
     },
     "switch": {
       "camera_recognition": {
         "name": "Recognition"
-      },
-      "camera_stream_processing": {
-        "name": "Stream processing"
       }
     }
   },
