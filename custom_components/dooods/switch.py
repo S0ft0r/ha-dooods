@@ -1,4 +1,4 @@
-"""Переключатели распознавания и RTSP motion gate для каждой камеры."""
+"""Переключатель распознавания для каждой камеры."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from .camera_switches import normalize_camera_switches
-from .const import CONF_CAMERA_DETECTION_ENABLED, CONF_CAMERA_STREAM_ENABLED
+from .const import CONF_CAMERA_DETECTION_ENABLED
 from .device import camera_device_info
 
 
@@ -20,35 +20,23 @@ async def async_setup_entry(
     entry: ConfigEntry,
     async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
-    """Создать оба переключателя в настройках устройства каждой камеры."""
+    """Создать переключатель распознавания в настройках каждой камеры."""
     coordinator = entry.runtime_data
-    entities: list[DooodsCameraSwitch] = []
-    for camera_entity_id in coordinator.cameras:
-        entities.extend(
-            (
-                DooodsCameraSwitch(
-                    hass,
-                    entry,
-                    coordinator,
-                    camera_entity_id,
-                    option_key=CONF_CAMERA_DETECTION_ENABLED,
-                    switch_id="recognition",
-                    translation_key="camera_recognition",
-                    icon="mdi:eye",
-                ),
-                DooodsCameraSwitch(
-                    hass,
-                    entry,
-                    coordinator,
-                    camera_entity_id,
-                    option_key=CONF_CAMERA_STREAM_ENABLED,
-                    switch_id="stream_processing",
-                    translation_key="camera_stream_processing",
-                    icon="mdi:video-wireless",
-                ),
+    async_add_entities(
+        [
+            DooodsCameraSwitch(
+                hass,
+                entry,
+                coordinator,
+                camera_entity_id,
+                option_key=CONF_CAMERA_DETECTION_ENABLED,
+                switch_id="recognition",
+                translation_key="camera_recognition",
+                icon="mdi:eye",
             )
-        )
-    async_add_entities(entities)
+            for camera_entity_id in coordinator.cameras
+        ]
+    )
 
 
 class DooodsCameraSwitch(SwitchEntity):
@@ -88,11 +76,7 @@ class DooodsCameraSwitch(SwitchEntity):
     @property
     @override
     def is_on(self) -> bool:
-        """Вернуть сохранённое состояние или вычисленный per-camera default."""
-        if self._option_key == CONF_CAMERA_STREAM_ENABLED:
-            return self._coordinator.camera_stream_processing_is_enabled(
-                self._camera_entity_id
-            )
+        """Вернуть сохранённое состояние распознавания этой камеры."""
         return normalize_camera_switches(
             self._entry.options.get(self._option_key, {}),
             [self._camera_entity_id],
@@ -100,12 +84,12 @@ class DooodsCameraSwitch(SwitchEntity):
 
     @override
     async def async_turn_on(self, **kwargs: Any) -> None:
-        """Включить распознавание или обработку RTSP-потока только для этой камеры."""
+        """Включить распознавание только для этой камеры."""
         await self._async_set_enabled(True)
 
     @override
     async def async_turn_off(self, **kwargs: Any) -> None:
-        """Отключить соответствующую обработку только для этой камеры."""
+        """Отключить распознавание только для этой камеры."""
         await self._async_set_enabled(False)
 
     async def _async_set_enabled(self, enabled: bool) -> None:

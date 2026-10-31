@@ -1,5 +1,6 @@
 const PANEL_PATH = "dooods-profiles";
 const ARCHIVE_PAGE_SIZE = 12;
+const ARCHIVE_POLL_INTERVAL_MS = 15000;
 const COLORS = ["#00a6a6", "#f07c43", "#5b88e5", "#c052a0", "#8a9b32", "#e0a420"];
 
 class DooodsProfileManager extends HTMLElement {
@@ -34,8 +35,31 @@ class DooodsProfileManager extends HTMLElement {
     this._archiveRequestId = 0;
     this._archiveLoading = false;
     this._archiveObjectUrls = new Map();
+    this._archiveLabel = "";
+    this._archiveLoadedOlderFrames = false;
+    this._archiveHasNewFrames = false;
+    this._archivePolling = false;
+    this._archivePollRequestId = 0;
+    this._archivePollTimer = null;
     this._render();
     this._bindEvents();
+  }
+
+  connectedCallback() {
+    if (this._archivePollTimer === null) {
+      this._archivePollTimer = window.setInterval(
+        () => this._pollArchiveForNewFrames(),
+        ARCHIVE_POLL_INTERVAL_MS,
+      );
+    }
+    if (
+      this._hass
+      && this._selectedOption()
+      && this._activeTab === "archive"
+      && !this._archiveLoading
+    ) {
+      this._loadArchive(true);
+    }
   }
 
   set hass(hass) {
@@ -89,6 +113,11 @@ class DooodsProfileManager extends HTMLElement {
         .archive-status { margin:0 0 14px; color:var(--secondary-text-color,#64727b); font-size:13px; line-height:1.5; }
         .archive-status:empty { display:none; }
         .archive-status.error { color:var(--error-color,#b3261e); }
+        .archive-toolbar { display:flex; flex-wrap:wrap; align-items:end; justify-content:space-between; gap:10px; margin-bottom:14px; }
+        .archive-filter { display:grid; gap:5px; min-width:min(100%,240px); color:var(--secondary-text-color,#64727b); font-size:12px; }
+        .archive-filter select { min-height:36px; padding:6px 9px; color:var(--primary-text-color,#202b32); font-size:13px; }
+        .archive-new-frames { color:var(--primary-color,#008f89); font-size:13px; font-weight:650; }
+        .archive-new-frames[hidden] { display:none; }
         .archive-grid { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:12px; }
         .archive-card { min-width:0; overflow:hidden; border:1px solid var(--divider-color,#d8e0e4); border-radius:10px; background:var(--card-background-color,#fff); }
         .archive-thumb { position:relative; display:block; width:100%; min-height:0; aspect-ratio:16/9; overflow:hidden; border:0; border-radius:0; padding:0; background:var(--secondary-background-color,#edf1f2); }
@@ -97,7 +126,10 @@ class DooodsProfileManager extends HTMLElement {
         .archive-thumb img { display:block; width:100%; height:100%; object-fit:cover; }
         .archive-thumb-placeholder { position:absolute; inset:0; display:grid; place-items:center; color:var(--secondary-text-color,#64727b); font-size:12px; }
         .archive-thumb-placeholder[hidden] { display:none; }
-        .archive-card time { display:block; overflow:hidden; padding:7px 8px; color:var(--secondary-text-color,#64727b); font-size:12px; font-variant-numeric:tabular-nums; text-overflow:ellipsis; white-space:nowrap; }
+        .archive-card time { display:block; overflow:hidden; padding:7px 8px 4px; color:var(--secondary-text-color,#64727b); font-size:12px; font-variant-numeric:tabular-nums; text-overflow:ellipsis; white-space:nowrap; }
+        .archive-card-labels { display:flex; flex-wrap:wrap; gap:4px; padding:4px 8px 8px; }
+        .archive-card-labels:empty { display:none; }
+        .archive-label-chip { max-width:100%; overflow:hidden; border-radius:999px; padding:3px 7px; color:var(--secondary-text-color,#52616a); background:var(--secondary-background-color,#f0f3f4); font-size:10px; line-height:1.3; text-overflow:ellipsis; white-space:nowrap; }
         .archive-load-more { display:block; margin:16px auto 0; }
         .archive-load-more[hidden] { display:none; }
         .archive-modal { position:fixed; inset:0; z-index:20; display:grid; place-items:center; padding:22px; background:rgba(0,0,0,.78); }
@@ -183,6 +215,13 @@ class DooodsProfileManager extends HTMLElement {
             </nav>
             <section id="archive-pane" class="archive-pane" role="tabpanel" aria-labelledby="archive-tab-button">
               <h2 class="archive-title">Архив изображений</h2>
+              <div class="archive-toolbar">
+                <label class="archive-filter" for="archive-label-filter">
+                  <span>Метка</span>
+                  <select id="archive-label-filter"><option value="">Все</option></select>
+                </label>
+                <button id="archive-new-frames" class="archive-new-frames" type="button" hidden>Есть новые кадры</button>
+              </div>
               <p id="archive-status" class="archive-status" role="status" aria-live="polite">Выберите камеру для просмотра архива.</p>
               <div id="archive-grid" class="archive-grid" aria-live="polite"></div>
               <button id="archive-load-more" class="archive-load-more" type="button" hidden>Показать ещё</button>
@@ -217,6 +256,11 @@ class DooodsProfileManager extends HTMLElement {
                   <section id="settings-card" class="card settings-card" hidden>
                     <h2>Настройки выбранной зоны</h2>
                     <div class="field">
+                      <span class="field-title">Геометрия зоны</span>
+                      <p class="hint">Сброс затрагивает только вершины зоны; метки, пороги и остальные настройки сохраняются.</p>
+                      <button id="reset-zone-geometry-button" type="button" disabled>По умолчанию</button>
+                    </div>
+                    <div class="field">
                       <label for="zone-name">Название зоны</label>
                       <input id="zone-name" type="text" maxlength="128" autocomplete="off">
                     </div>
@@ -248,8 +292,10 @@ class DooodsProfileManager extends HTMLElement {
             <div id="archive-modal" class="archive-modal" hidden>
               <div class="archive-modal-card" role="dialog" aria-modal="true" aria-labelledby="archive-modal-time">
                 <button id="archive-modal-close" class="archive-modal-close" type="button" aria-label="Закрыть">×</button>
+                <button id="archive-modal-new-frames" class="archive-new-frames" type="button" hidden>Есть новые кадры</button>
                 <img id="archive-modal-image" class="archive-modal-image" alt="Увеличенный кадр из архива">
                 <time id="archive-modal-time" class="archive-modal-time"></time>
+                <div id="archive-modal-labels" class="archive-card-labels"></div>
               </div>
             </div>
           </section>
@@ -279,6 +325,21 @@ class DooodsProfileManager extends HTMLElement {
       this._openArchiveFrame(button.dataset.frameId);
     });
     this.shadowRoot.getElementById("archive-load-more").addEventListener("click", () => this._loadMoreArchiveFrames());
+    this.shadowRoot.getElementById("archive-label-filter").addEventListener("change", (event) => {
+      this._archiveLabel = event.target.value;
+      this._archiveLoadedOlderFrames = false;
+      this._archiveHasNewFrames = false;
+      this._renderArchiveNewFramesIndicator();
+      this._loadArchive(true);
+    });
+    this.shadowRoot.getElementById("archive-new-frames").addEventListener(
+      "click",
+      () => this._showNewArchiveFrames(),
+    );
+    this.shadowRoot.getElementById("archive-modal-new-frames").addEventListener(
+      "click",
+      () => this._showNewArchiveFrames(),
+    );
     const archiveModal = this.shadowRoot.getElementById("archive-modal");
     archiveModal.addEventListener("click", (event) => {
       if (event.target === archiveModal) this._closeArchiveModal();
@@ -299,6 +360,7 @@ class DooodsProfileManager extends HTMLElement {
     });
     this.shadowRoot.getElementById("add-zone-button").addEventListener("click", () => this._addZone());
     this.shadowRoot.getElementById("remove-zone-button").addEventListener("click", () => this._removeZone());
+    this.shadowRoot.getElementById("reset-zone-geometry-button").addEventListener("click", () => this._resetZoneGeometry());
     this.shadowRoot.getElementById("add-label-button").addEventListener("click", () => this._addLabel());
     this.shadowRoot.getElementById("save-zones-button").addEventListener("click", () => this._saveZones());
     this.shadowRoot.getElementById("add-vertex-button").addEventListener("click", () => this._toggleVertexInsertion());
@@ -364,6 +426,13 @@ class DooodsProfileManager extends HTMLElement {
     this._frameRequestId += 1;
     this._frameImageRequestId = 0;
     this._archiveRequestId += 1;
+    this._archivePollRequestId += 1;
+    this._archiveLoading = false;
+    this._archivePolling = false;
+    if (this._archivePollTimer !== null) {
+      window.clearInterval(this._archivePollTimer);
+      this._archivePollTimer = null;
+    }
     this._revokeFrameObjectUrl();
     this._revokeArchiveObjectUrls();
   }
@@ -381,10 +450,15 @@ class DooodsProfileManager extends HTMLElement {
     this._archiveCursor = "";
     this._archiveEnabled = false;
     this._archiveLoading = false;
+    this._archiveLabel = "";
+    this._archiveLoadedOlderFrames = false;
+    this._archiveHasNewFrames = false;
     this._revokeArchiveObjectUrls();
     this._closeArchiveModal(false);
     this.shadowRoot.getElementById("archive-grid").replaceChildren();
     this.shadowRoot.getElementById("archive-load-more").hidden = true;
+    this._renderArchiveFilter(null);
+    this._renderArchiveNewFramesIndicator();
     this._setArchiveStatus(message);
   }
 
@@ -392,6 +466,74 @@ class DooodsProfileManager extends HTMLElement {
     const status = this.shadowRoot.getElementById("archive-status");
     status.textContent = message;
     status.className = `archive-status${kind ? ` ${kind}` : ""}`;
+  }
+
+  _renderArchiveFilter(option = this._selectedOption()) {
+    const select = this.shadowRoot.getElementById("archive-label-filter");
+    const configuredLabels = option && Array.isArray(option.camera.archive_labels)
+      ? [...new Set(option.camera.archive_labels.filter((label) => (
+        typeof label === "string" && label.trim()
+      )))]
+      : [];
+    if (!configuredLabels.includes(this._archiveLabel)) this._archiveLabel = "";
+    select.replaceChildren();
+    const allOption = document.createElement("option");
+    allOption.value = "";
+    allOption.textContent = "Все";
+    select.appendChild(allOption);
+    configuredLabels.forEach((label) => {
+      const item = document.createElement("option");
+      item.value = label;
+      item.textContent = this._displayLabel(label);
+      select.appendChild(item);
+    });
+    select.value = this._archiveLabel;
+    select.disabled = !option || configuredLabels.length === 0;
+  }
+
+  _renderArchiveNewFramesIndicator() {
+    const visible = this._archiveHasNewFrames;
+    const archiveButton = this.shadowRoot.getElementById("archive-new-frames");
+    const modalButton = this.shadowRoot.getElementById("archive-modal-new-frames");
+    if (archiveButton) archiveButton.hidden = !visible;
+    if (modalButton) modalButton.hidden = !visible;
+  }
+
+  _showNewArchiveFrames() {
+    if (!this._archiveHasNewFrames) return;
+    this._archiveLoadedOlderFrames = false;
+    this._archiveHasNewFrames = false;
+    this._closeArchiveModal(false);
+    this._renderArchiveNewFramesIndicator();
+    this._loadArchive(true);
+  }
+
+  _archiveFramesFromPayload(payload) {
+    if (!payload || !Array.isArray(payload.frames)) return [];
+    return payload.frames
+      .filter((frame) => (
+        frame
+        && typeof frame.frame_id === "string"
+        && typeof frame.captured_at === "string"
+      ))
+      .map((frame) => {
+        const detections = Array.isArray(frame.detections)
+          ? frame.detections.filter((detection) => (
+            detection
+            && typeof detection.label === "string"
+            && typeof detection.confidence === "number"
+            && Number.isFinite(detection.confidence)
+          ))
+          : [];
+        return {
+          ...frame,
+          metadata_available: frame.metadata_available === true,
+          detections,
+          labels: Array.isArray(frame.labels)
+            ? frame.labels.filter((label) => typeof label === "string")
+            : [],
+        };
+      });
   }
 
   _setTab(tab) {
@@ -422,6 +564,31 @@ class DooodsProfileManager extends HTMLElement {
     }
   }
 
+  _renderArchiveDetectionLabels(container, detections) {
+    container.replaceChildren();
+    if (!Array.isArray(detections)) return;
+    const confidenceByLabel = new Map();
+    detections.forEach((detection) => {
+      if (
+        !detection
+        || typeof detection.label !== "string"
+        || typeof detection.confidence !== "number"
+        || !Number.isFinite(detection.confidence)
+      ) return;
+      const previous = confidenceByLabel.get(detection.label);
+      if (previous === undefined || detection.confidence > previous) {
+        confidenceByLabel.set(detection.label, detection.confidence);
+      }
+    });
+    confidenceByLabel.forEach((confidence, label) => {
+      const chip = document.createElement("span");
+      chip.className = "archive-label-chip";
+      chip.textContent = `${this._displayLabel(label)} ${Math.round(confidence)}%`;
+      chip.title = chip.textContent;
+      container.appendChild(chip);
+    });
+  }
+
   _renderArchiveFrames() {
     const grid = this.shadowRoot.getElementById("archive-grid");
     grid.replaceChildren();
@@ -444,7 +611,10 @@ class DooodsProfileManager extends HTMLElement {
       const time = document.createElement("time");
       time.dateTime = frame.captured_at;
       time.textContent = this._formatArchiveTime(frame.captured_at);
-      card.append(button, time);
+      const labels = document.createElement("div");
+      labels.className = "archive-card-labels";
+      this._renderArchiveDetectionLabels(labels, frame.detections);
+      card.append(button, time, labels);
       grid.appendChild(card);
       const objectUrl = this._archiveObjectUrls.get(frame.frame_id);
       if (objectUrl) {
@@ -454,8 +624,9 @@ class DooodsProfileManager extends HTMLElement {
     }
     const loadMore = this.shadowRoot.getElementById("archive-load-more");
     loadMore.hidden = !this._archiveCursor;
-    loadMore.disabled = this._archiveLoading;
+    loadMore.disabled = this._archiveLoading || this._archivePolling;
     loadMore.textContent = this._archiveLoading ? "Загрузка…" : "Показать ещё";
+    this._renderArchiveNewFramesIndicator();
   }
 
   _setArchiveImageSource(frameId, objectUrl) {
@@ -552,6 +723,8 @@ class DooodsProfileManager extends HTMLElement {
       this._archiveFrames = [];
       this._archiveCursor = "";
       this._archiveEnabled = false;
+      this._archiveLoadedOlderFrames = false;
+      this._archiveHasNewFrames = false;
       this._revokeArchiveObjectUrls();
       this._closeArchiveModal(false);
       this._setArchiveStatus("Загрузка архива…");
@@ -568,6 +741,7 @@ class DooodsProfileManager extends HTMLElement {
         camera_entity_id: option.camera.entity_id,
         cursor,
         limit: ARCHIVE_PAGE_SIZE,
+        label: this._archiveLabel,
       });
       if (
         requestId !== this._archiveRequestId
@@ -582,13 +756,8 @@ class DooodsProfileManager extends HTMLElement {
         return;
       }
       this._archiveEnabled = true;
-      const incoming = Array.isArray(payload.frames)
-        ? payload.frames.filter((frame) => (
-          frame
-          && typeof frame.frame_id === "string"
-          && typeof frame.captured_at === "string"
-        ))
-        : [];
+      const incoming = this._archiveFramesFromPayload(payload);
+      if (!reset && incoming.length) this._archiveLoadedOlderFrames = true;
       const knownIds = new Set(this._archiveFrames.map((frame) => frame.frame_id));
       const newFrames = incoming.filter((frame) => !knownIds.has(frame.frame_id));
       this._archiveFrames = reset
@@ -623,8 +792,85 @@ class DooodsProfileManager extends HTMLElement {
     }
   }
 
+  async _pollArchiveForNewFrames() {
+    const option = this._selectedOption();
+    if (
+      !this._hass
+      || !option
+      || !this._archiveEnabled
+      || this._archiveLoading
+      || this._archivePolling
+      || this._activeTab !== "archive"
+    ) return;
+
+    const pollRequestId = ++this._archivePollRequestId;
+    const archiveRequestId = this._archiveRequestId;
+    this._archivePolling = true;
+    const loadMore = this.shadowRoot.getElementById("archive-load-more");
+    loadMore.disabled = true;
+    try {
+      const payload = await this._hass.callWS({
+        type: "dooods/profile_manager/archive_data",
+        entry_id: option.entryId,
+        camera_entity_id: option.camera.entity_id,
+        cursor: "",
+        limit: ARCHIVE_PAGE_SIZE,
+        label: this._archiveLabel,
+      });
+      if (
+        pollRequestId !== this._archivePollRequestId
+        || archiveRequestId !== this._archiveRequestId
+        || this._selectedOption()?.key !== option.key
+        || this._activeTab !== "archive"
+        || !payload
+        || payload.enabled !== true
+      ) return;
+
+      const incoming = this._archiveFramesFromPayload(payload);
+      const knownIds = new Set(this._archiveFrames.map((frame) => frame.frame_id));
+      const newFrames = incoming.filter((frame) => !knownIds.has(frame.frame_id));
+      if (!newFrames.length) return;
+
+      const modal = this.shadowRoot.getElementById("archive-modal");
+      if (this._archiveLoadedOlderFrames || !modal.hidden) {
+        this._archiveHasNewFrames = true;
+        this._renderArchiveNewFramesIndicator();
+        return;
+      }
+
+      const currentIds = new Set(incoming.map((frame) => frame.frame_id));
+      for (const [frameId, objectUrl] of this._archiveObjectUrls.entries()) {
+        if (currentIds.has(frameId)) continue;
+        URL.revokeObjectURL(objectUrl);
+        this._archiveObjectUrls.delete(frameId);
+      }
+      this._archiveFrames = incoming;
+      this._archiveCursor = typeof payload.next_cursor === "string"
+        ? payload.next_cursor
+        : "";
+      this._archiveHasNewFrames = false;
+      this._setArchiveStatus(
+        this._archiveFrames.length ? "" : "Архивных изображений пока нет.",
+      );
+      this._renderArchiveFrames();
+      await Promise.all(
+        newFrames.map((frame) => this._loadArchiveImage(option, frame, archiveRequestId)),
+      );
+    } catch (_error) {
+      // Ignore transient polling errors; the regular archive view remains usable.
+    } finally {
+      if (pollRequestId === this._archivePollRequestId) {
+        this._archivePolling = false;
+        const loadMore = this.shadowRoot.getElementById("archive-load-more");
+        loadMore.disabled = this._archiveLoading || !this._archiveCursor;
+      }
+    }
+  }
+
   _loadMoreArchiveFrames() {
-    if (this._archiveCursor && !this._archiveLoading) this._loadArchive(false);
+    if (this._archiveCursor && !this._archiveLoading && !this._archivePolling) {
+      this._loadArchive(false);
+    }
   }
 
   async _openArchiveFrame(frameId) {
@@ -645,6 +891,11 @@ class DooodsProfileManager extends HTMLElement {
     const time = this.shadowRoot.getElementById("archive-modal-time");
     time.dateTime = frame.captured_at;
     time.textContent = this._formatArchiveTime(frame.captured_at);
+    this._renderArchiveDetectionLabels(
+      this.shadowRoot.getElementById("archive-modal-labels"),
+      frame.detections,
+    );
+    this._renderArchiveNewFramesIndicator();
     modal.hidden = false;
     this.shadowRoot.getElementById("archive-modal-close").focus();
   }
@@ -675,7 +926,14 @@ class DooodsProfileManager extends HTMLElement {
         options.push({
           entryId: entry.entry_id,
           profilesError: entry.profiles_error || "",
-          camera,
+          camera: {
+            ...camera,
+            archive_labels: Array.isArray(camera.archive_labels)
+              ? camera.archive_labels.filter((label) => (
+                typeof label === "string" && label.trim()
+              ))
+              : [],
+          },
           key: `${entry.entry_id}\u0000${camera.entity_id}`,
         });
       }
@@ -800,6 +1058,10 @@ class DooodsProfileManager extends HTMLElement {
       this._setStatus("");
       return;
     }
+    this._renderArchiveFilter(option);
+    this._archiveLoadedOlderFrames = false;
+    this._archiveHasNewFrames = false;
+    this._renderArchiveNewFramesIndicator();
     this._loadArchive(true);
     this._loadCameraFrame();
     if (option.profilesError) {
@@ -1074,6 +1336,21 @@ class DooodsProfileManager extends HTMLElement {
     this._renderZoneSettings();
   }
 
+  _resetZoneGeometry() {
+    const zone = this._currentZone();
+    if (!zone || !this._frameReady) return;
+    zone.points = [
+      { left: 0, top: 0 },
+      { left: 1, top: 0 },
+      { left: 1, top: 1 },
+      { left: 0, top: 1 },
+    ];
+    this._selectedVertex = -1;
+    this._addingVertex = false;
+    this._markDirty();
+    this._renderZoneSettings();
+  }
+
   _addZone() {
     if (!this._profile || !this._frameReady) return;
     const labels = this._availableLabels.includes("person") ? { person: 50 } : {};
@@ -1293,6 +1570,7 @@ class DooodsProfileManager extends HTMLElement {
     this.shadowRoot.getElementById("dirty-note").textContent = this._dirty ? "Есть несохранённые изменения" : "";
     this.shadowRoot.getElementById("zone-name").disabled = !zone;
     this.shadowRoot.getElementById("covers-select").disabled = !zone;
+    this.shadowRoot.getElementById("reset-zone-geometry-button").disabled = !zone || !this._frameReady;
   }
 
   async _saveZones() {
