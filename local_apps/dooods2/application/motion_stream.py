@@ -42,9 +42,17 @@ class MotionStreamWorker:
     def run(self) -> None:
         """Connect, sample frames, and reconnect until the websocket closes."""
         reconnect_delay = 1.0
-        last_candidate_at = 0.0
+        last_candidate_at_monotonic = 0.0
         last_status_at = 0.0
         connected = False
+        sampled_frames_total = 0
+        candidate_frames_total = 0
+        sampled_frames_interval = 0
+        candidate_frames_interval = 0
+        last_score: float | None = None
+        max_score_interval = 0.0
+        last_motion_at: str | None = None
+        last_candidate_at: str | None = None
 
         while not self.stop_event.is_set():
             capture = self._open_capture()
@@ -60,11 +68,27 @@ class MotionStreamWorker:
                 continue
 
             if not connected:
-                self._emit_status("connected")
+                self._emit_status(
+                    "connected",
+                    gate_active=False,
+                    last_score=last_score,
+                    max_score_interval=max_score_interval,
+                    threshold=self.request.changed_fraction,
+                    sampled_frames_total=sampled_frames_total,
+                    candidate_frames_total=candidate_frames_total,
+                    sampled_frames_interval=sampled_frames_interval,
+                    candidate_frames_interval=candidate_frames_interval,
+                    last_motion_at=last_motion_at,
+                    last_candidate_at=last_candidate_at,
+                )
             connected = True
             reconnect_delay = 1.0
             last_sample_at = 0.0
             self.gate.reset()
+            last_status_at = time.monotonic()
+            sampled_frames_interval = 0
+            candidate_frames_interval = 0
+            max_score_interval = 0.0
 
             try:
                 while not self.stop_event.is_set():
@@ -78,13 +102,19 @@ class MotionStreamWorker:
                     last_sample_at = now
 
                     update = self.gate.update(frame)
+                    sampled_frames_total += 1
+                    sampled_frames_interval += 1
+                    last_score = update.changed_fraction
+                    max_score_interval = max(max_score_interval, last_score)
                     if update.started:
+                        last_motion_at = datetime.now(UTC).isoformat()
                         self.publish(
                             {
                                 "type": "motion",
                                 "source_id": self.request.source_id,
                                 "state": "active",
                                 "score": round(update.changed_fraction, 6),
+                                "occurred_at": last_motion_at,
                             }
                         )
                     elif update.ended:
@@ -99,14 +129,37 @@ class MotionStreamWorker:
 
                     if update.active and (
                         update.started
-                        or now - last_candidate_at >= self.request.candidate_interval
+                        or now - last_candidate_at_monotonic
+                        >= self.request.candidate_interval
                     ):
-                        self._publish_candidate(frame, update.changed_fraction)
-                        last_candidate_at = now
+                        candidate_at = self._publish_candidate(
+                            frame,
+                            update.changed_fraction,
+                        )
+                        if candidate_at is not None:
+                            candidate_frames_total += 1
+                            candidate_frames_interval += 1
+                            last_candidate_at = candidate_at
+                            last_candidate_at_monotonic = now
 
                     if now - last_status_at >= 5.0:
-                        self._emit_status("connected")
+                        self._emit_status(
+                            "connected",
+                            gate_active=update.active,
+                            last_score=round(last_score, 6),
+                            max_score_interval=round(max_score_interval, 6),
+                            threshold=self.request.changed_fraction,
+                            sampled_frames_total=sampled_frames_total,
+                            candidate_frames_total=candidate_frames_total,
+                            sampled_frames_interval=sampled_frames_interval,
+                            candidate_frames_interval=candidate_frames_interval,
+                            last_motion_at=last_motion_at,
+                            last_candidate_at=last_candidate_at,
+                        )
                         last_status_at = now
+                        sampled_frames_interval = 0
+                        candidate_frames_interval = 0
+                        max_score_interval = 0.0
             except Exception as err:
                 # A decode failure should reconnect, not kill HA's stream task.
                 _LOGGER.debug(
@@ -164,8 +217,8 @@ class MotionStreamWorker:
             capture.set(buffer_size, 1)
         return capture
 
-    def _publish_candidate(self, frame, score: float) -> None:
-        """Encode the original-resolution frame; never log or persist its source URL."""
+    def _publish_candidate(self, frame, score: float) -> str | None:
+        """Encode an original-resolution candidate and return its capture timestamp."""
         encoded_ok, encoded = cv2.imencode(
             ".jpg",
             frame,
@@ -173,23 +226,25 @@ class MotionStreamWorker:
         )
         if not encoded_ok:
             self._emit_status("frame_encode_failed")
-            return
+            return None
+        captured_at = datetime.now(UTC).isoformat()
         self.publish(
             {
                 "type": "candidate",
                 "source_id": self.request.source_id,
-                "captured_at": datetime.now(UTC).isoformat(),
+                "captured_at": captured_at,
                 "motion_score": round(score, 6),
                 "image": base64.b64encode(encoded.tobytes()).decode("ascii"),
             }
         )
+        return captured_at
 
-    def _emit_status(self, state: str) -> None:
-        """Publish a status that contains no RTSP URL or camera credentials."""
-        self.publish(
-            {
-                "type": "status",
-                "source_id": self.request.source_id,
-                "state": state,
-            }
-        )
+    def _emit_status(self, state: str, **statistics: Any) -> None:
+        """Publish status/metrics without including a stream URL or credentials."""
+        event: dict[str, Any] = {
+            "type": "status",
+            "source_id": self.request.source_id,
+            "state": state,
+        }
+        event.update(statistics)
+        self.publish(event)
