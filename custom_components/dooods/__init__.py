@@ -26,6 +26,9 @@ from .api import (
     async_get_profiles,
 )
 from .archive import normalize_archive_directory, normalize_archive_limit
+from .camera_motion_recheck_intervals import (
+    normalize_camera_motion_recheck_intervals,
+)
 from .camera_scan_intervals import normalize_camera_scan_intervals
 from .camera_switches import normalize_camera_switches
 from .const import (
@@ -34,6 +37,7 @@ from .const import (
     CONF_ARCHIVE_MAX_COUNT,
     CONF_AUTH_KEY,
     CONF_CAMERA_DETECTION_ENABLED,
+    CONF_CAMERA_MOTION_RECHECK_INTERVALS,
     CONF_CAMERA_PROFILES,
     CONF_CAMERA_SCAN_INTERVALS,
     CONF_CAMERA_STREAM_ENABLED,
@@ -54,8 +58,9 @@ from .const import (
     MOTION_SENSOR_NONE,
 )
 from .coordinator import DooodsCoordinator
+from .entity_migrations import migrate_camera_entity_registry
 from .panel_url import build_profile_manager_url
-from .motion import resolve_motion_sensors
+from .motion import motion_sensor_is_usable, resolve_motion_sensors
 from .profile_panel import (
     async_ensure_camera_profiles,
     async_register_profile_camera_archive_view,
@@ -99,6 +104,37 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
         await async_register_profile_panel(hass)
     except Exception:  # Camera detection can still run if sidebar setup fails.
         _LOGGER.exception("Не удалось зарегистрировать панель профилей DOOODS")
+    return True
+
+
+async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    """Migrate per-camera diagnostic entities and the old stream switch once."""
+    current_version = getattr(entry, "version", 1)
+    if current_version > 2:
+        _LOGGER.error(
+            "Config entry %s has unsupported version %s",
+            entry.entry_id,
+            current_version,
+        )
+        return False
+    if current_version < 2:
+        options = entry.options if isinstance(entry.options, Mapping) else {}
+        cameras = options.get(CONF_SOURCE, [])
+        if not isinstance(cameras, list):
+            cameras = []
+        disabled, removed = migrate_camera_entity_registry(
+            hass,
+            entry.entry_id,
+            cameras,
+        )
+        hass.config_entries.async_update_entry(entry, version=2)
+        _LOGGER.info(
+            "Migrated DOOODS camera entities for %s: disabled %d RTSP diagnostics; "
+            "removed %d stream switches",
+            entry.entry_id,
+            disabled,
+            removed,
+        )
     return True
 
 
@@ -328,15 +364,35 @@ async def async_setup_entry(hass: HomeAssistant, entry: DooodsConfigEntry) -> bo
         options.get(CONF_CAMERA_SCAN_INTERVALS, {}),
         cameras,
     )
+    camera_motion_recheck_intervals = normalize_camera_motion_recheck_intervals(
+        options.get(CONF_CAMERA_MOTION_RECHECK_INTERVALS, {}),
+        cameras,
+    )
     camera_detection_enabled = normalize_camera_switches(
         options.get(CONF_CAMERA_DETECTION_ENABLED, {}),
         cameras,
     )
+    default_stream_sources = {
+        camera_entity_id: bool(
+            motion_stream_enabled
+            and not motion_sensor_is_usable(
+                hass,
+                motion_sensors.get(camera_entity_id),
+            )
+        )
+        for camera_entity_id in cameras
+    }
     camera_stream_enabled = normalize_camera_switches(
         options.get(CONF_CAMERA_STREAM_ENABLED, {}),
         cameras,
-        default=None,
+        default=default_stream_sources,
     )
+    # Persist the initial source so later sensor availability changes do not silently
+    # switch a camera from HA motion to RTSP after the user has chosen a source.
+    if camera_stream_enabled != options.get(CONF_CAMERA_STREAM_ENABLED, {}):
+        options = dict(options)
+        options[CONF_CAMERA_STREAM_ENABLED] = camera_stream_enabled
+        hass.config_entries.async_update_entry(entry, options=options)
     camera_profiles = normalize_camera_profiles(
         options.get(CONF_CAMERA_PROFILES, {}),
         cameras,
@@ -449,6 +505,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: DooodsConfigEntry) -> bo
         area=normalized_area,
         timeout=int(options.get(CONF_TIMEOUT, DEFAULT_TIMEOUT)),
         camera_scan_intervals=camera_scan_intervals,
+        camera_motion_recheck_intervals=camera_motion_recheck_intervals,
         parent_device_id=parent_device_id,
         parent_device_identifier=parent_device_identifier,
         preview_enabled=preview_enabled,

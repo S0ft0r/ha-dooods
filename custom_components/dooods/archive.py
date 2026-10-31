@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import hashlib
+import json
+import math
 import os
 import re
 import uuid
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
@@ -56,6 +58,54 @@ def normalize_archive_directory(value: Any) -> str:
     return directories[0] if len(directories) == 1 else ""
 
 
+def _normalize_archived_detections(value: Any) -> list[dict[str, Any]]:
+    """Оставить канонические метки, confidence и ID зоны из sidecar."""
+    if not isinstance(value, (list, tuple)):
+        return []
+    normalized: list[dict[str, Any]] = []
+    for detection in value:
+        if not isinstance(detection, Mapping):
+            continue
+        label = detection.get("label")
+        confidence = detection.get("confidence")
+        if (
+            not isinstance(label, str)
+            or not label.strip()
+            or isinstance(confidence, bool)
+            or not isinstance(confidence, (int, float))
+        ):
+            continue
+        try:
+            numeric_confidence = float(confidence)
+        except OverflowError:
+            continue
+        if not math.isfinite(numeric_confidence):
+            continue
+        item: dict[str, Any] = {
+            "label": label.strip(),
+            "confidence": numeric_confidence,
+        }
+        region_id = detection.get("region_id")
+        if isinstance(region_id, str) and region_id.strip():
+            item["region_id"] = region_id.strip()
+        normalized.append(item)
+    return normalized
+
+
+def _read_archive_metadata(frame_path: Path) -> list[dict[str, Any]] | None:
+    """Прочитать безопасный sidecar; `None` отличает старый JPEG без метаданных."""
+    metadata_path = frame_path.with_suffix(".json")
+    if metadata_path.is_symlink() or not metadata_path.is_file():
+        return None
+    try:
+        payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, ValueError):
+        return None
+    if not isinstance(payload, Mapping) or not isinstance(payload.get("detections"), list):
+        return None
+    return _normalize_archived_detections(payload["detections"])
+
+
 def _safe_component(value: str) -> str:
     """Преобразовать идентификатор в безопасный и устойчивый компонент пути."""
     readable = re.sub(r"[^a-zA-Z0-9_-]+", "_", value).strip("_.-").lower()
@@ -83,6 +133,7 @@ def save_annotated_frame_sync(
     image: bytes,
     checked_at: datetime,
     *,
+    detections: Sequence[Any] = (),
     max_count: int,
     max_age_days: int,
     now: datetime | None = None,
@@ -107,16 +158,29 @@ def save_annotated_frame_sync(
     destination = date_directory / (
         f"{_ARCHIVE_FILENAME_PREFIX}{timestamp}_{uuid.uuid4().hex[:8]}.jpg"
     )
+    metadata_destination = destination.with_suffix(".json")
     temporary = date_directory / f".{destination.name}.{uuid.uuid4().hex}.tmp"
+    metadata_temporary = date_directory / (
+        f".{metadata_destination.name}.{uuid.uuid4().hex}.tmp"
+    )
+    metadata = {"detections": _normalize_archived_detections(detections)}
     try:
         with temporary.open("xb") as image_file:
             image_file.write(image)
+        with metadata_temporary.open("x", encoding="utf-8") as metadata_file:
+            json.dump(metadata, metadata_file, ensure_ascii=False, separators=(",", ":"))
         os.replace(temporary, destination)
+        os.replace(metadata_temporary, metadata_destination)
+    except OSError:
+        destination.unlink(missing_ok=True)
+        metadata_destination.unlink(missing_ok=True)
+        raise
     finally:
-        try:
-            temporary.unlink(missing_ok=True)
-        except OSError:
-            pass
+        for temporary_path in (temporary, metadata_temporary):
+            try:
+                temporary_path.unlink(missing_ok=True)
+            except OSError:
+                pass
 
     _prune_camera_archive_sync(
         camera_root,
@@ -164,6 +228,16 @@ def prune_archive_sync(
     return deleted
 
 
+def _remove_archive_sidecar(frame_path: Path) -> None:
+    """Удалить sidecar JSON вместе с JPEG, не переходя по симлинку."""
+    metadata_path = frame_path.with_suffix(".json")
+    try:
+        if metadata_path.is_symlink() or metadata_path.is_file():
+            metadata_path.unlink()
+    except OSError:
+        pass
+
+
 def _prune_camera_archive_sync(
     camera_root: Path,
     *,
@@ -204,6 +278,7 @@ def _prune_camera_archive_sync(
             except FileNotFoundError:
                 continue
             deleted += 1
+            _remove_archive_sidecar(path)
             _remove_empty_date_directories(path.parent, camera_root)
         else:
             kept += 1
@@ -274,15 +349,15 @@ def list_archived_frames_sync(
     *,
     cursor: str = "",
     limit: int = 40,
+    label: str = "",
 ) -> dict[str, Any]:
-    """Вернуть страницу JPEG одной камеры в порядке от новых кадров к старым.
-
-    В ответ не входят абсолютные пути. `frame_id` — только проверяемое имя файла;
-    `next_cursor` используется для следующей страницы.
-    """
+    """Вернуть кадры камеры по времени, необязательно фильтруя их по метке."""
     cursor_timestamp = _archive_frame_timestamp(cursor) if cursor else None
     if cursor and cursor_timestamp is None:
         return {"frames": [], "next_cursor": ""}
+    if not isinstance(label, str) or len(label) > 128:
+        return {"frames": [], "next_cursor": ""}
+    label = label.strip()
     try:
         safe_limit = max(1, min(int(limit), _MAX_ARCHIVE_PAGE_SIZE))
     except (TypeError, ValueError):
@@ -298,7 +373,7 @@ def list_archived_frames_sync(
     ):
         return {"frames": [], "next_cursor": ""}
 
-    candidates: list[tuple[datetime, str]] = []
+    candidates: list[tuple[datetime, str, list[dict[str, Any]] | None]] = []
     try:
         date_directories = sorted(
             camera_root.iterdir(),
@@ -333,7 +408,13 @@ def list_archived_frames_sync(
                 continue
             if cursor and image_path.name >= cursor:
                 continue
-            candidates.append((captured_at, image_path.name))
+            metadata = _read_archive_metadata(image_path)
+            if label and (
+                metadata is None
+                or not any(detection["label"] == label for detection in metadata)
+            ):
+                continue
+            candidates.append((captured_at, image_path.name, metadata))
             if len(candidates) > safe_limit:
                 break
         if len(candidates) > safe_limit:
@@ -341,15 +422,22 @@ def list_archived_frames_sync(
 
     has_more = len(candidates) > safe_limit
     selected = candidates[:safe_limit]
-    frames = [
-        {
-            "frame_id": filename,
-            "captured_at": captured_at.isoformat(timespec="milliseconds").replace(
-                "+00:00", "Z"
-            ),
-        }
-        for captured_at, filename in selected
-    ]
+    frames: list[dict[str, Any]] = []
+    for captured_at, filename, metadata in selected:
+        detections = metadata or []
+        frames.append(
+            {
+                "frame_id": filename,
+                "captured_at": captured_at.isoformat(timespec="milliseconds").replace(
+                    "+00:00", "Z"
+                ),
+                "metadata_available": metadata is not None,
+                "detections": detections,
+                "labels": list(dict.fromkeys(
+                    detection["label"] for detection in detections
+                )),
+            }
+        )
     next_cursor = selected[-1][1] if has_more and selected else ""
     return {"frames": frames, "next_cursor": next_cursor}
 
@@ -393,6 +481,7 @@ async def async_list_archived_frames(
     *,
     cursor: str = "",
     limit: int = 40,
+    label: str = "",
 ) -> dict[str, Any]:
     """Получить страницу архива выбранной камеры в executor Home Assistant."""
     archive_directory = _resolve_archive_directory(hass, directory)
@@ -403,6 +492,7 @@ async def async_list_archived_frames(
         camera_entity_id,
         cursor=cursor,
         limit=limit,
+        label=label,
     )
     return await hass.async_add_executor_job(list_frames)
 
@@ -434,6 +524,7 @@ async def async_save_annotated_frame(
     image: bytes,
     checked_at: datetime,
     *,
+    detections: Sequence[Any] = (),
     max_count: int,
     max_age_days: int,
 ) -> Path:
@@ -446,6 +537,7 @@ async def async_save_annotated_frame(
         camera_entity_id,
         image,
         checked_at,
+        detections=detections,
         max_count=max_count,
         max_age_days=max_age_days,
     )
