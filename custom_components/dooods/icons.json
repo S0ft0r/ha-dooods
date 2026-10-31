@@ -284,6 +284,14 @@
         "default": "mdi:shape-outline"
       }
     },
+    "number": {
+      "camera_scan_interval": {
+        "default": "mdi:timer-outline"
+      },
+      "camera_motion_recheck_interval": {
+        "default": "mdi:timer-refresh-outline"
+      }
+    },
     "sensor": {
       "camera_detections": {
         "default": "mdi:shape-outline"

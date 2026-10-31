@@ -36,7 +36,7 @@ def default_camera_profile(
         "zones": [
             {
                 "id": "full-frame",
-                "name": "Весь кадр",
+                "name": "Зона 1",
                 "points": [dict(point) for point in _FULL_FRAME_POINTS],
                 "covers": False,
                 "labels": {label: 50},
