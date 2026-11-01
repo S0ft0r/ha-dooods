@@ -134,7 +134,7 @@ def _bundle_notes(versions: dict[str, str], member_count: int) -> str:
             "",
             "It is **not** a full DOOODS repository archive. It omits `analysis/tests/`, the optional developer source mirror at `analysis/application/`, upstream snapshots, root-level project documents, asset experiments, and historical release ZIPs. The GitHub component workflows run against the included `local_apps/dooods2/` tree; where `analysis/application/` is present in a developer monorepo, validators also compare it with the checked-in App build context. The broader `validate_repository.py` is intended for the full developer monorepo.",
             "",
-            "The separate component artifact workflow still creates independent Integration and App Actions artifacts; this combined ZIP does not publish to GitHub Releases, HACS, or the Home Assistant Apps Store.",
+            "Building this ZIP does not publish anything by itself. The manually dispatched `create-github-release.yml` workflow attaches the focused ZIP and checksum to a GitHub prerelease. The separate component-artifact workflow still creates independent Integration and App Actions artifacts; neither workflow publishes to HACS or the Home Assistant Apps Store.",
             "",
             "## Validate the downloaded ZIP",
             "",
