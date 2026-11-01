@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Syntax-check JavaScript only under custom_components/dooods and local_apps/dooods2."""
+"""Syntax-check JavaScript only under the monorepo's integration and App sources."""
 
 from __future__ import annotations
 
+import argparse
 import subprocess
 import sys
 import tempfile
@@ -10,7 +11,10 @@ from html.parser import HTMLParser
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-_COMPONENT_DIRS = (Path("custom_components/dooods"), Path("local_apps/dooods2"))
+_COMPONENT_DIRS = {
+    "integration": Path("custom_components/dooods"),
+    "app": Path("local_apps/dooods2"),
+}
 _JS_TYPES = {
     "",
     "application/ecmascript",
@@ -67,13 +71,18 @@ def _check(node: str, path: Path, label: str, root: Path) -> str | None:
     return f"JavaScript syntax error in {label}:\n{detail}"
 
 
-def validate_javascript(root: Path = ROOT, node: str = "node") -> list[str]:
-    """Check external and inline JS files in the integration and App directories."""
+def validate_javascript(
+    root: Path = ROOT,
+    node: str = "node",
+    components: tuple[str, ...] = ("integration", "app"),
+) -> list[str]:
+    """Check external and inline JS files in only the requested component(s)."""
     root = root.resolve()
     errors: list[str] = []
     js_files: set[Path] = set()
     html_files: set[Path] = set()
-    for relative in _COMPONENT_DIRS:
+    for component in components:
+        relative = _COMPONENT_DIRS[component]
         base = root / relative
         if not base.is_dir():
             errors.append(f"component directory is missing: {relative.as_posix()}")
@@ -111,18 +120,24 @@ def validate_javascript(root: Path = ROOT, node: str = "node") -> list[str]:
                 checked += 1
 
     if checked == 0:
-        errors.append("no JavaScript files or inline scripts found in the two component directories")
+        selected = ", ".join(components)
+        errors.append(f"no JavaScript files or inline scripts found in selected components: {selected}")
     return errors
 
 
 def main() -> int:
-    errors = validate_javascript()
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--component", choices=("integration", "app", "all"), default="all")
+    args = parser.parse_args()
+    components = ("integration", "app") if args.component == "all" else (args.component,)
+
+    errors = validate_javascript(components=components)
     if errors:
         print("JavaScript validation failed:", file=sys.stderr)
         for error in errors:
             print(f"  - {error}", file=sys.stderr)
         return 1
-    print("JavaScript validation passed for custom_components/dooods and local_apps/dooods2.")
+    print(f"JavaScript syntax validation passed for: {', '.join(components)}.")
     return 0
 
 

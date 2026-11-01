@@ -4,15 +4,15 @@ on:
   push:
     paths:
       - "custom_components/**"
-      - "local_apps/**"
-      - ".github/workflows/validate.yml"
+      - "local_apps/dooods2/**"
+      - ".github/workflows/**"
       - ".github/scripts/**"
       - ".github/requirements-validator.txt"
   pull_request:
     paths:
       - "custom_components/**"
-      - "local_apps/**"
-      - ".github/workflows/validate.yml"
+      - "local_apps/dooods2/**"
+      - ".github/workflows/**"
       - ".github/scripts/**"
       - ".github/requirements-validator.txt"
   workflow_dispatch:
@@ -26,7 +26,7 @@ concurrency:
 
 jobs:
   validate:
-    name: Validate integration and App files
+    name: Validate integration and App component trees
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -43,7 +43,7 @@ jobs:
       - name: Install validator dependency
         run: python -m pip install -r .github/requirements-validator.txt
 
-      - name: Validate only custom_components/dooods and local_apps/dooods2
+      - name: Validate component metadata, syntax, and available App source mirror
         run: python .github/scripts/validate_components.py
 
       - name: Set up Node.js
@@ -51,5 +51,8 @@ jobs:
         with:
           node-version: "22"
 
-      - name: Check JavaScript under the integration and App directories
+      - name: Check JavaScript under the integration and App component trees
         run: python .github/scripts/validate_javascript.py
+
+      - name: Check JavaScript in the authoritative App source or App build context
+        run: python .github/scripts/validate_javascript_project.py
