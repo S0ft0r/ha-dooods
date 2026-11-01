@@ -49,6 +49,12 @@ from .const import (
     CONF_RIGHT,
     CONF_TOP,
     DOMAIN,
+    EVENT_DETECTION,
+)
+from .events import detection_event_data
+from .frame_comparison import (
+    source_frame_signature,
+    source_frames_are_similar,
 )
 from .motion import motion_sensor_is_usable
 from .preview import (
@@ -98,6 +104,7 @@ class DooodsCoordinator(DataUpdateCoordinator[dict[str, CameraScanResult]]):
         archive_directory: str = "",
         archive_max_count: int = 10,
         archive_max_age_days: int = 0,
+        emit_detection_events: bool = False,
     ) -> None:
         """Инициализировать координатор и неизменяемые параметры сканирования."""
         super().__init__(
@@ -162,11 +169,15 @@ class DooodsCoordinator(DataUpdateCoordinator[dict[str, CameraScanResult]]):
         self.archive_directory = normalize_archive_directory(archive_directory)
         self.archive_max_count = max(0, archive_max_count)
         self.archive_max_age_days = max(0, archive_max_age_days)
+        self._last_successful_frame_signatures: dict[str, bytes] = {}
+        self._archive_retry_frame_signatures: dict[str, bytes] = {}
+        self.emit_detection_events = bool(emit_detection_events)
         self._archive_cleanup_unsubscribe: Callable[[], None] | None = None
         self._archive_cleanup_task: asyncio.Task[Any] | None = None
         self._profile_labels_unsubscribe: Callable[[], None] | None = None
         self._profile_labels_task: asyncio.Task[Any] | None = None
         self._pending_camera_scans: set[str] = set()
+        self._pending_periodic_camera_scans: set[str] = set()
         self._pending_motion_camera_scans: set[str] = set()
         self._motion_candidate_cooldowns: dict[str, float] = {}
         self._force_full_scan = False
@@ -537,6 +548,7 @@ class DooodsCoordinator(DataUpdateCoordinator[dict[str, CameraScanResult]]):
                 self._cancel_periodic_scan_for_camera(camera_entity_id)
                 self._clear_camera_retry(camera_entity_id)
                 self._pending_camera_scans.discard(camera_entity_id)
+                self._pending_periodic_camera_scans.discard(camera_entity_id)
                 self._pending_motion_candidates.pop(camera_entity_id, None)
                 self._stop_motion_stream(camera_entity_id)
                 results = dict(self.data or {})
@@ -920,6 +932,9 @@ class DooodsCoordinator(DataUpdateCoordinator[dict[str, CameraScanResult]]):
             or not image
         ):
             return
+        getattr(self, "_pending_periodic_camera_scans", set()).discard(
+            camera_entity_id
+        )
         self._pending_motion_candidates[camera_entity_id] = image
         if self._motion_candidate_cooldown_is_active(camera_entity_id):
             return
@@ -1107,7 +1122,7 @@ class DooodsCoordinator(DataUpdateCoordinator[dict[str, CameraScanResult]]):
     ) -> None:
         """Добавить одну камеру в очередь по её индивидуальному интервалу."""
         if not self._is_shutting_down and camera_entity_id in self.cameras:
-            self.request_camera_scans([camera_entity_id])
+            self.request_camera_scans([camera_entity_id], periodic=True)
 
     @callback
     def request_camera_scans(
@@ -1115,6 +1130,7 @@ class DooodsCoordinator(DataUpdateCoordinator[dict[str, CameraScanResult]]):
         camera_entity_ids: Iterable[str],
         *,
         full_scan: bool = False,
+        periodic: bool = False,
     ) -> None:
         """Добавить выбранные камеры в очередь и поручить координатору объединить запросы обновления."""
         camera_ids = set(camera_entity_ids).intersection(self.cameras)
@@ -1131,6 +1147,16 @@ class DooodsCoordinator(DataUpdateCoordinator[dict[str, CameraScanResult]]):
                 self._force_full_scan = False
             return
         new_camera_ids = camera_ids - self._pending_camera_scans
+        periodic_camera_scans = getattr(
+            self,
+            "_pending_periodic_camera_scans",
+            None,
+        )
+        if isinstance(periodic_camera_scans, set):
+            if periodic and not full_scan:
+                periodic_camera_scans.update(new_camera_ids)
+            else:
+                periodic_camera_scans.difference_update(camera_ids)
         pending_candidates = getattr(self, "_pending_motion_candidates", None)
         if isinstance(pending_candidates, dict):
             for camera_entity_id in camera_ids:
@@ -1184,6 +1210,7 @@ class DooodsCoordinator(DataUpdateCoordinator[dict[str, CameraScanResult]]):
             await asyncio.gather(*motion_stream_tasks, return_exceptions=True)
         getattr(self, "_pending_motion_candidates", {}).clear()
         getattr(self, "_motion_candidate_cooldowns", {}).clear()
+        getattr(self, "_pending_periodic_camera_scans", set()).clear()
         getattr(self, "_pending_motion_camera_scans", set()).clear()
         await self._cancel_initial_scan_task()
         await super().async_shutdown()
@@ -1196,6 +1223,18 @@ class DooodsCoordinator(DataUpdateCoordinator[dict[str, CameraScanResult]]):
                 requested_camera_ids = set(self.cameras)
             else:
                 requested_camera_ids = self._pending_camera_scans.copy()
+            pending_periodic_scans = getattr(
+                self,
+                "_pending_periodic_camera_scans",
+                None,
+            )
+            periodic_camera_ids: set[str] = set()
+            if isinstance(pending_periodic_scans, set):
+                if not self._active_full_scan:
+                    periodic_camera_ids = requested_camera_ids.intersection(
+                        pending_periodic_scans
+                    )
+                pending_periodic_scans.difference_update(requested_camera_ids)
             self._pending_camera_scans.difference_update(requested_camera_ids)
             pending_motion_scans = getattr(self, "_pending_motion_camera_scans", None)
             if isinstance(pending_motion_scans, set):
@@ -1244,21 +1283,74 @@ class DooodsCoordinator(DataUpdateCoordinator[dict[str, CameraScanResult]]):
                     if scan_result.error is None:
                         self._clear_camera_retry(camera_entity_id)
                         if scan_result.detections:
+                            self._fire_detection_event(camera_entity_id, scan_result)
                             self._start_motion_candidate_cooldown(camera_entity_id)
-                        if (
+                        archive_candidate = (
                             self.camera_recognition_is_enabled(camera_entity_id)
                             and has_accepted_annotated_frame(
                                 scan_result.detections,
                                 scan_result.annotated_image,
                                 scan_result.checked_at,
                             )
-                        ):
-                            await self._async_archive_camera_frame(
-                                camera_entity_id,
-                                scan_result.annotated_image,
-                                scan_result.checked_at,
-                                scan_result.detections,
+                        )
+                        current_signature = scan_result.source_frame_signature
+                        if archive_candidate:
+                            previous_signature = (
+                                self._last_successful_frame_signatures.get(
+                                    camera_entity_id
+                                )
                             )
+                            retry_signature = self._archive_retry_frame_signatures.get(
+                                camera_entity_id
+                            )
+                            retry_is_pending = (
+                                current_signature is not None
+                                and retry_signature is not None
+                                and source_frames_are_similar(
+                                    retry_signature,
+                                    current_signature,
+                                )
+                            )
+                            if (
+                                camera_entity_id in periodic_camera_ids
+                                and current_signature is not None
+                                and previous_signature is not None
+                                and source_frames_are_similar(
+                                    previous_signature,
+                                    current_signature,
+                                )
+                                and not retry_is_pending
+                            ):
+                                _LOGGER.debug(
+                                    "Не сохраняю повторный кадр камеры %s: изображение не изменилось",
+                                    camera_entity_id,
+                                )
+                            else:
+                                archived = await self._async_archive_camera_frame(
+                                    camera_entity_id,
+                                    scan_result.annotated_image,
+                                    scan_result.checked_at,
+                                    scan_result.detections,
+                                )
+                                if archived:
+                                    self._archive_retry_frame_signatures.pop(
+                                        camera_entity_id,
+                                        None,
+                                    )
+                                elif (
+                                    self.archive_directory
+                                    and current_signature is not None
+                                ):
+                                    self._archive_retry_frame_signatures[
+                                        camera_entity_id
+                                    ] = current_signature
+
+                        if current_signature is not None and (
+                            not scan_result.detections or archive_candidate
+                        ):
+                            self._last_successful_frame_signatures[
+                                camera_entity_id
+                            ] = current_signature
                     else:
                         self._schedule_camera_retry(camera_entity_id)
                     if not self.camera_recognition_is_enabled(camera_entity_id):
@@ -1290,16 +1382,33 @@ class DooodsCoordinator(DataUpdateCoordinator[dict[str, CameraScanResult]]):
             name=f"{DOMAIN}_coalesced_camera_scan",
         )
 
+    def _fire_detection_event(
+        self,
+        camera_entity_id: str,
+        scan_result: CameraScanResult,
+    ) -> None:
+        """Emit one opt-in Home Assistant event for accepted detections in a scan."""
+        if not getattr(self, "emit_detection_events", False) or not scan_result.detections:
+            return
+        event_data = detection_event_data(
+            entry_id=self.entry_id,
+            camera_entity_id=camera_entity_id,
+            checked_at=scan_result.checked_at,
+            detections=scan_result.detections,
+        )
+        if event_data["detections"]:
+            self.hass.bus.async_fire(EVENT_DETECTION, event_data)
+
     async def _async_archive_camera_frame(
         self,
         camera_entity_id: str,
         image: bytes,
         checked_at: datetime,
         detections: Iterable[Mapping[str, Any]],
-    ) -> None:
+    ) -> bool:
         """Сохранить JPEG и метаданные прошедших фильтры детекций."""
         if not self.archive_directory:
-            return
+            return False
         try:
             await async_save_annotated_frame(
                 self.hass,
@@ -1318,6 +1427,8 @@ class DooodsCoordinator(DataUpdateCoordinator[dict[str, CameraScanResult]]):
                 camera_entity_id,
                 err,
             )
+            return False
+        return True
 
     async def _async_scan_camera(
         self,
@@ -1342,6 +1453,19 @@ class DooodsCoordinator(DataUpdateCoordinator[dict[str, CameraScanResult]]):
                 )
             if not self.camera_recognition_is_enabled(camera_entity_id):
                 return CameraScanResult({}, {}, (), None, None)
+            frame_signature = None
+            if self.archive_directory:
+                try:
+                    frame_signature = await self.hass.async_add_executor_job(
+                        source_frame_signature,
+                        image_data,
+                    )
+                except (HomeAssistantError, OSError, RuntimeError, ValueError) as err:
+                    _LOGGER.debug(
+                        "Не удалось вычислить отпечаток кадра камеры %s: %s",
+                        camera_entity_id,
+                        err,
+                    )
             if self.preview_enabled and is_preview_jpeg(image_data):
                 self._schedule_preview_upload(camera_entity_id, image_data)
             profile_id = self.camera_profiles.get(camera_entity_id)
@@ -1373,6 +1497,7 @@ class DooodsCoordinator(DataUpdateCoordinator[dict[str, CameraScanResult]]):
                 detection_result.detections,
                 detection_result.annotated_image,
                 profile_active=profile_id is not None,
+                source_frame_signature=frame_signature,
             )
         except (HomeAssistantError, TimeoutError, OSError) as err:
             _LOGGER.warning(
@@ -1446,6 +1571,7 @@ class DooodsCoordinator(DataUpdateCoordinator[dict[str, CameraScanResult]]):
         annotated_image: bytes | None,
         *,
         profile_active: bool = False,
+        source_frame_signature: bytes | None = None,
     ) -> CameraScanResult:
         """Подсчитать метки и рамки, прошедшие профильный либо legacy-фильтр."""
         counts: Counter[str] = Counter()
@@ -1487,6 +1613,7 @@ class DooodsCoordinator(DataUpdateCoordinator[dict[str, CameraScanResult]]):
             detections=tuple(accepted_detections),
             annotated_image=annotated_image,
             checked_at=datetime.now(UTC),
+            source_frame_signature=source_frame_signature,
         )
 
     def _is_in_area(self, detection: Mapping[str, Any]) -> bool:

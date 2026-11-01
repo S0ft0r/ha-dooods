@@ -23,6 +23,10 @@ CONF_AREA = "area"
 CONF_FILE_OUT = "file_out"
 CONF_ARCHIVE_MAX_COUNT = "archive_max_count"
 CONF_ARCHIVE_MAX_AGE_DAYS = "archive_max_age_days"
+CONF_EMIT_DETECTION_EVENTS = "emit_detection_events"
+
+EVENT_DETECTION = f"{DOMAIN}_detection"
+DEFAULT_EMIT_DETECTION_EVENTS = False
 
 # Явная настройка камеры без сканирования по событиям движения.
 MOTION_SENSOR_NONE = "none"

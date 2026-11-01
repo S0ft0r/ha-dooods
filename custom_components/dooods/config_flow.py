@@ -17,6 +17,7 @@ from homeassistant.config_entries import (
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.data_entry_flow import section
 from homeassistant.helpers.selector import (
+    BooleanSelector,
     EntitySelector,
     EntitySelectorConfig,
     SelectOptionDict,
@@ -54,6 +55,7 @@ from .const import (
     CONF_CONFIDENCE,
     CONF_COVERS,
     CONF_DETECTOR,
+    CONF_EMIT_DETECTION_EVENTS,
     CONF_FILE_OUT,
     CONF_LABELS,
     CONF_LEFT,
@@ -67,6 +69,7 @@ from .const import (
     DEFAULT_ARCHIVE_MAX_COUNT,
     DEFAULT_AREA,
     DEFAULT_CONFIDENCE,
+    DEFAULT_EMIT_DETECTION_EVENTS,
     DEFAULT_TIMEOUT,
     DOMAIN,
 )
@@ -134,6 +137,10 @@ OUTPUT_FIELDS = {
         CONF_ARCHIVE_MAX_AGE_DAYS,
         default=DEFAULT_ARCHIVE_MAX_AGE_DAYS,
     ): probatio.All(probatio.Coerce(int), probatio.Range(min=0, max=36500)),
+    probatio.Required(
+        CONF_EMIT_DETECTION_EVENTS,
+        default=DEFAULT_EMIT_DETECTION_EVENTS,
+    ): BooleanSelector(),
 }
 OUTPUT_SCHEMA = probatio.Schema(OUTPUT_FIELDS)
 
@@ -341,6 +348,11 @@ def _options_for_form(options: Mapping[str, Any]) -> dict[str, Any]:
             options.get(CONF_ARCHIVE_MAX_AGE_DAYS, DEFAULT_ARCHIVE_MAX_AGE_DAYS),
             DEFAULT_ARCHIVE_MAX_AGE_DAYS,
         ),
+        CONF_EMIT_DETECTION_EVENTS: (
+            options.get(CONF_EMIT_DETECTION_EVENTS)
+            if isinstance(options.get(CONF_EMIT_DETECTION_EVENTS), bool)
+            else DEFAULT_EMIT_DETECTION_EVENTS
+        ),
     }
 
 
@@ -393,6 +405,11 @@ def _normalize_options(options: Mapping[str, Any]) -> dict[str, Any]:
         CONF_ARCHIVE_MAX_AGE_DAYS: normalize_archive_limit(
             options.get(CONF_ARCHIVE_MAX_AGE_DAYS, DEFAULT_ARCHIVE_MAX_AGE_DAYS),
             DEFAULT_ARCHIVE_MAX_AGE_DAYS,
+        ),
+        CONF_EMIT_DETECTION_EVENTS: (
+            options.get(CONF_EMIT_DETECTION_EVENTS)
+            if isinstance(options.get(CONF_EMIT_DETECTION_EVENTS), bool)
+            else DEFAULT_EMIT_DETECTION_EVENTS
         ),
     }
 

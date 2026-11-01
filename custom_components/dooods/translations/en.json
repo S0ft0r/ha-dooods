@@ -29,12 +29,14 @@
         "data": {
           "file_out": "Archive root directory",
           "archive_max_count": "Maximum frames per camera (0 = unlimited)",
-          "archive_max_age_days": "Maximum frame age in days (0 = unlimited)"
+          "archive_max_age_days": "Maximum frame age in days (0 = unlimited)",
+          "emit_detection_events": "Fire Home Assistant detection events"
         },
         "data_description": {
           "file_out": "Enter one archive root directory. Relative paths are resolved under the Home Assistant configuration directory. DOOODS creates entry, camera, and date subdirectories and writes uniquely named JPEG files. Previous multi-line path templates were not used; replace them with a single directory. Cleanup only touches files created inside this entry archive. Changing or clearing the directory does not delete an older archive.",
           "archive_max_count": "When a new frame is stored, the oldest files for that camera are removed until the count is within this limit.",
-          "archive_max_age_days": "Expired files are cleaned on startup, daily, and when frames are stored. If both limits are set, exceeding either one removes the file."
+          "archive_max_age_days": "Expired files are cleaned on startup, daily, and when frames are stored. If both limits are set, exceeding either one removes the file.",
+          "emit_detection_events": "When enabled, DOOODS fires one dooods_detection event for each successful camera scan with accepted detections. The event contains the entry and camera IDs, timestamp, labels, and detections with confidence, normalized bounding boxes, and an optional region ID. Images, file paths, and API keys are never included. Disabled by default."
         }
       },
       "reconfigure": {
@@ -84,13 +86,15 @@
           "detector": "Detector",
           "file_out": "Archive root directory",
           "archive_max_count": "Maximum frames per camera (0 = unlimited)",
-          "archive_max_age_days": "Maximum frame age in days (0 = unlimited)"
+          "archive_max_age_days": "Maximum frame age in days (0 = unlimited)",
+          "emit_detection_events": "Fire Home Assistant detection events"
         },
         "data_description": {
           "detector": "Select a detector reported by DOOODS2. If the server is unavailable, the saved detector name can be edited manually.",
           "file_out": "Enter one archive root directory. Relative paths are resolved under the Home Assistant configuration directory. DOOODS creates entry, camera, and date subdirectories and writes uniquely named JPEG files. Previous multi-line path templates were not used; replace them with a single directory. Cleanup only touches files created inside this entry archive. Changing or clearing the directory does not delete an older archive.",
           "archive_max_count": "When a new frame is stored, the oldest files for that camera are removed until the count is within this limit.",
-          "archive_max_age_days": "Expired files are cleaned on startup, daily, and when frames are stored. If both limits are set, exceeding either one removes the file."
+          "archive_max_age_days": "Expired files are cleaned on startup, daily, and when frames are stored. If both limits are set, exceeding either one removes the file.",
+          "emit_detection_events": "When enabled, DOOODS fires one dooods_detection event for each successful camera scan with accepted detections. The event contains the entry and camera IDs, timestamp, labels, and detections with confidence, normalized bounding boxes, and an optional region ID. Images, file paths, and API keys are never included. Disabled by default."
         },
         "sections": {
           "area": {

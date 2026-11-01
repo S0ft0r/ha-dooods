@@ -43,6 +43,7 @@ from .const import (
     CONF_CAMERA_STREAM_ENABLED,
     CONF_CONFIDENCE,
     CONF_DETECTOR,
+    CONF_EMIT_DETECTION_EVENTS,
     CONF_FILE_OUT,
     CONF_LABELS,
     CONF_MOTION_SENSORS,
@@ -527,6 +528,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: DooodsConfigEntry) -> bo
             options.get(CONF_ARCHIVE_MAX_AGE_DAYS, DEFAULT_ARCHIVE_MAX_AGE_DAYS),
             DEFAULT_ARCHIVE_MAX_AGE_DAYS,
         ),
+        emit_detection_events=options.get(CONF_EMIT_DETECTION_EVENTS) is True,
     )
     entry.runtime_data = coordinator
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)

@@ -241,8 +241,9 @@ class DooodsProfileManager extends HTMLElement {
                   <div class="stage-actions">
                     <button id="add-vertex-button" type="button" disabled>Добавить вершину</button>
                     <button id="remove-vertex-button" type="button" disabled>Удалить выбранную вершину</button>
+                    <button id="reset-zone-geometry-button" type="button" disabled>По умолчанию</button>
                   </div>
-                  <p class="hint">Перетаскивайте вершины; добавляйте вершину на выбранное ребро; удалить можно выбранную вершину.</p>
+                  <p class="hint">Перетаскивайте вершины; добавляйте вершину на выбранное ребро; удалить можно выбранную вершину. «По умолчанию» сбрасывает геометрию, не меняя остальные настройки зоны.</p>
                 </section>
                 <aside class="profile-sidebar">
                   <section class="card zone-card">
@@ -255,11 +256,6 @@ class DooodsProfileManager extends HTMLElement {
                   </section>
                   <section id="settings-card" class="card settings-card" hidden>
                     <h2>Настройки выбранной зоны</h2>
-                    <div class="field">
-                      <span class="field-title">Геометрия зоны</span>
-                      <p class="hint">Сброс затрагивает только вершины зоны; метки, пороги и остальные настройки сохраняются.</p>
-                      <button id="reset-zone-geometry-button" type="button" disabled>По умолчанию</button>
-                    </div>
                     <div class="field">
                       <label for="zone-name">Название зоны</label>
                       <input id="zone-name" type="text" maxlength="128" autocomplete="off">
