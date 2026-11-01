@@ -30,7 +30,6 @@ _DIRS = (
 )
 _FILES = (
     ".github/requirements-validator.txt",
-    "releases/last_release.json",
 )
 _EXCLUDED_DIRS = {
     ".git",
@@ -130,7 +129,7 @@ def _bundle_notes(versions: dict[str, str], member_count: int) -> str:
             f"- Home Assistant App `dooods2`: `{versions['app']}`",
             f"- Members excluding this note and the bundle manifest: `{member_count}`",
             "",
-            "This focused release ZIP contains the complete installable Integration and App trees, `.github/scripts/`, GitHub Actions workflows, validator requirements, the current release-state snapshot, and the standalone `DOOODS-VALIDATE.py` entry point.",
+            "This focused release ZIP contains the complete installable Integration and App trees, `.github/scripts/`, GitHub Actions workflows, validator requirements, and the standalone `DOOODS-VALIDATE.py` entry point. The internal `releases/last_release.json` incremental-build baseline is deliberately not bundled.",
             "",
             "It is **not** a full DOOODS repository archive. It omits `analysis/tests/`, the optional developer source mirror at `analysis/application/`, upstream snapshots, root-level project documents, asset experiments, and historical release ZIPs. The GitHub component workflows run against the included `local_apps/dooods2/` tree; where `analysis/application/` is present in a developer monorepo, validators also compare it with the checked-in App build context. The broader `validate_repository.py` is intended for the full developer monorepo.",
             "",
@@ -144,7 +143,7 @@ def _bundle_notes(versions: dict[str, str], member_count: int) -> str:
             "python3 DOOODS-VALIDATE.py path/to/dooods_release_<integration>__<app>_components_with_github_actions.zip",
             "```",
             "",
-            "The App mirror, backend source, and `releases/last_release.json` were not synchronized or changed by the bundle builder.",
+            "The App mirror and backend source were not synchronized. The builder does not include or modify `releases/last_release.json`.",
             "",
         )
     )
