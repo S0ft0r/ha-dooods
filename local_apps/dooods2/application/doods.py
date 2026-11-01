@@ -9,11 +9,21 @@ from detectors.tensorflow import Tensorflow
 from detectors.tflite import TensorflowLite
 
 try:
-    from .annotations import AnnotationCanvas, AnnotationTranslations
+    from .annotations import (
+        AnnotationCanvas,
+        AnnotationTranslations,
+        adaptive_annotation_color_bgr,
+        opposite_light_dark_color_bgr,
+    )
     from .box_merging import build_display_boxes, pad_display_box
     from .zones import filter_detections_by_zones
 except ImportError:  # запуск приложения как набора модулей из каталога application
-    from annotations import AnnotationCanvas, AnnotationTranslations
+    from annotations import (
+        AnnotationCanvas,
+        AnnotationTranslations,
+        adaptive_annotation_color_bgr,
+        opposite_light_dark_color_bgr,
+    )
     from box_merging import build_display_boxes, pad_display_box
     from zones import filter_detections_by_zones
 
@@ -220,6 +230,8 @@ class Doods:
         # Convert the image back to BGR for drawing boxes and saving.
         image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
         height, width, _channels = image.shape
+        copy_frame = getattr(image, "copy", None)
+        background_image = copy_frame() if callable(copy_frame) else image
         annotation_locale = getattr(detect, "annotation_locale", None)
         text_annotations = []
 
@@ -329,6 +341,24 @@ class Doods:
                 )
             ]
             for box in display_boxes:
+                box_bounds = (
+                    int(box.left * width),
+                    int(box.top * height),
+                    int(box.right * width),
+                    int(box.bottom * height),
+                )
+                box_color = adaptive_annotation_color_bgr(
+                    background_image,
+                    box_bounds,
+                    tuple(reversed(self.config.boxes.boxColor)),
+                    minimum_contrast_ratio=3.0,
+                )
+                font_color = adaptive_annotation_color_bgr(
+                    background_image,
+                    box_bounds,
+                    tuple(reversed(self.config.boxes.fontColor)),
+                    minimum_contrast_ratio=4.5,
+                )
                 if (
                     getattr(self.config.boxes, "showLabels", True)
                     and self.config.boxes.fontThickness
@@ -341,28 +371,43 @@ class Doods:
                     text_annotations.append(
                         (
                             label_text,
-                            (
-                                int(box.left * width),
-                                int(box.top * height) - 2,
-                            ),
-                            tuple(reversed(self.config.boxes.fontColor)),
+                            (box_bounds[0], box_bounds[1] - 2),
+                            font_color,
                             self.config.boxes.fontScale,
                             self.config.boxes.fontThickness,
+                            opposite_light_dark_color_bgr(font_color),
                         )
                     )
                 if self.config.boxes.boxThickness:
+                    line_thickness = max(1, int(self.config.boxes.boxThickness))
+                    outline_color = opposite_light_dark_color_bgr(box_color)
                     cv2.rectangle(
                         image,
-                        (int(box.left * width), int(box.top * height)),
-                        (int(box.right * width), int(box.bottom * height)),
-                        color=tuple(reversed(self.config.boxes.boxColor)),
-                        thickness=self.config.boxes.boxThickness,
+                        box_bounds[:2],
+                        box_bounds[2:],
+                        color=outline_color,
+                        thickness=line_thickness + 2,
+                    )
+                    cv2.rectangle(
+                        image,
+                        box_bounds[:2],
+                        box_bounds[2:],
+                        color=box_color,
+                        thickness=line_thickness,
                     )
 
         if text_annotations:
             canvas = AnnotationCanvas(image)
-            for text, origin, color, font_scale, font_thickness in text_annotations:
-                canvas.draw_text(text, origin, color, font_scale, font_thickness)
+            for annotation in text_annotations:
+                text, origin, color, font_scale, font_thickness, *stroke = annotation
+                canvas.draw_text(
+                    text,
+                    origin,
+                    color,
+                    font_scale,
+                    font_thickness,
+                    stroke[0] if stroke else None,
+                )
             image = canvas.to_bgr()
 
         ret.image = cv2.imencode(detect.image, image)[1].tostring()
