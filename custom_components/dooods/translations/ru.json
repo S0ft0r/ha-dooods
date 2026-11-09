@@ -151,6 +151,24 @@
       },
       "motion_gate_last_trigger": {
         "name": "Последнее срабатывание RTSP gate"
+      },
+      "face_pipeline_state": {
+        "name": "Состояние обработки лиц (alpha)"
+      },
+      "face_frames_processed": {
+        "name": "Кадров обработано лицевым модулем (alpha)"
+      },
+      "face_count": {
+        "name": "Лиц в последнем кадре (alpha)"
+      },
+      "face_largest_width": {
+        "name": "Ширина крупнейшего лица (alpha)"
+      },
+      "face_largest_height": {
+        "name": "Высота крупнейшего лица (alpha)"
+      },
+      "face_inference_time": {
+        "name": "Задержка YuNet + SFace (alpha)"
       }
     },
     "image": {

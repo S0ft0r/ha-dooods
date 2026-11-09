@@ -25,6 +25,7 @@ from .const import (
     CONF_TOP,
     DOMAIN,
 )
+from .face_diagnostics import normalize_face_diagnostics
 
 
 class DooodsApiError(HomeAssistantError):
@@ -627,13 +628,29 @@ async def async_iter_motion_stream_events(
                             raise DooodsInvalidResponseError(
                                 "invalid_motion_stream_event"
                             )
-                        event = {
+                        normalized_event: dict[str, Any] = {
                             "type": "candidate",
                             "source_id": source_id,
                             "image": image,
                             "captured_at": captured_at.astimezone(UTC),
                             "motion_score": float(score),
                         }
+                        face_diagnostics = normalize_face_diagnostics(
+                            event.get("face_diagnostics")
+                        )
+                        if face_diagnostics is not None:
+                            normalized_event["face_diagnostics"] = face_diagnostics
+                        event = normalized_event
+                    elif event["type"] == "status" and "face_diagnostics" in event:
+                        normalized_event = dict(event)
+                        face_diagnostics = normalize_face_diagnostics(
+                            event.get("face_diagnostics")
+                        )
+                        if face_diagnostics is None:
+                            normalized_event.pop("face_diagnostics", None)
+                        else:
+                            normalized_event["face_diagnostics"] = face_diagnostics
+                        event = normalized_event
                     yield event
                 elif message.type in {
                     aiohttp.WSMsgType.CLOSE,

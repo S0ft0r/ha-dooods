@@ -23,6 +23,7 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 
 from .api import (
     DooodsApiError,
+    DooodsAuthError,
     DooodsDetectionError,
     async_detect,
     async_get_profiles,
@@ -52,6 +53,7 @@ from .const import (
     EVENT_DETECTION,
 )
 from .events import detection_event_data
+from .face_diagnostics import normalize_face_diagnostics
 from .frame_comparison import (
     source_frame_signature,
     source_frames_are_similar,
@@ -95,6 +97,7 @@ class DooodsCoordinator(DataUpdateCoordinator[dict[str, CameraScanResult]]):
         preview_enabled: bool = False,
         annotation_localization_enabled: bool = False,
         motion_stream_enabled: bool = False,
+        face_diagnostics_enabled: bool = False,
         motion_sensors: Mapping[str, str] | None = None,
         camera_detection_enabled: Mapping[str, bool] | None = None,
         camera_stream_enabled: Mapping[str, bool] | None = None,
@@ -129,6 +132,9 @@ class DooodsCoordinator(DataUpdateCoordinator[dict[str, CameraScanResult]]):
         )
         self.annotation_localization_enabled = annotation_localization_enabled
         self.motion_stream_enabled = bool(motion_stream_enabled and auth_key)
+        self.face_diagnostics_enabled = bool(
+            face_diagnostics_enabled and self.motion_stream_enabled
+        )
         self.motion_sensors = dict(motion_sensors or {})
         self.camera_detection_enabled = dict(camera_detection_enabled or {})
         self.camera_stream_enabled = dict(camera_stream_enabled or {})
@@ -210,6 +216,27 @@ class DooodsCoordinator(DataUpdateCoordinator[dict[str, CameraScanResult]]):
                 "candidate_frames_total": 0,
                 "last_motion_at": None,
                 "last_candidate_at": None,
+                "last_error": None,
+                "updated_at": datetime.now(UTC).isoformat(),
+            }
+            for camera_entity_id in self.cameras
+        }
+        self._face_diagnostics_listeners: set[Callable[[str], None]] = set()
+        self._face_diagnostics_by_camera = {
+            camera_entity_id: {
+                "state": (
+                    "loading"
+                    if self.face_diagnostics_enabled
+                    and self.camera_uses_rtsp_motion_gate(camera_entity_id)
+                    else "disabled"
+                ),
+                "frames_processed_total": 0,
+                "faces_detected": None,
+                "largest_face_width_px": None,
+                "largest_face_height_px": None,
+                "embedding_ready": None,
+                "inference_ms": None,
+                "last_processed_at": None,
                 "last_error": None,
                 "updated_at": datetime.now(UTC).isoformat(),
             }
@@ -309,6 +336,79 @@ class DooodsCoordinator(DataUpdateCoordinator[dict[str, CameraScanResult]]):
     ) -> dict[str, Any]:
         """Return a snapshot of the RTSP diagnostics for one camera."""
         return dict(self._motion_gate_diagnostics.get(camera_entity_id, {}))
+
+    @callback
+    def async_add_face_diagnostics_listener(
+        self,
+        listener: Callable[[str], None],
+    ) -> Callable[[], None]:
+        """Subscribe to per-camera experimental face-diagnostic updates."""
+        self._face_diagnostics_listeners.add(listener)
+
+        @callback
+        def _unsubscribe() -> None:
+            self._face_diagnostics_listeners.discard(listener)
+
+        return _unsubscribe
+
+    @callback
+    def face_diagnostics_for_camera(self, camera_entity_id: str) -> dict[str, Any]:
+        """Return a safe in-memory diagnostic snapshot for one camera."""
+        diagnostics_by_camera = getattr(self, "_face_diagnostics_by_camera", {})
+        return dict(diagnostics_by_camera.get(camera_entity_id, {}))
+
+    @callback
+    def _notify_face_diagnostics_listeners(self, camera_entity_id: str) -> None:
+        """Notify only face diagnostic entities attached to this camera."""
+        for listener in tuple(getattr(self, "_face_diagnostics_listeners", ())):
+            try:
+                listener(camera_entity_id)
+            except Exception:
+                _LOGGER.exception("Face diagnostic listener failed")
+
+    @callback
+    def _update_face_diagnostics(
+        self,
+        camera_entity_id: str,
+        payload: Any,
+    ) -> None:
+        """Keep only allowlisted scalar telemetry; never retain images/embeddings."""
+        if (
+            not getattr(self, "face_diagnostics_enabled", False)
+            or camera_entity_id not in self.cameras
+        ):
+            return
+        normalized = normalize_face_diagnostics(payload)
+        if normalized is None:
+            return
+        diagnostics = self._face_diagnostics_by_camera.setdefault(
+            camera_entity_id,
+            {},
+        )
+        diagnostics.update(normalized)
+        diagnostics["updated_at"] = datetime.now(UTC).isoformat()
+        self._notify_face_diagnostics_listeners(camera_entity_id)
+
+    @callback
+    def _set_face_diagnostics_state(
+        self,
+        camera_entity_id: str,
+        state: str,
+    ) -> None:
+        """Change the diagnostic lifecycle state without clearing last metrics."""
+        if (
+            not getattr(self, "face_diagnostics_enabled", False)
+            or camera_entity_id not in self.cameras
+            or state not in {"disabled", "loading"}
+        ):
+            return
+        diagnostics = self._face_diagnostics_by_camera.setdefault(
+            camera_entity_id,
+            {},
+        )
+        diagnostics["state"] = state
+        diagnostics["updated_at"] = datetime.now(UTC).isoformat()
+        self._notify_face_diagnostics_listeners(camera_entity_id)
 
     @callback
     def _motion_source_for_camera(self, camera_entity_id: str) -> str:
@@ -610,6 +710,7 @@ class DooodsCoordinator(DataUpdateCoordinator[dict[str, CameraScanResult]]):
             connection_state="connecting",
             active_source="rtsp_gate",
         )
+        self._set_face_diagnostics_state(camera_entity_id, "loading")
         task = self._config_entry.async_create_background_task(
             self.hass,
             self._async_motion_stream_loop(camera_entity_id),
@@ -659,6 +760,7 @@ class DooodsCoordinator(DataUpdateCoordinator[dict[str, CameraScanResult]]):
             gate_active=False,
             active_source=self._motion_source_for_camera(camera_entity_id),
         )
+        self._set_face_diagnostics_state(camera_entity_id, "disabled")
 
     async def _async_motion_stream_loop(self, camera_entity_id: str) -> None:
         """Resolve a camera RTSP URL and forward only motion-candidate JPEGs to YOLO."""
@@ -746,6 +848,10 @@ class DooodsCoordinator(DataUpdateCoordinator[dict[str, CameraScanResult]]):
                     ):
                         return
                     if event.get("type") == "status":
+                        self._update_face_diagnostics(
+                            camera_entity_id,
+                            event.get("face_diagnostics"),
+                        )
                         status_state = event.get("state")
                         connection_state = status_state
                         if status_state == "stopped":
@@ -804,6 +910,10 @@ class DooodsCoordinator(DataUpdateCoordinator[dict[str, CameraScanResult]]):
                                 else None,
                             )
                     elif event.get("type") == "candidate":
+                        self._update_face_diagnostics(
+                            camera_entity_id,
+                            event.get("face_diagnostics"),
+                        )
                         candidate = event.get("image")
                         self._update_motion_gate_diagnostics(
                             camera_entity_id,
