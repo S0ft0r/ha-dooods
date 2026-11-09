@@ -308,12 +308,11 @@ def _options_for_form(options: Mapping[str, Any]) -> dict[str, Any]:
     cameras = options.get(CONF_SOURCE, [])
     if not isinstance(cameras, list):
         cameras = []
-    face_cameras = options.get(CONF_FACE_DETECTION_CAMERAS, [])
-    if not isinstance(face_cameras, list):
-        face_cameras = []
+    # face_detection_cameras не сохраняется в options интеграции — передаётся в App
+    # только через отдельный POST /faces/cameras, чтобы Supervisor не валидировал
+    # неизвестное поле в options App.
     return {
         CONF_SOURCE: cameras,
-        CONF_FACE_DETECTION_CAMERAS: face_cameras,
         CONF_MOTION_SENSORS: _normalize_motion_sensors(
             options.get(CONF_MOTION_SENSORS, {}), cameras
         ),
@@ -369,17 +368,13 @@ def _normalize_options(options: Mapping[str, Any]) -> dict[str, Any]:
     cameras = options.get(CONF_SOURCE, [])
     if not isinstance(cameras, list):
         cameras = []
-    face_cameras = options.get(CONF_FACE_DETECTION_CAMERAS, [])
-    if not isinstance(face_cameras, list):
-        face_cameras = []
-    # Оставить только камеры, которые есть в основном списке source.
-    face_cameras = [c for c in face_cameras if c in cameras]
+    # face_detection_cameras не сохраняется в options интеграции — передаётся в App
+    # только через отдельный POST /faces/cameras.
     normalized_area = (
         {**DEFAULT_AREA, **area} if isinstance(area, Mapping) else dict(DEFAULT_AREA)
     )
     return {
         CONF_SOURCE: cameras,
-        CONF_FACE_DETECTION_CAMERAS: face_cameras,
         CONF_MOTION_SENSORS: _normalize_motion_sensors(
             options.get(CONF_MOTION_SENSORS, {}), cameras
         ),
@@ -695,14 +690,23 @@ class DooodsOptionsFlow(OptionsFlowWithReload):
             draft_cameras = []
 
         # Определить, поддерживает ли App функции распознавания лиц.
-        capabilities = await async_get_capabilities(
-            self.hass,
-            self.config_entry.data[CONF_URL],
-            self.config_entry.data.get(CONF_AUTH_KEY, ""),
-        )
-        supports_face_detection = bool(
-            capabilities & {"face_gallery", "face_debug_dashboard"}
-        )
+        # Сетевой вызов обёрнут в try/except: если App недоступен, форма опций
+        # всё равно должна открыться, просто без поля face detection cameras.
+        supports_face_detection = False
+        try:
+            capabilities = await async_get_capabilities(
+                self.hass,
+                self.config_entry.data[CONF_URL],
+                self.config_entry.data.get(CONF_AUTH_KEY, ""),
+            )
+            supports_face_detection = bool(
+                capabilities & {"face_gallery", "face_debug_dashboard"}
+            )
+        except DooodsApiError as err:
+            _LOGGER.debug(
+                "Не удалось определить возможности App для option flow: %s",
+                type(err).__name__,
+            )
 
         if user_input is not None:
             if not user_input.get(CONF_SOURCE):
