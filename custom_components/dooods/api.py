@@ -350,6 +350,49 @@ async def async_get_capabilities(
     return {feature for feature in features if isinstance(feature, str)}
 
 
+async def async_put_face_detection_cameras(
+    hass: HomeAssistant,
+    base_url: str,
+    auth_key: str,
+    cameras: list[str],
+) -> list[str]:
+    """Передать в App список камер, для которых выполнять face detection."""
+    headers = {"doods-auth-key": auth_key} if auth_key else {}
+    payload = {"cameras": cameras}
+    try:
+        async with async_get_clientsession(hass).post(
+            f"{base_url.rstrip('/')}/faces/cameras",
+            json=payload,
+            headers=headers,
+            timeout=aiohttp.ClientTimeout(total=10),
+        ) as response:
+            if response.status in {401, 403}:
+                raise DooodsAuthError("invalid_auth")
+            if response.status == 404:
+                return []
+            if response.status != 200:
+                raise DooodsConnectionError(
+                    "http_error",
+                    {
+                        "endpoint": "POST /faces/cameras",
+                        "status": str(response.status),
+                    },
+                )
+            try:
+                result = await response.json()
+            except (ValueError, aiohttp.ContentTypeError) as err:
+                raise DooodsInvalidResponseError("invalid_json") from err
+    except DooodsApiError:
+        raise
+    except (aiohttp.ClientError, TimeoutError) as err:
+        raise DooodsConnectionError("connection_failed") from err
+
+    returned = result.get("cameras") if isinstance(result, dict) else None
+    if not isinstance(returned, list):
+        return []
+    return [camera for camera in returned if isinstance(camera, str)]
+
+
 async def async_put_preview(
     hass: HomeAssistant,
     base_url: str,

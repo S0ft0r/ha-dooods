@@ -33,7 +33,9 @@ from .api import (
     DooodsAuthError,
     DooodsConnectionError,
     DooodsInvalidResponseError,
+    async_get_capabilities,
     async_get_detectors,
+    async_put_face_detection_cameras,
 )
 from .archive import normalize_archive_directory, normalize_archive_limit
 from .camera_motion_recheck_intervals import (
@@ -57,6 +59,7 @@ from .const import (
     CONF_DETECTOR,
     CONF_EMIT_DETECTION_EVENTS,
     CONF_FILE_OUT,
+    CONF_FACE_DETECTION_CAMERAS,
     CONF_LABELS,
     CONF_LEFT,
     CONF_MOTION_SENSORS,
@@ -305,8 +308,12 @@ def _options_for_form(options: Mapping[str, Any]) -> dict[str, Any]:
     cameras = options.get(CONF_SOURCE, [])
     if not isinstance(cameras, list):
         cameras = []
+    face_cameras = options.get(CONF_FACE_DETECTION_CAMERAS, [])
+    if not isinstance(face_cameras, list):
+        face_cameras = []
     return {
         CONF_SOURCE: cameras,
+        CONF_FACE_DETECTION_CAMERAS: face_cameras,
         CONF_MOTION_SENSORS: _normalize_motion_sensors(
             options.get(CONF_MOTION_SENSORS, {}), cameras
         ),
@@ -362,11 +369,17 @@ def _normalize_options(options: Mapping[str, Any]) -> dict[str, Any]:
     cameras = options.get(CONF_SOURCE, [])
     if not isinstance(cameras, list):
         cameras = []
+    face_cameras = options.get(CONF_FACE_DETECTION_CAMERAS, [])
+    if not isinstance(face_cameras, list):
+        face_cameras = []
+    # Оставить только камеры, которые есть в основном списке source.
+    face_cameras = [c for c in face_cameras if c in cameras]
     normalized_area = (
         {**DEFAULT_AREA, **area} if isinstance(area, Mapping) else dict(DEFAULT_AREA)
     )
     return {
         CONF_SOURCE: cameras,
+        CONF_FACE_DETECTION_CAMERAS: face_cameras,
         CONF_MOTION_SENSORS: _normalize_motion_sensors(
             options.get(CONF_MOTION_SENSORS, {}), cameras
         ),
@@ -419,6 +432,11 @@ class DooodsConfigFlow(ConfigFlow, domain=DOMAIN):
 
     VERSION = 2
 
+    def __init__(self) -> None:
+        """Инициализировать мастер настройки."""
+        super().__init__()
+        self._supports_face_detection: bool = False
+
     @override
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
@@ -455,6 +473,14 @@ class DooodsConfigFlow(ConfigFlow, domain=DOMAIN):
                         CONF_URL: server_url,
                         CONF_AUTH_KEY: auth_key,
                     }
+                    # Определить, поддерживает ли App функции распознавания лиц,
+                    # чтобы показать набор камер для face detection.
+                    capabilities = await async_get_capabilities(
+                        self.hass, server_url, auth_key
+                    )
+                    self._supports_face_detection = bool(
+                        capabilities & {"face_gallery", "face_debug_dashboard"}
+                    )
                     self._draft_options = _options_for_form(
                         {
                             CONF_DETECTOR: detector["name"],
@@ -477,13 +503,17 @@ class DooodsConfigFlow(ConfigFlow, domain=DOMAIN):
     async def async_step_cameras(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Получить список камер для текущей записи интеграции."""
+        """Получить список камер и, при поддержке faces, камеры для face detection."""
+        draft_cameras = self._draft_options.get(CONF_SOURCE, [])
+        if not isinstance(draft_cameras, list):
+            draft_cameras = []
+
         if user_input is not None:
             if not user_input.get(CONF_SOURCE):
                 return self.async_show_form(
                     step_id="cameras",
                     data_schema=self.add_suggested_values_to_schema(
-                        CAMERA_SELECTION_SCHEMA,
+                        _cameras_schema(draft_cameras, self._supports_face_detection),
                         user_input,
                     ),
                     errors={"base": "no_cameras"},
@@ -506,10 +536,35 @@ class DooodsConfigFlow(ConfigFlow, domain=DOMAIN):
         return self.async_show_form(
             step_id="cameras",
             data_schema=self.add_suggested_values_to_schema(
-                CAMERA_SELECTION_SCHEMA,
+                _cameras_schema(draft_cameras, self._supports_face_detection),
                 self._draft_options,
             ),
         )
+
+
+def _cameras_schema(
+    draft_cameras: list[str],
+    supports_face_detection: bool,
+) -> probatio.Schema:
+    """Схема выбора камер с опциональным набором для face detection."""
+    fields: dict[Any, Any] = {
+        probatio.Required(CONF_SOURCE, default=draft_cameras): EntitySelector(
+            EntitySelectorConfig(domain="camera", multiple=True)
+        ),
+    }
+    if supports_face_detection:
+        fields[
+            probatio.Optional(
+                CONF_FACE_DETECTION_CAMERAS,
+                default=[],
+            )
+        ] = EntitySelector(
+            EntitySelectorConfig(
+                domain="camera",
+                multiple=True,
+            )
+        )
+    return probatio.Schema(fields)
 
     @override
     async def async_step_output(
@@ -518,11 +573,29 @@ class DooodsConfigFlow(ConfigFlow, domain=DOMAIN):
         """Получить пути вывода и создать запись без обращения к сети."""
         if user_input is not None:
             self._draft_options.update(user_input)
-            return self.async_create_entry(
+            entry = self.async_create_entry(
                 title=urlsplit(self._server_data[CONF_URL]).netloc,
                 data=self._server_data,
                 options=_normalize_options(self._draft_options),
             )
+            # Передать в App выбранные камеры для face detection.
+            face_cameras = self._draft_options.get(CONF_FACE_DETECTION_CAMERAS, [])
+            if not isinstance(face_cameras, list):
+                face_cameras = []
+            try:
+                await async_put_face_detection_cameras(
+                    self.hass,
+                    self._server_data[CONF_URL],
+                    self._server_data.get(CONF_AUTH_KEY, ""),
+                    face_cameras,
+                )
+            except DooodsApiError as err:
+                # Не блокировать создание интеграции из-за временной недоступности App.
+                _LOGGER.warning(
+                    "Не удалось передать камеры face detection в App: %s",
+                    type(err).__name__,
+                )
+            return entry
 
         return self.async_show_form(
             step_id="output",
@@ -615,14 +688,28 @@ class DooodsOptionsFlow(OptionsFlowWithReload):
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Изменить камеры и перейти к общим настройкам детектора и архива."""
+        """Изменить камеры и, при поддержке faces, камеры для face detection."""
         draft = self._get_draft_options()
+        draft_cameras = draft.get(CONF_SOURCE, [])
+        if not isinstance(draft_cameras, list):
+            draft_cameras = []
+
+        # Определить, поддерживает ли App функции распознавания лиц.
+        capabilities = await async_get_capabilities(
+            self.hass,
+            self.config_entry.data[CONF_URL],
+            self.config_entry.data.get(CONF_AUTH_KEY, ""),
+        )
+        supports_face_detection = bool(
+            capabilities & {"face_gallery", "face_debug_dashboard"}
+        )
+
         if user_input is not None:
             if not user_input.get(CONF_SOURCE):
                 return self.async_show_form(
                     step_id="init",
                     data_schema=self.add_suggested_values_to_schema(
-                        CAMERA_SELECTION_SCHEMA,
+                        _cameras_schema(draft_cameras, supports_face_detection),
                         user_input,
                     ),
                     errors={"base": "no_cameras"},
@@ -645,7 +732,7 @@ class DooodsOptionsFlow(OptionsFlowWithReload):
         return self.async_show_form(
             step_id="init",
             data_schema=self.add_suggested_values_to_schema(
-                CAMERA_SELECTION_SCHEMA,
+                _cameras_schema(draft_cameras, supports_face_detection),
                 draft,
             ),
         )
@@ -663,10 +750,27 @@ class DooodsOptionsFlow(OptionsFlowWithReload):
             if draft.get(CONF_DETECTOR) != previous_detector:
                 # Старый список меток может не относиться к новому детектору.
                 draft[CONF_LABELS] = []
-            return self.async_create_entry(
+            entry = self.async_create_entry(
                 title="",
                 data=_normalize_options(draft),
             )
+            # Передать обновлённые камеры для face detection в App.
+            face_cameras = draft.get(CONF_FACE_DETECTION_CAMERAS, [])
+            if not isinstance(face_cameras, list):
+                face_cameras = []
+            try:
+                await async_put_face_detection_cameras(
+                    self.hass,
+                    self.config_entry.data[CONF_URL],
+                    self.config_entry.data.get(CONF_AUTH_KEY, ""),
+                    face_cameras,
+                )
+            except DooodsApiError as err:
+                _LOGGER.warning(
+                    "Не удалось передать камеры face detection в App: %s",
+                    type(err).__name__,
+                )
+            return entry
 
         errors: dict[str, str] = {}
         selected_detector = draft.get(CONF_DETECTOR, "")
