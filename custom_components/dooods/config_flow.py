@@ -641,6 +641,9 @@ def _cameras_schema(
     supports_face_detection: bool,
 ) -> probatio.Schema:
     """Схема выбора камер с опциональным набором для face detection."""
+    camera_options = [
+        SelectOptionDict(value=camera, label=camera) for camera in draft_cameras
+    ]
     fields: dict[Any, Any] = {
         probatio.Required(CONF_SOURCE, default=draft_cameras): EntitySelector(
             EntitySelectorConfig(domain="camera", multiple=True)
@@ -652,10 +655,12 @@ def _cameras_schema(
                 CONF_FACE_DETECTION_CAMERAS,
                 default=[],
             )
-        ] = EntitySelector(
-            EntitySelectorConfig(
-                domain="camera",
+        ] = SelectSelector(
+            SelectSelectorConfig(
+                options=camera_options,
+                mode=SelectSelectorMode.DROPDOWN,
                 multiple=True,
+                translation_key="face_detection_cameras",
             )
         )
     return probatio.Schema(fields)
