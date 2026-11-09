@@ -50,6 +50,7 @@ async def async_setup_entry(
                     DooodsFaceLargestWidthSensor(coordinator, camera_entity_id),
                     DooodsFaceLargestHeightSensor(coordinator, camera_entity_id),
                     DooodsFaceInferenceTimeSensor(coordinator, camera_entity_id),
+                    DooodsFaceMatchSensor(coordinator, camera_entity_id),
                 ]
             )
     async_add_entities(entities)
@@ -582,3 +583,44 @@ class DooodsFaceInferenceTimeSensor(_DooodsFaceDiagnosticSensor):
         if isinstance(value, (int, float)) and not isinstance(value, bool):
             return float(value)
         return None
+
+
+class DooodsFaceMatchSensor(_DooodsFaceDiagnosticSensor):
+    """Show the result of face matching against the local gallery (alpha)."""
+
+    _attr_icon = "mdi:account-card-details"
+
+    def __init__(self, coordinator: DooodsCoordinator, camera_entity_id: str) -> None:
+        """Initialize the face match sensor."""
+        super().__init__(
+            coordinator,
+            camera_entity_id,
+            "face_match",
+            "face_match",
+        )
+
+    @property
+    @override
+    def native_value(self) -> str | None:
+        """Return the match state: matched, unknown, ambiguous, or None."""
+        match = self.diagnostics.get("match")
+        if not isinstance(match, dict):
+            return None
+        state = match.get("state")
+        return state if state in {"matched", "unknown", "ambiguous"} else None
+
+    @property
+    @override
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Expose match metadata without biometric embeddings."""
+        attributes = super().extra_state_attributes
+        match = self.diagnostics.get("match")
+        if isinstance(match, dict):
+            attributes.update(
+                {
+                    "person_id": match.get("person_id"),
+                    "person_name": match.get("person_name"),
+                    "similarity": match.get("similarity"),
+                }
+            )
+        return attributes

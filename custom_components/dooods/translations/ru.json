@@ -173,6 +173,9 @@
       },
       "face_inference_time": {
         "name": "Задержка YuNet + SFace (alpha)"
+      },
+      "face_match": {
+        "name": "Результат сопоставления лиц (альфа)"
       }
     },
     "image": {
