@@ -66,6 +66,13 @@ class ServerConfig(BaseSettings):
         env_prefix = 'server_'
         extra = Extra.ignore
 
+class FaceConfig(BaseSettings):
+    """Experimental YuNet/SFace settings for the RTSP face pipeline."""
+
+    yunet_score_threshold: Optional[float] = 0.9
+    class Config:
+        extra = Extra.ignore
+
 class MqttBrokerConfig(BaseSettings):
     host: Optional[str] = 'localhost'
     port: Optional[int] = 1883
@@ -91,6 +98,7 @@ class MqttConfig(BaseSettings):
 class Config(BaseSettings):
     logger: Optional[LoggerConfig] = LoggerConfig()
     server: Optional[ServerConfig] = ServerConfig()
+    face: Optional[FaceConfig] = FaceConfig()
     doods: DoodsConfig
     mqtt: Optional[MqttConfig]
     class Config:

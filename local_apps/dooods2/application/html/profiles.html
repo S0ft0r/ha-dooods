@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>DOOODS2 — профили зон</title>
+  <title>DOOODS2F — профили зон</title>
   <style>
     :root {
       color-scheme: light;
@@ -129,12 +129,12 @@
 <body>
   <header>
     <div>
-      <h1>DOOODS2</h1>
+      <h1>DOOODS2F</h1>
       <div class="sub">Редактор профилей и полигональных зон</div>
     </div>
     <div class="header-actions">
       <div id="capability-status" class="sub" aria-live="polite">Проверка API…</div>
-      <a href="./index.html">Классический интерфейс DOOODS2</a>
+      <a href="./index.html">Классический интерфейс DOOODS2F</a>
     </div>
   </header>
 
@@ -257,7 +257,7 @@
     const API_ROOT = new URL(INGRESS_CONTEXT.appRootPath, window.location.origin);
     const COLORS = ["#00a6a6", "#ff9f1c", "#9b5de5", "#2a9d55", "#ef476f", "#4472ca"];
     const $ = (id) => document.getElementById(id);
-    try { sessionStorage.removeItem("dooods2_overhaul_api_key"); } catch (_) {}
+    try { sessionStorage.removeItem("dooods2f_overhaul_api_key"); } catch (_) {}
     const state = {
       previewSupported: null,
       availableLabels: [],

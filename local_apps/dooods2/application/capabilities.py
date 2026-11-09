@@ -1,13 +1,16 @@
-"""Описание версии протокола и возможностей DOOODS2 Overhaul."""
+"""Описание версии протокола и возможностей DOOODS2F."""
 
 from __future__ import annotations
 
 API_VERSION = 1
-APP_VERSION = "0.1.18-dev"
+APP_VERSION = "0.1.23-dev"
 PROFILE_FEATURES: tuple[str, ...] = ("profiles", "polygon_zones")
 PREVIEW_FEATURES: tuple[str, ...] = ("camera_preview",)
 ANNOTATION_FEATURES: tuple[str, ...] = ("localized_annotations",)
 MOTION_STREAM_FEATURES: tuple[str, ...] = ("rtsp_motion_stream",)
+FACE_GALLERY_FEATURES: tuple[str, ...] = ("face_gallery",)
+FACE_DIAGNOSTIC_FEATURES: tuple[str, ...] = ("face_pipeline_diagnostics",)
+FACE_DEBUG_FEATURES: tuple[str, ...] = ("face_debug_dashboard",)
 
 
 def capabilities_payload(
@@ -16,6 +19,9 @@ def capabilities_payload(
     preview_enabled: bool = False,
     localized_annotations_enabled: bool = False,
     motion_stream_enabled: bool = False,
+    face_gallery_enabled: bool = False,
+    face_pipeline_diagnostics_enabled: bool = False,
+    face_debug_enabled: bool = False,
 ) -> dict[str, object]:
     """Сформировать ответ с возможностями, реально доступными через API."""
     features = []
@@ -27,6 +33,12 @@ def capabilities_payload(
         features.extend(ANNOTATION_FEATURES)
     if motion_stream_enabled:
         features.extend(MOTION_STREAM_FEATURES)
+    if face_gallery_enabled:
+        features.extend(FACE_GALLERY_FEATURES)
+    if face_pipeline_diagnostics_enabled:
+        features.extend(FACE_DIAGNOSTIC_FEATURES)
+    if face_debug_enabled:
+        features.extend(FACE_DEBUG_FEATURES)
     return {
         "api_version": API_VERSION,
         "app_version": APP_VERSION,

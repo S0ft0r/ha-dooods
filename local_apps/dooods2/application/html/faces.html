@@ -1,0 +1,673 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <title>faces — диагностика и галерея</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #111820;
+      --panel: #1a242e;
+      --panel-2: #202c37;
+      --line: #354554;
+      --text: #eef4f8;
+      --muted: #a7b6c4;
+      --accent: #55a9ed;
+      --good: #65d49a;
+      --warn: #ffd166;
+      --bad: #ff7b81;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; color: var(--text); background: var(--bg); }
+    header { padding: 1.1rem clamp(1rem, 3vw, 2rem); background: #172532; border-bottom: 1px solid var(--line); }
+    header h1 { margin: 0; font-size: clamp(1.25rem, 2.4vw, 1.8rem); }
+    header p { color: var(--muted); margin: .35rem 0 0; }
+    main { max-width: 1440px; margin: 0 auto; padding: 1rem clamp(.75rem, 2vw, 1.5rem) 3rem; }
+    .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 1rem; margin-bottom: 1rem; }
+    h2 { margin: 0 0 .8rem; font-size: 1.1rem; }
+    h3 { margin: .3rem 0 .55rem; font-size: .98rem; }
+    p { line-height: 1.45; }
+    .muted { color: var(--muted); font-size: .9rem; }
+    .small { font-size: .82rem; }
+    .row { display: flex; align-items: center; gap: .55rem; flex-wrap: wrap; }
+    .row > .grow { flex: 1; min-width: 220px; }
+    input, select, button { font: inherit; }
+    input, select { color: var(--text); background: #121b23; border: 1px solid #455867; border-radius: 8px; min-height: 2.5rem; padding: .5rem .65rem; }
+    input[type="password"], input[type="text"] { width: 100%; }
+    button { color: var(--text); background: #263745; border: 1px solid #4a6273; border-radius: 8px; min-height: 2.35rem; padding: .45rem .8rem; font-weight: 650; cursor: pointer; }
+    button:hover { border-color: var(--accent); background: #2b4050; }
+    button.primary { background: #17659d; border-color: #3488c5; }
+    button.primary:hover { background: #1d78b8; }
+    button:disabled { opacity: .45; cursor: not-allowed; }
+    .key-grid { display: grid; grid-template-columns: minmax(200px, 1fr) auto; gap: .6rem; align-items: end; }
+    .key-grid label, .field label { display: block; color: var(--muted); font-size: .85rem; margin-bottom: .3rem; }
+    .status { min-height: 1.35rem; margin-top: .55rem; color: var(--muted); }
+    .status.good { color: var(--good); }
+    .status.warn { color: var(--warn); }
+    .status.bad { color: var(--bad); }
+    .summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(145px, 1fr)); gap: .6rem; }
+    .metric { background: var(--panel-2); border: 1px solid var(--line); border-radius: 9px; padding: .7rem; }
+    .metric .label { color: var(--muted); font-size: .8rem; }
+    .metric .value { margin-top: .3rem; font-size: 1rem; font-weight: 700; overflow-wrap: anywhere; }
+    nav { display: flex; gap: .45rem; flex-wrap: wrap; margin-bottom: .85rem; }
+    nav button[aria-selected="true"] { background: #174d72; border-color: var(--accent); }
+    [hidden] { display: none !important; }
+    .capture-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(270px, 1fr)); gap: .8rem; }
+    .capture { background: var(--panel-2); border: 1px solid var(--line); border-radius: 10px; padding: .7rem; min-width: 0; }
+    .capture.selected { border-color: var(--accent); box-shadow: 0 0 0 2px #55a9ed33; }
+    .capture img { display: block; width: 100%; max-height: 300px; object-fit: contain; background: #0b1015; border-radius: 7px; }
+    .crop-row { display: flex; gap: .45rem; overflow-x: auto; margin-top: .5rem; padding-bottom: .2rem; }
+    .crop { flex: 0 0 90px; border: 1px solid #536777; border-radius: 7px; padding: .25rem; background: #10171e; cursor: pointer; }
+    .crop.selected { border: 2px solid var(--accent); }
+    .crop img { height: 92px; width: 100%; object-fit: contain; }
+    .meta { display: grid; grid-template-columns: auto 1fr; gap: .22rem .5rem; margin: .55rem 0; font-size: .82rem; }
+    .meta dt { color: var(--muted); }
+    .meta dd { margin: 0; overflow-wrap: anywhere; }
+    .log-list { display: grid; gap: .45rem; }
+    .log-entry { display: grid; grid-template-columns: minmax(120px, 190px) minmax(90px, 130px) minmax(100px, 1fr) minmax(85px, 110px) minmax(80px, 100px); gap: .5rem; align-items: center; background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px; padding: .55rem .65rem; font-size: .84rem; }
+    .log-entry .state { font-weight: 700; }
+    .log-entry .state.face_detected { color: var(--good); }
+    .log-entry .state.error { color: var(--bad); }
+    .log-entry .state.no_face { color: var(--muted); }
+    .enroll-grid { display: grid; grid-template-columns: minmax(220px, 1fr) minmax(220px, 1fr); gap: .8rem; }
+    .enroll-preview-item { display: flex; flex-direction: column; gap: 0.3rem; background: #121b23; border: 1px solid #455867; border-radius: 9px; padding: 0.5rem; }
+    .enroll-preview-label { font-size: 0.78rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+    .enroll-preview-img { width: 100%; height: 180px; object-fit: contain; background: #0b1015; border-radius: 7px; display: block; }
+    .confirm { display: flex; gap: .55rem; align-items: flex-start; margin: .8rem 0; color: var(--muted); font-size: .9rem; }
+    .confirm input { min-height: 1rem; margin-top: .16rem; }
+    .toolbar { display: flex; justify-content: space-between; align-items: center; gap: .6rem; flex-wrap: wrap; margin-bottom: .75rem; }
+    .footer-note { color: var(--muted); font-size: .82rem; margin-top: .75rem; }
+    .person-row { display: flex; align-items: center; justify-content: space-between; gap: .8rem; background: var(--panel-2); border: 1px solid var(--line); border-radius: 9px; padding: .55rem .7rem; margin-top: .5rem; flex-wrap: wrap; }
+    .person-info { display: flex; flex-direction: column; gap: .15rem; min-width: 200px; }
+    .person-name { color: var(--text); font-weight: 650; overflow-wrap: anywhere; }
+    .person-count { color: var(--muted); font-size: .82rem; }
+    .person-actions { display: flex; gap: .4rem; flex-shrink: 0; }
+    .person-btn { font-size: .82rem; min-height: auto; padding: .35rem .6rem; }
+    .person-btn-rename { background: #263745; border-color: #4a6273; }
+    .person-btn-rename:hover { border-color: var(--accent); background: #2b4050; }
+    .person-btn-delete { background: #3a1f21; border-color: #5a3a3c; color: var(--bad); }
+    .person-btn-delete:hover { border-color: var(--bad); background: #4a2527; }
+    .enroll-container { display: flex; gap: 1rem; margin-top: 1rem; align-items: flex-start; }
+    .enroll-captures-panel { flex: 1; min-width: 0; max-height: 60vh; overflow-y: auto; background: var(--panel-2); border: 1px solid var(--line); border-radius: 10px; padding: 1rem; display: flex; flex-direction: column; gap: 0.75rem; }
+    .enroll-captures-panel .capture-grid { grid-template-columns: repeat(2, 1fr); gap: 0.75rem; }
+    .enroll-settings-panel { width: 480px; min-width: 420px; flex-shrink: 0; padding: 1rem; background: var(--panel-2); border: 1px solid var(--line); border-radius: 10px; display: flex; flex-direction: column; gap: 1rem; }
+    @media (max-width: 900px) {
+      .enroll-container { flex-direction: column; }
+      .enroll-captures-panel, .enroll-settings-panel { width: 100%; max-height: none; }
+    }
+    @media (max-width: 760px) {
+      .key-grid, .enroll-grid { grid-template-columns: 1fr; }
+      .log-entry { grid-template-columns: 1fr 1fr; }
+      .log-entry .wide { grid-column: 1 / -1; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>faces — диагностика лиц</h1>
+    <p>Экспериментальная локальная обработка YuNet/SFace · кадры доступны только после ввода API-ключа</p>
+  </header>
+  <main>
+    <section class="panel">
+      <h2>Локальный доступ на стенде</h2>
+      <p class="muted">API-ключ отключён по решению администратора: страница доступна без ввода пароля. Не используйте этот вариант без отдельного согласования, если у App есть доступ извне.</p>
+    </section>
+
+    <div id="app-content">
+      <section class="panel">
+        <div class="toolbar">
+          <h2 style="margin:0">Состояние App</h2>
+          <button id="refresh-button" type="button">Обновить</button>
+        </div>
+        <div id="summary" class="summary"></div>
+        <div id="page-status" class="status" role="status" aria-live="polite"></div>
+      </section>
+
+      <nav aria-label="Разделы faces">
+        <button type="button" data-tab="captures" aria-selected="true">Кадры</button>
+        <button type="button" data-tab="log" aria-selected="false">Журнал</button>
+        <button type="button" data-tab="enroll" aria-selected="false">Галерея / регистрация</button>
+      </nav>
+
+      <section class="panel tab" id="tab-captures">
+        <div class="toolbar">
+          <div><h2 style="margin:0">Кольцевой буфер кадров</h2><div class="muted small">Хранятся последние 100 кадров-событий с лицами. Старые кадры и кропы удаляются автоматически.</div></div>
+          <button id="refresh-captures" type="button">Обновить кадры</button>
+        </div>
+        <div id="capture-grid" class="capture-grid"></div>
+        <div id="capture-empty" class="muted" hidden>Пока нет сохранённых кадров с лицами.</div>
+      </section>
+
+      <section class="panel tab" id="tab-log" hidden>
+        <div class="toolbar">
+          <div><h2 style="margin:0">Последние результаты анализа</h2><div class="muted small">Журнал ограничен 1000 событиями; no_face и ошибки также записываются.</div></div>
+          <button id="refresh-log" type="button">Обновить журнал</button>
+        </div>
+        <div id="log-list" class="log-list"></div>
+        <div id="log-empty" class="muted" hidden>Записей пока нет.</div>
+      </section>
+
+      <section class="panel tab" id="tab-enroll" hidden>
+        <h2>Ручная регистрация образца</h2>
+        <p class="muted">Выберите сохранённый кроп, человека и явно подтвердите добавление. В галерею попадут только embedding и метаданные; исходное изображение останется только в ограниченном буфере.</p>
+
+        <div class="enroll-container">
+          <div class="enroll-captures-panel">
+            <div class="toolbar">
+              <div><strong>Доступные кадры для регистрации</strong></div>
+              <button id="refresh-enroll-captures" type="button">Обновить</button>
+            </div>
+            <div id="enroll-captures-grid" class="capture-grid"></div>
+            <div id="enroll-captures-empty" class="muted" hidden>Нет сохранённых кадров с лицами.</div>
+          </div>
+          <div class="enroll-settings-panel">
+            <div class="enroll-grid">
+              <div>
+                <div class="field">
+                  <label for="person-select">Человек</label>
+                  <select id="person-select"><option value="">Загрузка…</option></select>
+                </div>
+                <div class="row" style="margin-top:.55rem">
+                  <input class="grow" id="new-person-name" type="text" maxlength="128" placeholder="Имя нового человека">
+                  <button id="create-person" type="button">Создать</button>
+                </div>
+                <p id="selection-meta" class="muted small">Сначала выберите кроп слева или в разделе «Кадры».</p>
+                <label class="confirm"><input id="confirm-enrollment" type="checkbox"><span>Я проверил(а) выбранный кроп и подтверждаю добавление образца этому человеку.</span></label>
+                <button id="enroll-button" class="primary" type="button" disabled>Добавить подтверждённый образец</button>
+              </div>
+              <div>
+                <div id="enroll-preview-container" class="enroll-preview-box">
+                  <div id="enroll-preview-crop" class="enroll-preview-item">
+                    <div class="enroll-preview-label">Выбранное лицо</div>
+                    <img class="enroll-preview-img" alt="Выбранное лицо">
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div id="enroll-status" class="status" role="status" aria-live="polite"></div>
+            <h3 style="margin-top:1.2rem">Галерея</h3>
+            <div id="gallery-list" class="muted">Загрузка…</div>
+          </div>
+        </div>
+      </section>
+    </div>
+    <p class="footer-note">Alpha: данные остаются локально в App. Не используется для управления замком. Не публикуйте API-ключ и не проверяйте на производственной Raspberry Pi.</p>
+  </main>
+  <script>
+    "use strict";
+    function getIngressContext() {
+      const pathParts = window.location.pathname.split("/").filter(Boolean);
+      const appIndex = pathParts.findIndex(
+        (part, index) => part === "app" && pathParts[index + 1] === "local_dooods2",
+      );
+      if (appIndex >= 0) {
+        const appRootPath = `/${pathParts.slice(0, appIndex + 2).join("/")}/`;
+        return { appRootPath };
+      }
+      return {
+        appRootPath: new URL("./", window.location.href).pathname.replace(/\/+/g, "/"),
+      };
+    }
+    const INGRESS_CONTEXT = getIngressContext();
+    const API_ROOT = new URL(INGRESS_CONTEXT.appRootPath.replace(/\/+/g, "/"), window.location.origin);
+    const $ = (id) => document.getElementById(id);
+    const state = {
+      captures: [],
+      people: [],
+      selected: null,
+      objectUrls: [],
+      refreshTimer: null,
+    };
+
+    function setStatus(id, message, kind = "") {
+      const element = $(id);
+      element.textContent = message;
+      element.className = `status ${kind}`.trim();
+    }
+
+    function apiUrl(path) {
+      const url = new URL(path.replace(/^\/+/, ""), API_ROOT);
+      url.pathname = url.pathname.replace(/\/+/g, "/");
+      return url.toString();
+    }
+
+    async function apiRequest(path, options = {}) {
+      const headers = new Headers(options.headers || {});
+      headers.set("Accept", "application/json");
+      const request = { ...options, headers, cache: "no-store", credentials: "same-origin" };
+      if (Object.prototype.hasOwnProperty.call(options, "json")) {
+        headers.set("Content-Type", "application/json");
+        request.body = JSON.stringify(options.json);
+        delete request.json;
+      }
+      const response = await fetch(apiUrl(path), request);
+      const raw = await response.text();
+      let payload = null;
+      if (raw) {
+        try { payload = JSON.parse(raw); } catch (_) { payload = raw; }
+      }
+      if (!response.ok) {
+        const detail = payload && typeof payload === "object" ? payload.detail : payload;
+        throw new Error(detail || `HTTP ${response.status}`);
+      }
+      return payload;
+    }
+
+    async function apiImage(path) {
+      const response = await fetch(apiUrl(path), {
+        cache: "no-store",
+        credentials: "same-origin",
+      });
+      if (!response.ok) {
+        let detail = `HTTP ${response.status}`;
+        try { const body = await response.json(); detail = body.detail || detail; } catch (_) {}
+        throw new Error(detail);
+      }
+      const url = URL.createObjectURL(await response.blob());
+      state.objectUrls.push(url);
+      return url;
+    }
+
+    function revokeImages() {
+      for (const url of state.objectUrls) URL.revokeObjectURL(url);
+      state.objectUrls = [];
+    }
+
+    function addMetric(container, label, value) {
+      const item = document.createElement("div");
+      item.className = "metric";
+      const title = document.createElement("div");
+      title.className = "label";
+      title.textContent = label;
+      const content = document.createElement("div");
+      content.className = "value";
+      content.textContent = value === null || value === undefined || value === "" ? "—" : String(value);
+      item.append(title, content);
+      container.append(item);
+    }
+
+    function formatTime(value) {
+      if (!value) return "—";
+      const date = new Date(value);
+      return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString();
+    }
+
+    async function refreshStatus() {
+      const result = await apiRequest("faces/debug/status");
+      const summary = $("summary");
+      summary.replaceChildren();
+      addMetric(summary, "Модели YuNet/SFace", result.model.state);
+      addMetric(summary, "Порог YuNet", result.model.yunet_score_threshold);
+      addMetric(summary, "Кадров в буфере", `${result.storage.captures}/${result.storage.max_captures}`);
+      addMetric(summary, "Записей журнала", `${result.storage.log_entries}/${result.storage.max_log_entries}`);
+      addMetric(summary, "Галерея", result.gallery_enabled ? "доступна" : "недоступна");
+    }
+
+    async function loadCaptures() {
+      revokeImages();
+      const result = await apiRequest("faces/debug/captures?limit=100");
+      state.captures = result.captures || [];
+      const grid = $("capture-grid");
+      grid.replaceChildren();
+      $("capture-empty").hidden = state.captures.length !== 0;
+      for (const capture of state.captures) {
+        const card = document.createElement("article");
+        card.className = "capture";
+        card.dataset.captureId = capture.capture_id;
+        if (state.selected && state.selected.captureId === capture.capture_id) card.classList.add("selected");
+        const heading = document.createElement("h3");
+        heading.textContent = `Кадр · ${formatTime(capture.occurred_at)}`;
+        card.append(heading);
+        const full = document.createElement("img");
+        full.alt = "Полный кадр с найденным лицом";
+        full.loading = "lazy";
+        card.append(full);
+        try {
+          full.src = await apiImage(`faces/debug/captures/${capture.capture_id}/image?kind=frame`);
+        } catch (error) {
+          full.alt = `Кадр недоступен: ${error.message}`;
+        }
+        const meta = document.createElement("dl");
+        meta.className = "meta";
+        const values = [
+          ["Камера", capture.source_id],
+          ["Лиц", capture.faces_detected],
+          ["Порог", capture.yunet_score_threshold],
+          ["YuNet + SFace", capture.inference_ms === null ? null : `${capture.inference_ms} ms`],
+        ];
+        for (const [label, value] of values) {
+          const dt = document.createElement("dt"); dt.textContent = label;
+          const dd = document.createElement("dd"); dd.textContent = value === null || value === undefined ? "—" : String(value);
+          meta.append(dt, dd);
+        }
+        card.append(meta);
+        const crops = document.createElement("div");
+        crops.className = "crop-row";
+        for (const face of (capture.faces || [])) {
+          const crop = document.createElement("button");
+          crop.type = "button";
+          crop.className = "crop";
+          crop.setAttribute("aria-label", `Выбрать кроп лица ${face.face_index + 1}`);
+          if (state.selected && state.selected.captureId === capture.capture_id && state.selected.faceIndex === face.face_index) crop.classList.add("selected");
+          const image = document.createElement("img");
+          image.alt = `Кроп лица ${face.face_index + 1}`;
+          image.loading = "lazy";
+          crop.append(image);
+          const info = document.createElement("span");
+          info.className = "small";
+          const box = face.bbox || {};
+          info.textContent = `${box.width || "?"}×${box.height || "?"} px · score ${face.score ?? "—"}`;
+          crop.append(info);
+          crop.addEventListener("click", () => selectFace(capture, face, image.src));
+          crops.append(crop);
+          try {
+            image.src = await apiImage(`faces/debug/captures/${capture.capture_id}/image?kind=face&face_index=${face.face_index}`);
+          } catch (error) {
+            image.alt = `Кроп недоступен: ${error.message}`;
+          }
+        }
+        card.append(crops);
+        grid.append(card);
+      }
+    }
+
+    async function loadEnrollCaptures() {
+      revokeImages();
+      const grid = $("enroll-captures-grid");
+      grid.replaceChildren();
+      try {
+        const result = await apiRequest("faces/debug/captures?limit=100");
+        const captures = result.captures || [];
+        $("enroll-captures-empty").hidden = captures.length !== 0;
+        for (const capture of captures) {
+          const card = document.createElement("article");
+          card.className = "capture";
+          card.dataset.captureId = capture.capture_id;
+          if (state.selected && state.selected.captureId === capture.capture_id) card.classList.add("selected");
+          const heading = document.createElement("h3");
+          heading.textContent = `Кадр · ${formatTime(capture.occurred_at)}`;
+          card.append(heading);
+          const full = document.createElement("img");
+          full.alt = "Полный кадр с найденным лицом";
+          full.loading = "lazy";
+          card.append(full);
+          try {
+            full.src = await apiImage(`faces/debug/captures/${capture.capture_id}/image?kind=frame`);
+          } catch (error) {
+            full.alt = `Кадр недоступен: ${error.message}`;
+          }
+          const meta = document.createElement("dl");
+          meta.className = "meta";
+          const values = [
+            ["Камера", capture.source_id],
+            ["Лиц", capture.faces_detected],
+            ["Порог", capture.yunet_score_threshold],
+            ["YuNet + SFace", capture.inference_ms === null ? null : `${capture.inference_ms} ms`],
+          ];
+          for (const [label, value] of values) {
+            const dt = document.createElement("dt"); dt.textContent = label;
+            const dd = document.createElement("dd"); dd.textContent = value === null || value === undefined ? "—" : String(value);
+            meta.append(dt, dd);
+          }
+          card.append(meta);
+          const crops = document.createElement("div");
+          crops.className = "crop-row";
+          for (const face of (capture.faces || [])) {
+            const crop = document.createElement("button");
+            crop.type = "button";
+            crop.className = "crop";
+            crop.setAttribute("aria-label", `Выбрать кроп лица ${face.face_index + 1}`);
+            if (state.selected && state.selected.captureId === capture.capture_id && state.selected.faceIndex === face.face_index) crop.classList.add("selected");
+            const image = document.createElement("img");
+            image.alt = `Кроп лица ${face.face_index + 1}`;
+            image.loading = "lazy";
+            crop.append(image);
+            const info = document.createElement("span");
+            info.className = "small";
+            const box = face.bbox || {};
+            info.textContent = `${box.width || "?"}×${box.height || "?"} px · score ${face.score ?? "—"}`;
+            crop.append(info);
+            crop.addEventListener("click", () => selectFace(capture, face, image.src));
+            crops.append(crop);
+            try {
+              image.src = await apiImage(`faces/debug/captures/${capture.capture_id}/image?kind=face&face_index=${face.face_index}`);
+            } catch (error) {
+              image.alt = `Кроп недоступен: ${error.message}`;
+            }
+          }
+          card.append(crops);
+          grid.append(card);
+        }
+      } catch (error) {
+        $("enroll-captures-empty").textContent = `Не удалось загрузить кадры: ${error.message}`;
+        $("enroll-captures-empty").hidden = false;
+      }
+    }
+
+    function selectFace(capture, face, cropImageUrl) {
+      state.selected = { captureId: capture.capture_id, faceIndex: face.face_index, face };
+      $("selection-meta").textContent = `Кадр ${formatTime(capture.occurred_at)} · лицо ${face.face_index + 1} · ${face.bbox.width}×${face.bbox.height} px · YuNet score ${face.score ?? "—"}`;
+      try {
+        const img = $("enroll-preview-crop").querySelector("img");
+        img.src = cropImageUrl;
+      } catch (_) {}
+      $("confirm-enrollment").checked = false;
+      updateEnrollButton();
+      setStatus("enroll-status", "Проверьте лицо и выберите человека перед добавлением.");
+      document.querySelectorAll(".capture").forEach((card) => {
+        card.classList.toggle("selected", card.dataset.captureId === capture.capture_id);
+      });
+      document.querySelectorAll(".crop").forEach((button) => button.classList.remove("selected"));
+      if (cropImageUrl) {
+        const buttons = [...document.querySelectorAll(".capture")]
+          .find((card) => card.dataset.captureId === capture.capture_id)
+          ?.querySelectorAll(".crop");
+        buttons?.[face.face_index]?.classList.add("selected");
+      }
+    }
+
+    async function loadLog() {
+      const result = await apiRequest("faces/debug/log?limit=200");
+      const container = $("log-list");
+      container.replaceChildren();
+      const entries = result.entries || [];
+      $("log-empty").hidden = entries.length !== 0;
+      for (const entry of entries) {
+        const row = document.createElement("div");
+        row.className = "log-entry";
+        const time = document.createElement("span"); time.textContent = formatTime(entry.occurred_at);
+        const stateLabel = document.createElement("span"); stateLabel.className = `state ${entry.state}`; stateLabel.textContent = entry.state;
+        const source = document.createElement("span"); source.className = "wide"; source.textContent = entry.source_id || "—";
+        const count = document.createElement("span"); count.textContent = `Лиц: ${entry.faces_detected ?? "—"}`;
+        const score = (entry.faces || []).map((face) => face.score).filter((value) => value !== null && value !== undefined);
+        const scores = document.createElement("span"); scores.textContent = score.length ? `score: ${score.join(", ")}` : `порог: ${entry.yunet_score_threshold ?? "—"}`;
+        const latency = document.createElement("span"); latency.textContent = entry.inference_ms === null ? "—" : `${entry.inference_ms} ms`;
+        const capture = document.createElement("span"); capture.textContent = entry.capture_status === "saved" ? "кадр сохранён" : (entry.capture_status || "—");
+        row.append(time, stateLabel, source, count, scores, latency, capture);
+        container.append(row);
+      }
+    }
+
+    async function loadPeople() {
+      try {
+        const result = await apiRequest("faces/people");
+        state.people = Array.isArray(result) ? result : [];
+        const select = $("person-select");
+        select.replaceChildren();
+        const placeholder = document.createElement("option");
+        placeholder.value = "";
+        placeholder.textContent = state.people.length ? "Выберите человека" : "Сначала создайте человека";
+        select.append(placeholder);
+        for (const person of state.people) {
+          const option = document.createElement("option");
+          option.value = person.id;
+          option.textContent = `${person.name} · образцов: ${person.sample_count}`;
+          select.append(option);
+        }
+        const gallery = $("gallery-list");
+        gallery.replaceChildren();
+        if (!state.people.length) {
+          gallery.textContent = "Галерея пока пуста.";
+          return;
+        }
+        for (const person of state.people) {
+          const row = document.createElement("div");
+          row.className = "person-row";
+          row.dataset.personId = person.id;
+
+          const info = document.createElement("div");
+          info.className = "person-info";
+          const nameSpan = document.createElement("span");
+          nameSpan.className = "person-name";
+          nameSpan.textContent = person.name;
+          const countSpan = document.createElement("span");
+          countSpan.className = "person-count muted small";
+          countSpan.textContent = `образцов: ${person.sample_count}`;
+          info.append(nameSpan, countSpan);
+
+          const actions = document.createElement("div");
+          actions.className = "person-actions";
+
+          const renameBtn = document.createElement("button");
+          renameBtn.type = "button";
+          renameBtn.className = "person-btn person-btn-rename";
+          renameBtn.textContent = "Переименовать";
+          renameBtn.addEventListener("click", () => startRename(person, nameSpan));
+
+          const delBtn = document.createElement("button");
+          delBtn.type = "button";
+          delBtn.className = "person-btn person-btn-delete";
+          delBtn.textContent = "Удалить";
+          delBtn.addEventListener("click", () => deletePerson(person));
+
+          actions.append(renameBtn, delBtn);
+          row.append(info, actions);
+          gallery.append(row);
+        }
+      } catch (error) {
+        setStatus("enroll-status", `Не удалось загрузить список людей: ${error.message}`, "bad");
+      }
+    }
+
+    async function startRename(person, nameSpan) {
+      const newName = window.prompt(`Новое имя для «${person.name}»:`, person.name);
+      if (!newName || newName.trim() === person.name) return;
+      try {
+        await apiRequest(`faces/people/${person.id}`, {
+          method: "PATCH",
+          json: { name: newName.trim() },
+        });
+        nameSpan.textContent = newName.trim();
+        await loadPeople();
+        updateEnrollButton();
+        setStatus("enroll-status", `Человек переименован в «${newName.trim()}».`, "good");
+      } catch (error) {
+        setStatus("enroll-status", `Не удалось переименовать: ${error.message}`, "bad");
+      }
+    }
+
+    async function deletePerson(person) {
+      if (!window.confirm(`Удалить человека «${person.name}» со всеми его образцами? Это действие необратимо.`)) return;
+      try {
+        await apiRequest(`faces/people/${person.id}`, { method: "DELETE" });
+        await loadPeople();
+        updateEnrollButton();
+        if ($("person-select").value === person.id) {
+          $("person-select").value = "";
+        }
+        setStatus("enroll-status", `Человек «${person.name}» удалён.`, "good");
+      } catch (error) {
+        setStatus("enroll-status", `Не удалось удалить: ${error.message}`, "bad");
+      }
+    }
+
+    async function createPerson() {
+      const name = $("new-person-name").value.trim();
+      if (!name) {
+        setStatus("enroll-status", "Введите имя нового человека.", "warn");
+        return;
+      }
+      try {
+        const person = await apiRequest("faces/people", { method: "POST", json: { name } });
+        $("new-person-name").value = "";
+        await loadPeople();
+        $("person-select").value = person.id;
+        setStatus("enroll-status", `Создан человек «${person.name}».`, "good");
+        updateEnrollButton();
+      } catch (error) {
+        setStatus("enroll-status", `Не удалось создать запись: ${error.message}`, "bad");
+      }
+    }
+
+    function updateEnrollButton() {
+      $("enroll-button").disabled = !(
+        state.selected
+        && $("person-select").value
+        && $("confirm-enrollment").checked
+      );
+    }
+
+    async function enrollSelected() {
+      if (!state.selected || !$("person-select").value || !$("confirm-enrollment").checked) return;
+      const personName = state.people.find((person) => person.id === $("person-select").value)?.name || "человеку";
+      if (!window.confirm(`Добавить выбранное лицо в галерею «${personName}»? Это сохранит embedding, но не исходное изображение.`)) return;
+      $("enroll-button").disabled = true;
+      setStatus("enroll-status", "Повторно анализирую выбранный кадр…");
+      try {
+        const result = await apiRequest(
+          `faces/debug/captures/${state.selected.captureId}/faces/${state.selected.faceIndex}/enroll`,
+          { method: "POST", json: { person_id: $("person-select").value, manual_confirmation: true } },
+        );
+        setStatus("enroll-status", `Образец подтверждён и сохранён (${result.embedding_dimension}D, ${result.model_id}).`, "good");
+        $("confirm-enrollment").checked = false;
+        await loadPeople();
+      } catch (error) {
+        setStatus("enroll-status", `Не удалось добавить образец: ${error.message}`, "bad");
+      } finally {
+        updateEnrollButton();
+      }
+    }
+
+    async function refreshAll() {
+      setStatus("page-status", "Обновляю данные…");
+      try {
+        await Promise.all([refreshStatus(), loadCaptures(), loadLog(), loadPeople()]);
+        setStatus("page-status", `Обновлено ${new Date().toLocaleTimeString()}.`, "good");
+      } catch (error) {
+        setStatus("page-status", `Ошибка обновления: ${error.message}`, "bad");
+      }
+    }
+
+    document.querySelectorAll("nav [data-tab]").forEach((button) => {
+      button.addEventListener("click", async () => {
+        const selected = button.dataset.tab;
+        document.querySelectorAll("nav [data-tab]").forEach((tab) => tab.setAttribute("aria-selected", String(tab === button)));
+        document.querySelectorAll(".tab").forEach((panel) => { panel.hidden = panel.id !== `tab-${selected}`; });
+        if (selected === "enroll") {
+          try {
+            await Promise.all([loadPeople(), loadEnrollCaptures()]);
+          } catch (error) {
+            setStatus("enroll-status", `Не удалось загрузить данные: ${error.message}`, "bad");
+          }
+        }
+      });
+    });
+    $("refresh-button").addEventListener("click", refreshAll);
+    $("refresh-captures").addEventListener("click", loadCaptures);
+    $("refresh-enroll-captures").addEventListener("click", loadEnrollCaptures);
+    $("refresh-log").addEventListener("click", loadLog);
+    $("create-person").addEventListener("click", createPerson);
+    $("enroll-button").addEventListener("click", enrollSelected);
+    $("person-select").addEventListener("change", updateEnrollButton);
+    $("confirm-enrollment").addEventListener("change", updateEnrollButton);
+    window.addEventListener("beforeunload", () => {
+      revokeImages();
+      if (state.refreshTimer) clearInterval(state.refreshTimer);
+    });
+    refreshAll();
+  </script>
+</body>
+</html>

@@ -7,6 +7,9 @@ from mqtt import MQTT
 from config import Config
 from doods import Doods
 from profiles import ProfileStore
+from face_gallery import FaceGalleryStore, FaceGalleryStoreError
+from face_debug_store import FaceDebugStore, FaceDebugStoreError
+from face_analyzer import FaceAnalyzer
 from supervisor_options import SupervisorOptionsError, ensure_api_key
 
 # Allows you to pass a flattened dict into an unflattened one for things like
@@ -37,11 +40,11 @@ def hex_to_rgb(hex):
 
 def main():
     parser = argparse.ArgumentParser(description='DOODS2 - Dedicated Open Object Detection Service')
-    parser.add_argument('--config', '-c', help='Configuration File', default='config.yaml')
+    parser.add_argument('--config', '-c', help='Configuration File', default='defaults.yaml')
     parser.add_argument('action', nargs='?', help='Action: api=Start REST api, mqtt=Start MQTT forwarder', default='api')
     args = parser.parse_args()
 
-    # Use environment, followed by arguments, followed by default config.yaml
+    # Use environment, then arguments, then the bundled defaults file.
     config_file = os.environ.get('CONFIG_FILE', args.config)
 
     # Load config file
@@ -92,8 +95,47 @@ def main():
     doods = Doods(config.doods, profile_store=profile_store)
 
     if args.action == 'api':
+        # Галерея лиц хранится только в постоянном каталоге данных App.
+        # Повреждённый файл отключает новую функцию, но не основной DOOODS API.
+        face_gallery_store = None
+        try:
+            face_gallery_store = FaceGalleryStore("/data/face_gallery.json")
+        except FaceGalleryStoreError as err:
+            logger.error("Face gallery is disabled because storage is unavailable: %s", err)
+
+        # Face analysis is alpha: model initialization and capture persistence run
+        # off the API event loop and failures do not affect object detection.
+        face_options = getattr(config, "face", None)
+        yunet_score_threshold = getattr(
+            face_options,
+            "yunet_score_threshold",
+            0.9,
+        )
+        min_face_width = getattr(face_options, "min_face_width", 100)
+        min_face_height = getattr(face_options, "min_face_height", 100)
+        face_debug_store = None
+        try:
+            face_debug_store = FaceDebugStore(
+                "/data/face_debug",
+                min_face_width=min_face_width,
+                min_face_height=min_face_height,
+            )
+        except FaceDebugStoreError as err:
+            logger.error("Face-debug capture storage is unavailable: %s", err)
+        face_analyzer = FaceAnalyzer(
+            "/data/face_models",
+            yunet_score_threshold=yunet_score_threshold,
+            debug_store=face_debug_store,
+        )
+
         # Start the server
-        api = API(config.server, doods)
+        api = API(
+            config.server,
+            doods,
+            face_gallery_store=face_gallery_store,
+            face_analyzer=face_analyzer,
+            face_debug_store=face_debug_store,
+        )
         api.run()
     elif args.action == 'mqtt':
         # Start the server

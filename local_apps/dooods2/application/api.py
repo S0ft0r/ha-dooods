@@ -26,15 +26,38 @@ from auth import api_key_matches, is_authenticated_ingress_request
 from profiles import ProfileStoreError, ProfileValidationError
 from preview import PreviewStore, PreviewTooLargeError, PreviewValidationError
 from profile_sources import ProfileSourceStore, ProfileSourceStoreError, ProfileSourceValidationError
+from face_gallery import (
+    FaceGalleryNotFoundError,
+    FaceGalleryStoreError,
+    FaceGalleryValidationError,
+)
+from face_analyzer import FaceEmbeddingError
+from face_debug_store import (
+    FaceDebugNotFoundError,
+    FaceDebugStoreError,
+    FaceDebugValidationError,
+)
 from concurrent.futures import ThreadPoolExecutor
 from prometheus_fastapi_instrumentator import Instrumentator
 
 import tracemalloc
 from pathlib import Path
 
+_MAX_FACE_JSON_REQUEST_BYTES = 256 * 1024
+_MAX_FACE_BACKUP_REQUEST_BYTES = 17 * 1024 * 1024
+
 
 class API():
-    def __init__(self, config, doods, preview_store=None, profile_source_store=None):
+    def __init__(
+        self,
+        config,
+        doods,
+        preview_store=None,
+        profile_source_store=None,
+        face_gallery_store=None,
+        face_analyzer=None,
+        face_debug_store=None,
+    ):
         self.config = config
         self.doods = doods
         self.api = FastAPI()
@@ -48,6 +71,9 @@ class API():
                 source_store_path = profiles_path.with_name("profile_preview_sources.json")
             self.profile_source_store = ProfileSourceStore(source_store_path)
         self.preview_store = preview_store or PreviewStore()
+        self.face_gallery_store = face_gallery_store
+        self.face_analyzer = face_analyzer
+        self.face_debug_store = face_debug_store
         self.auth_key = getattr(config, "auth_key", "") or ""
         self.logger = logging.getLogger("doods.api")
         if not self.auth_key:
@@ -56,6 +82,7 @@ class API():
                 "and profile features are disabled."
             )
         self._preview_cleanup_task = None
+        self._face_model_task = None
 
         async def cleanup_preview_frames():
             """Периодически освобождать память по истечении TTL кадров."""
@@ -68,6 +95,17 @@ class API():
         async def start_preview_cleanup():
             if self.auth_key and self.preview_store is not None:
                 self._preview_cleanup_task = asyncio.create_task(cleanup_preview_frames())
+            if self.face_debug_store is not None:
+                try:
+                    self.face_debug_store.start()
+                except FaceDebugStoreError as err:
+                    self.logger.error("Face-debug writer could not start: %s", err)
+            if self.face_analyzer is not None:
+                # Download/load the pinned weights off the API event loop. Failure
+                # is reported to diagnostic sensors and does not stop DOOODS2.
+                self._face_model_task = asyncio.create_task(
+                    asyncio.to_thread(self.face_analyzer.initialize)
+                )
 
         @self.api.on_event("shutdown")
         async def stop_preview_cleanup():
@@ -79,6 +117,22 @@ class API():
                 except asyncio.CancelledError:
                     pass
                 self._preview_cleanup_task = None
+            task = self._face_model_task
+            if task is not None:
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+                self._face_model_task = None
+            if self.face_debug_store is not None:
+                try:
+                    await asyncio.to_thread(self.face_debug_store.stop, 10.0)
+                except Exception as err:
+                    self.logger.warning(
+                        "Face-debug writer shutdown failed (%s)",
+                        type(err).__name__,
+                    )
 
         def profiles_enabled():
             return bool(self.auth_key and self.profile_store is not None)
@@ -110,6 +164,72 @@ class API():
                     detail="Set server.auth_key to enable camera previews.",
                 )
 
+        def face_gallery_enabled():
+            return bool(self.auth_key and self.face_gallery_store is not None)
+
+        def require_face_gallery_enabled():
+            if self.face_gallery_store is None:
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail="Face gallery storage is unavailable.",
+                )
+
+        def face_debug_enabled():
+            return bool(
+                self.face_debug_store is not None
+                and self.face_analyzer is not None
+            )
+
+        def require_face_debug_enabled():
+            if self.face_debug_store is None:
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail="Private face-debug storage is unavailable.",
+                )
+            if self.face_analyzer is None:
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail="Face analysis is unavailable.",
+                )
+
+        async def read_limited_json(request: Request, max_bytes: int):
+            """Прочитать ограниченное JSON-тело без записи данных в логи."""
+            content_type = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+            if content_type != "application/json":
+                raise HTTPException(
+                    status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+                    detail="Request body must use application/json.",
+                )
+            content_length = request.headers.get("content-length")
+            if content_length:
+                try:
+                    declared_length = int(content_length)
+                except ValueError as err:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail="Invalid Content-Length header.",
+                    ) from err
+                if declared_length > max_bytes:
+                    raise HTTPException(
+                        status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                        detail="JSON request exceeds the configured size limit.",
+                    )
+            body = bytearray()
+            async for chunk in request.stream():
+                body.extend(chunk)
+                if len(body) > max_bytes:
+                    raise HTTPException(
+                        status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                        detail="JSON request exceeds the configured size limit.",
+                    )
+            try:
+                return json.loads(body.decode("utf-8"))
+            except (UnicodeDecodeError, ValueError, RecursionError) as err:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Invalid JSON request body.",
+                ) from err
+
         def is_protected_api_path(path: str) -> bool:
             return path in {
                 "/detectors",
@@ -124,24 +244,30 @@ class API():
                 "/redoc",
                 "/profiles",
                 "/preview",
-            } or path.startswith("/profiles/") or path.startswith("/preview/")
+            } or (
+                path.startswith("/profiles/")
+                or path.startswith("/preview/")
+            )
 
         @self.api.middleware("http")
         async def enforce_api_key(request: Request, call_next):
-            if self.auth_key and is_protected_api_path(request.url.path):
+            path = request.url.path
+            if self.auth_key and is_protected_api_path(path):
                 supplied_key = request.headers.get("doods-auth-key")
-                client_host = request.client.host if request.client else None
-                ingress_user_id = request.headers.get("x-remote-user-id")
-                ingress_authenticated = is_authenticated_ingress_request(
-                    client_host,
-                    ingress_user_id,
-                )
-                if not api_key_matches(self.auth_key, supplied_key) and not ingress_authenticated:
-                    return JSONResponse(
+                has_api_key = api_key_matches(self.auth_key, supplied_key)
+                if not has_api_key:
+                    response = JSONResponse(
                         status_code=status.HTTP_401_UNAUTHORIZED,
                         content={"detail": "API authentication required."},
                     )
-            return await call_next(request)
+                    response.headers["Cache-Control"] = "no-store"
+                    response.headers["X-Content-Type-Options"] = "nosniff"
+                    return response
+            response = await call_next(request)
+            if path == "/faces" or path.startswith("/faces/"):
+                response.headers["Cache-Control"] = "no-store"
+                response.headers["X-Content-Type-Options"] = "nosniff"
+            return response
 
         async def authorize_websocket(websocket: WebSocket) -> bool:
             if not self.auth_key:
@@ -172,8 +298,13 @@ class API():
             return capabilities_payload(
                 profiles_enabled=profiles_enabled(),
                 preview_enabled=preview_enabled(),
+                face_gallery_enabled=face_gallery_enabled(),
                 localized_annotations_enabled=True,
                 motion_stream_enabled=bool(self.auth_key),
+                face_pipeline_diagnostics_enabled=bool(
+                    self.auth_key and self.face_analyzer is not None
+                ),
+                face_debug_enabled=face_debug_enabled(),
             )
 
         @self.api.get("/health")
@@ -358,6 +489,432 @@ class API():
                         err,
                     )
             return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+        @self.api.get("/faces/debug/status")
+        async def face_debug_status():
+            """Текущий статус модели и локального ограниченного хранилища."""
+            require_face_debug_enabled()
+            return {
+                "model": self.face_analyzer.model_status(),
+                "storage": self.face_debug_store.status(),
+                "gallery_enabled": face_gallery_enabled(),
+            }
+
+        @self.api.get("/faces/debug/log")
+        async def list_face_debug_log(limit: int = 200):
+            """Последние записи анализа, включая no_face; без кадров и embeddings."""
+            require_face_debug_enabled()
+            try:
+                return {
+                    "entries": await asyncio.to_thread(
+                        self.face_debug_store.list_logs,
+                        limit,
+                    ),
+                    "storage": await asyncio.to_thread(self.face_debug_store.status),
+                }
+            except FaceDebugValidationError as err:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=str(err),
+                ) from err
+            except FaceDebugStoreError as err:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Could not read face-debug log.",
+                ) from err
+
+        @self.api.get("/faces/debug/captures")
+        async def list_face_debug_captures(limit: int = 30):
+            """Последние сохранённые кадры-лица из FIFO-кольца."""
+            require_face_debug_enabled()
+            try:
+                return {
+                    "captures": await asyncio.to_thread(
+                        self.face_debug_store.list_captures,
+                        limit,
+                    ),
+                    "storage": await asyncio.to_thread(self.face_debug_store.status),
+                }
+            except FaceDebugValidationError as err:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=str(err),
+                ) from err
+            except FaceDebugStoreError as err:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Could not read face-debug captures.",
+                ) from err
+
+        @self.api.get("/faces/debug/captures/{capture_id}/image")
+        async def get_face_debug_image(
+            capture_id: str,
+            kind: str = "frame",
+            face_index: int | None = None,
+        ):
+            """Отдать retained JPEG только после проверки face API key."""
+            require_face_debug_enabled()
+            try:
+                image = await asyncio.to_thread(
+                    self.face_debug_store.get_capture_image,
+                    capture_id,
+                    kind=kind,
+                    face_index=face_index,
+                )
+            except FaceDebugNotFoundError as err:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Capture image not found.",
+                ) from err
+            except FaceDebugValidationError as err:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=str(err),
+                ) from err
+            except FaceDebugStoreError as err:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Could not read capture image.",
+                ) from err
+            return Response(
+                content=image,
+                media_type="image/jpeg",
+                headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
+            )
+
+        @self.api.post("/faces/debug/captures/{capture_id}/faces/{face_index}/enroll")
+        async def enroll_face_from_capture(
+            capture_id: str,
+            face_index: int,
+            request: Request,
+        ):
+            """Сохранить embedding из выбранного кадра только после ручного подтверждения."""
+            require_face_debug_enabled()
+            require_face_gallery_enabled()
+            payload = await read_limited_json(request, _MAX_FACE_JSON_REQUEST_BYTES)
+            if (
+                not isinstance(payload, dict)
+                or set(payload) != {"person_id", "manual_confirmation"}
+                or payload.get("manual_confirmation") is not True
+            ):
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="Select a person and explicitly confirm sample enrollment.",
+                )
+            try:
+                capture = await asyncio.to_thread(
+                    self.face_debug_store.get_capture,
+                    capture_id,
+                )
+                if capture is None:
+                    raise FaceDebugNotFoundError("Capture not found")
+                faces = capture.get("faces", [])
+                if not 0 <= face_index < len(faces):
+                    raise FaceDebugNotFoundError("Face crop not found")
+                jpeg_bytes = await asyncio.to_thread(
+                    self.face_debug_store.get_capture_frame,
+                    capture_id,
+                )
+                embedding = await asyncio.to_thread(
+                    self.face_analyzer.embedding_from_capture,
+                    jpeg_bytes,
+                    expected_bbox=faces[face_index]["bbox"],
+                )
+            except FaceDebugNotFoundError as err:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Capture or face crop is no longer available.",
+                ) from err
+            except FaceDebugValidationError as err:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=str(err),
+                ) from err
+            except FaceEmbeddingError as err:
+                response_status = (
+                    status.HTTP_409_CONFLICT
+                    if err.code == "models_not_ready"
+                    else status.HTTP_422_UNPROCESSABLE_ENTITY
+                )
+                raise HTTPException(
+                    status_code=response_status,
+                    detail=f"Enrollment could not be prepared ({err.code}).",
+                ) from err
+            except FaceDebugStoreError as err:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Could not read retained face frame.",
+                ) from err
+
+            try:
+                return await asyncio.to_thread(
+                    self.face_gallery_store.add_sample,
+                    payload.get("person_id"),
+                    model_id="opencv_sface",
+                    model_version="2021dec",
+                    embedding=embedding,
+                    manual_confirmation=True,
+                )
+            except FaceGalleryNotFoundError as err:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Face gallery person not found.",
+                ) from err
+            except FaceGalleryValidationError as err:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=str(err),
+                ) from err
+            except FaceGalleryStoreError as err:
+                self.logger.error("Face gallery write failed: %s", err)
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Could not save confirmed face sample.",
+                ) from err
+
+        @self.api.get("/faces/people")
+        async def list_face_people():
+            """Список людей без embedding-векторов."""
+            require_face_gallery_enabled()
+            return await asyncio.to_thread(self.face_gallery_store.list_people)
+
+        @self.api.post("/faces/people", status_code=status.HTTP_201_CREATED)
+        async def create_face_person(request: Request):
+            """Создать запись человека; sample лица добавляются отдельным действием."""
+            require_face_gallery_enabled()
+            payload = await read_limited_json(request, _MAX_FACE_JSON_REQUEST_BYTES)
+            if not isinstance(payload, dict) or set(payload) != {"name"}:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="Expected only the name field.",
+                )
+            try:
+                return await asyncio.to_thread(
+                    self.face_gallery_store.create_person,
+                    payload.get("name"),
+                )
+            except FaceGalleryValidationError as err:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=str(err),
+                ) from err
+            except FaceGalleryStoreError as err:
+                self.logger.error("Face gallery write failed: %s", err)
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Could not save face gallery.",
+                ) from err
+
+        @self.api.get("/faces/people/{person_id}")
+        async def get_face_person(person_id: str):
+            """Получить человека и метаданные образцов, не сами embeddings."""
+            require_face_gallery_enabled()
+            try:
+                person = await asyncio.to_thread(
+                    self.face_gallery_store.get_person,
+                    person_id,
+                )
+            except FaceGalleryValidationError as err:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=str(err),
+                ) from err
+            if person is None:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Face gallery person not found.",
+                )
+            return person
+
+        @self.api.patch("/faces/people/{person_id}")
+        async def rename_face_person(person_id: str, request: Request):
+            """Изменить отображаемое имя, сохранив стабильный ID и образцы."""
+            require_face_gallery_enabled()
+            payload = await read_limited_json(request, _MAX_FACE_JSON_REQUEST_BYTES)
+            if not isinstance(payload, dict) or set(payload) != {"name"}:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="Expected only the name field.",
+                )
+            try:
+                person = await asyncio.to_thread(
+                    self.face_gallery_store.rename_person,
+                    person_id,
+                    payload.get("name"),
+                )
+            except FaceGalleryValidationError as err:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=str(err),
+                ) from err
+            except FaceGalleryStoreError as err:
+                self.logger.error("Face gallery write failed: %s", err)
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Could not save face gallery.",
+                ) from err
+            if person is None:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Face gallery person not found.",
+                )
+            return person
+
+        @self.api.delete(
+            "/faces/people/{person_id}",
+            status_code=status.HTTP_204_NO_CONTENT,
+        )
+        async def delete_face_person(person_id: str):
+            """Удалить человека и все связанные embeddings."""
+            require_face_gallery_enabled()
+            try:
+                deleted = await asyncio.to_thread(
+                    self.face_gallery_store.delete_person,
+                    person_id,
+                )
+            except FaceGalleryValidationError as err:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=str(err),
+                ) from err
+            except FaceGalleryStoreError as err:
+                self.logger.error("Face gallery delete failed: %s", err)
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Could not delete face gallery person.",
+                ) from err
+            if not deleted:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Face gallery person not found.",
+                )
+            return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+        @self.api.post(
+            "/faces/people/{person_id}/samples",
+            status_code=status.HTTP_201_CREATED,
+        )
+        async def add_face_sample(person_id: str, request: Request):
+            """Добавить embedding только с явным ручным подтверждением."""
+            require_face_gallery_enabled()
+            payload = await read_limited_json(request, _MAX_FACE_JSON_REQUEST_BYTES)
+            expected_fields = {
+                "manual_confirmation",
+                "model_id",
+                "model_version",
+                "embedding",
+            }
+            if not isinstance(payload, dict) or set(payload) != expected_fields:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="Expected manual_confirmation, model_id, model_version and embedding.",
+                )
+            try:
+                return await asyncio.to_thread(
+                    self.face_gallery_store.add_sample,
+                    person_id,
+                    model_id=payload.get("model_id"),
+                    model_version=payload.get("model_version"),
+                    embedding=payload.get("embedding"),
+                    manual_confirmation=payload.get("manual_confirmation"),
+                )
+            except FaceGalleryNotFoundError as err:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Face gallery person not found.",
+                ) from err
+            except FaceGalleryValidationError as err:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=str(err),
+                ) from err
+            except FaceGalleryStoreError as err:
+                self.logger.error("Face gallery write failed: %s", err)
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Could not save face sample.",
+                ) from err
+
+        @self.api.delete(
+            "/faces/people/{person_id}/samples/{sample_id}",
+            status_code=status.HTTP_204_NO_CONTENT,
+        )
+        async def delete_face_sample(person_id: str, sample_id: str):
+            """Удалить один подтверждённый embedding."""
+            require_face_gallery_enabled()
+            try:
+                deleted = await asyncio.to_thread(
+                    self.face_gallery_store.delete_sample,
+                    person_id,
+                    sample_id,
+                )
+            except FaceGalleryValidationError as err:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=str(err),
+                ) from err
+            except FaceGalleryStoreError as err:
+                self.logger.error("Face gallery delete failed: %s", err)
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Could not delete face sample.",
+                ) from err
+            if not deleted:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Face gallery person or sample not found.",
+                )
+            return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+        @self.api.get("/faces/backup")
+        async def export_face_gallery_backup():
+            """Скачать embeddings только по защищённому API и с no-store."""
+            require_face_gallery_enabled()
+            backup = await asyncio.to_thread(
+                self.face_gallery_store.export_backup
+            )
+            return JSONResponse(
+                content=backup,
+                headers={
+                    "Content-Disposition": 'attachment; filename="dooods2f-face-gallery.json"',
+                    "Cache-Control": "no-store",
+                    "X-Content-Type-Options": "nosniff",
+                },
+            )
+
+        @self.api.post("/faces/restore")
+        async def restore_face_gallery_backup(request: Request):
+            """Заменить галерею только по явной команде и валидной резервной копии."""
+            require_face_gallery_enabled()
+            payload = await read_limited_json(
+                request,
+                _MAX_FACE_BACKUP_REQUEST_BYTES,
+            )
+            if (
+                not isinstance(payload, dict)
+                or set(payload) != {"confirm_replace", "backup"}
+                or payload.get("confirm_replace") is not True
+            ):
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="Restore requires confirm_replace=true and a backup object.",
+                )
+            try:
+                return await asyncio.to_thread(
+                    self.face_gallery_store.replace_from_backup,
+                    payload.get("backup"),
+                )
+            except FaceGalleryValidationError as err:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=str(err),
+                ) from err
+            except FaceGalleryStoreError as err:
+                self.logger.error("Face gallery restore failed: %s", err)
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Could not restore face gallery.",
+                ) from err
 
         def preview_metadata(frame):
             return {
@@ -750,7 +1307,13 @@ class API():
                 except RuntimeError:
                     stop_event.set()
 
-            worker = MotionStreamWorker(request, gate, stop_event, publish)
+            worker = MotionStreamWorker(
+                request,
+                gate,
+                stop_event,
+                publish,
+                face_analyzer=self.face_analyzer,
+            )
 
             def run_worker() -> None:
                 try:

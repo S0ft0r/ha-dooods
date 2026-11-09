@@ -26,6 +26,13 @@ configuration:
       trace:
         name: Memory tracing
         description: Diagnostic tracing; keep disabled for normal operation.
+  face:
+    name: Face — experimental settings
+    description: Alpha YuNet/SFace settings for RTSP motion-candidate frames.
+    fields:
+      yunet_score_threshold:
+        name: YuNet confidence threshold
+        description: Range 0.1–1.0; default 0.9. Lower values may detect weaker/smaller faces but can increase false detections. The change takes effect after restarting the App.
   doods:
     name: Detection
     description: Default detector and annotation settings.
