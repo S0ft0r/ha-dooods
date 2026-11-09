@@ -41,6 +41,17 @@ async def async_setup_entry(
                 DooodsMotionLastTriggerSensor(coordinator, camera_entity_id),
             ]
         )
+        if getattr(coordinator, "face_diagnostics_enabled", False):
+            entities.extend(
+                [
+                    DooodsFacePipelineStateSensor(coordinator, camera_entity_id),
+                    DooodsFaceFramesProcessedSensor(coordinator, camera_entity_id),
+                    DooodsFaceCountSensor(coordinator, camera_entity_id),
+                    DooodsFaceLargestWidthSensor(coordinator, camera_entity_id),
+                    DooodsFaceLargestHeightSensor(coordinator, camera_entity_id),
+                    DooodsFaceInferenceTimeSensor(coordinator, camera_entity_id),
+                ]
+            )
     async_add_entities(entities)
 
 
@@ -350,3 +361,224 @@ class DooodsMotionLastTriggerSensor(_DooodsMotionGateSensor):
         except ValueError:
             return None
         return timestamp if timestamp.tzinfo is not None else None
+
+
+class _DooodsFaceDiagnosticSensor(CoordinatorEntity[DooodsCoordinator], SensorEntity):
+    """Common metadata/listener for opt-in experimental face diagnostics."""
+
+    _attr_has_entity_name = True
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_entity_registry_enabled_default = False
+
+    def __init__(
+        self,
+        coordinator: DooodsCoordinator,
+        camera_entity_id: str,
+        suffix: str,
+        translation_key: str,
+    ) -> None:
+        """Initialize a disabled-by-default alpha diagnostic sensor."""
+        super().__init__(coordinator)
+        self._camera_entity_id = camera_entity_id
+        self._attr_unique_id = f"{coordinator.entry_id}_{camera_entity_id}_{suffix}"
+        self._attr_translation_key = translation_key
+        self._attr_device_info = camera_device_info(
+            coordinator.hass,
+            coordinator,
+            camera_entity_id,
+        )
+
+    @property
+    @override
+    def available(self) -> bool:
+        """Keep diagnostic entities available independently of scan results."""
+        return True
+
+    async def async_added_to_hass(self) -> None:
+        """Subscribe to in-memory face telemetry for the associated camera."""
+        await super().async_added_to_hass()
+        self.async_on_remove(
+            self.coordinator.async_add_face_diagnostics_listener(
+                self._handle_face_diagnostics_update
+            )
+        )
+
+    @callback
+    def _handle_face_diagnostics_update(self, camera_entity_id: str) -> None:
+        """Refresh this sensor only when its camera has new telemetry."""
+        if camera_entity_id == self._camera_entity_id:
+            self.async_write_ha_state()
+
+    @property
+    def diagnostics(self) -> dict[str, Any]:
+        """Return the sanitized, non-biometric diagnostic values."""
+        return self.coordinator.face_diagnostics_for_camera(self._camera_entity_id)
+
+    @property
+    @override
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Mark telemetry as alpha without exposing images or embeddings."""
+        return {
+            "camera_entity_id": self._camera_entity_id,
+            "feature_stage": "alpha",
+        }
+
+
+class DooodsFacePipelineStateSensor(_DooodsFaceDiagnosticSensor):
+    """Show the alpha pipeline/model state and safe last-frame summary."""
+
+    _attr_icon = "mdi:face-recognition"
+
+    def __init__(self, coordinator: DooodsCoordinator, camera_entity_id: str) -> None:
+        """Initialize the face pipeline state sensor."""
+        super().__init__(
+            coordinator,
+            camera_entity_id,
+            "face_pipeline_state",
+            "face_pipeline_state",
+        )
+
+    @property
+    @override
+    def native_value(self) -> str:
+        """Return the current model or last-candidate processing state."""
+        state = self.diagnostics.get("state", "disabled")
+        return state if state in {
+            "disabled",
+            "loading",
+            "ready",
+            "no_face",
+            "face_detected",
+            "error",
+        } else "disabled"
+
+    @property
+    @override
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Expose only safe status metadata and no biometric output."""
+        attributes = super().extra_state_attributes
+        attributes.update(
+            {
+                "last_error": self.diagnostics.get("last_error"),
+                "last_processed_at": self.diagnostics.get("last_processed_at"),
+                "embedding_ready": self.diagnostics.get("embedding_ready"),
+            }
+        )
+        return attributes
+
+
+class DooodsFaceFramesProcessedSensor(_DooodsFaceDiagnosticSensor):
+    """Count motion-candidate frames sent through YuNet/SFace in this App run."""
+
+    _attr_icon = "mdi:video-check-outline"
+    _attr_native_unit_of_measurement = "frames"
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    def __init__(self, coordinator: DooodsCoordinator, camera_entity_id: str) -> None:
+        """Initialize the processed-frame counter sensor."""
+        super().__init__(
+            coordinator,
+            camera_entity_id,
+            "face_frames_processed",
+            "face_frames_processed",
+        )
+
+    @property
+    @override
+    def native_value(self) -> int | None:
+        """Return the number of motion candidates processed by the face module."""
+        value = self.diagnostics.get("frames_processed_total")
+        return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+class DooodsFaceCountSensor(_DooodsFaceDiagnosticSensor):
+    """Report the number of detected faces in the most recent candidate."""
+
+    _attr_icon = "mdi:account-multiple"
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    def __init__(self, coordinator: DooodsCoordinator, camera_entity_id: str) -> None:
+        """Initialize the face count sensor."""
+        super().__init__(coordinator, camera_entity_id, "face_count", "face_count")
+
+    @property
+    @override
+    def native_value(self) -> int | None:
+        """Return the latest face count without retaining any face representation."""
+        value = self.diagnostics.get("faces_detected")
+        return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+class DooodsFaceLargestWidthSensor(_DooodsFaceDiagnosticSensor):
+    """Report the largest detected face width in original-frame pixels."""
+
+    _attr_icon = "mdi:arrow-expand-horizontal"
+    _attr_native_unit_of_measurement = "px"
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    def __init__(self, coordinator: DooodsCoordinator, camera_entity_id: str) -> None:
+        """Initialize the largest-face width sensor."""
+        super().__init__(
+            coordinator,
+            camera_entity_id,
+            "face_largest_width",
+            "face_largest_width",
+        )
+
+    @property
+    @override
+    def native_value(self) -> int | None:
+        """Return the width of the largest face in the last processed frame."""
+        value = self.diagnostics.get("largest_face_width_px")
+        return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+class DooodsFaceLargestHeightSensor(_DooodsFaceDiagnosticSensor):
+    """Report the largest detected face height in original-frame pixels."""
+
+    _attr_icon = "mdi:arrow-expand-vertical"
+    _attr_native_unit_of_measurement = "px"
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    def __init__(self, coordinator: DooodsCoordinator, camera_entity_id: str) -> None:
+        """Initialize the largest-face height sensor."""
+        super().__init__(
+            coordinator,
+            camera_entity_id,
+            "face_largest_height",
+            "face_largest_height",
+        )
+
+    @property
+    @override
+    def native_value(self) -> int | None:
+        """Return the height of the largest face in the last processed frame."""
+        value = self.diagnostics.get("largest_face_height_px")
+        return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+class DooodsFaceInferenceTimeSensor(_DooodsFaceDiagnosticSensor):
+    """Report combined YuNet detection and largest-face SFace latency."""
+
+    _attr_icon = "mdi:timer-outline"
+    _attr_native_unit_of_measurement = "ms"
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_suggested_display_precision = 2
+
+    def __init__(self, coordinator: DooodsCoordinator, camera_entity_id: str) -> None:
+        """Initialize the alpha inference-latency sensor."""
+        super().__init__(
+            coordinator,
+            camera_entity_id,
+            "face_inference_time",
+            "face_inference_time",
+        )
+
+    @property
+    @override
+    def native_value(self) -> float | None:
+        """Return the most recent combined inference latency in milliseconds."""
+        value = self.diagnostics.get("inference_ms")
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            return float(value)
+        return None

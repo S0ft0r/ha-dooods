@@ -151,6 +151,24 @@
       },
       "motion_gate_last_trigger": {
         "name": "RTSP last trigger"
+      },
+      "face_pipeline_state": {
+        "name": "Face pipeline state (alpha)"
+      },
+      "face_frames_processed": {
+        "name": "Frames processed by face pipeline (alpha)"
+      },
+      "face_count": {
+        "name": "Faces in last frame (alpha)"
+      },
+      "face_largest_width": {
+        "name": "Largest face width (alpha)"
+      },
+      "face_largest_height": {
+        "name": "Largest face height (alpha)"
+      },
+      "face_inference_time": {
+        "name": "YuNet + SFace inference time (alpha)"
       }
     },
     "image": {

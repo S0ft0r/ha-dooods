@@ -315,12 +315,19 @@ async def async_setup_entry(hass: HomeAssistant, entry: DooodsConfigEntry) -> bo
     preview_enabled = bool(auth_key) and "camera_preview" in capabilities
     annotation_localization_enabled = "localized_annotations" in capabilities
     motion_stream_enabled = bool(auth_key) and "rtsp_motion_stream" in capabilities
+    face_diagnostics_enabled = (
+        bool(auth_key) and "face_pipeline_diagnostics" in capabilities
+    )
     if preview_enabled:
         _LOGGER.debug("Сервер DOOODS2 объявил поддержку временного preview API")
     if annotation_localization_enabled:
         _LOGGER.debug("Сервер DOOODS2 объявил поддержку локализованных JPEG-аннотаций")
     if motion_stream_enabled:
         _LOGGER.debug("Сервер DOOODS2 поддерживает непрерывный RTSP motion stream")
+    if face_diagnostics_enabled:
+        _LOGGER.info(
+            "Сервер DOOODS2 объявил experimental/alpha диагностику YuNet + SFace"
+        )
 
     if not detectors:
         raise ConfigEntryNotReady(
@@ -512,6 +519,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: DooodsConfigEntry) -> bo
         preview_enabled=preview_enabled,
         annotation_localization_enabled=annotation_localization_enabled,
         motion_stream_enabled=motion_stream_enabled,
+        face_diagnostics_enabled=face_diagnostics_enabled,
         motion_sensors=motion_sensors,
         camera_detection_enabled=camera_detection_enabled,
         camera_stream_enabled=camera_stream_enabled,
