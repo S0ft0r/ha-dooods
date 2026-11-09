@@ -470,12 +470,19 @@ class DooodsConfigFlow(ConfigFlow, domain=DOMAIN):
                     }
                     # Определить, поддерживает ли App функции распознавания лиц,
                     # чтобы показать набор камер для face detection.
-                    capabilities = await async_get_capabilities(
-                        self.hass, server_url, auth_key
-                    )
-                    self._supports_face_detection = bool(
-                        capabilities & {"face_gallery", "face_debug_dashboard"}
-                    )
+                    self._supports_face_detection = False
+                    try:
+                        capabilities = await async_get_capabilities(
+                            self.hass, server_url, auth_key
+                        )
+                        self._supports_face_detection = bool(
+                            capabilities & {"face_gallery", "face_debug_dashboard"}
+                        )
+                    except DooodsApiError as err:
+                        _LOGGER.debug(
+                            "Не удалось определить возможности App при создании: %s",
+                            type(err).__name__,
+                        )
                     self._draft_options = _options_for_form(
                         {
                             CONF_DETECTOR: detector["name"],
@@ -536,30 +543,6 @@ class DooodsConfigFlow(ConfigFlow, domain=DOMAIN):
             ),
         )
 
-
-def _cameras_schema(
-    draft_cameras: list[str],
-    supports_face_detection: bool,
-) -> probatio.Schema:
-    """Схема выбора камер с опциональным набором для face detection."""
-    fields: dict[Any, Any] = {
-        probatio.Required(CONF_SOURCE, default=draft_cameras): EntitySelector(
-            EntitySelectorConfig(domain="camera", multiple=True)
-        ),
-    }
-    if supports_face_detection:
-        fields[
-            probatio.Optional(
-                CONF_FACE_DETECTION_CAMERAS,
-                default=[],
-            )
-        ] = EntitySelector(
-            EntitySelectorConfig(
-                domain="camera",
-                multiple=True,
-            )
-        )
-    return probatio.Schema(fields)
 
     @override
     async def async_step_output(
@@ -651,6 +634,31 @@ def _cameras_schema(
     def async_get_options_flow(config_entry: ConfigEntry) -> DooodsOptionsFlow:
         """Создать мастер параметров для записи интеграции."""
         return DooodsOptionsFlow()
+
+
+def _cameras_schema(
+    draft_cameras: list[str],
+    supports_face_detection: bool,
+) -> probatio.Schema:
+    """Схема выбора камер с опциональным набором для face detection."""
+    fields: dict[Any, Any] = {
+        probatio.Required(CONF_SOURCE, default=draft_cameras): EntitySelector(
+            EntitySelectorConfig(domain="camera", multiple=True)
+        ),
+    }
+    if supports_face_detection:
+        fields[
+            probatio.Optional(
+                CONF_FACE_DETECTION_CAMERAS,
+                default=[],
+            )
+        ] = EntitySelector(
+            EntitySelectorConfig(
+                domain="camera",
+                multiple=True,
+            )
+        )
+    return probatio.Schema(fields)
 
 
 class DooodsOptionsFlow(OptionsFlowWithReload):
