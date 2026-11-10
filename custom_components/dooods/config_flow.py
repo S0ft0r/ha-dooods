@@ -58,6 +58,7 @@ from .const import (
     CONF_COVERS,
     CONF_DETECTOR,
     CONF_EMIT_DETECTION_EVENTS,
+    CONF_EMIT_FACE_MATCH_EVENTS,
     CONF_FILE_OUT,
     CONF_FACE_DETECTION_CAMERAS,
     CONF_LABELS,
@@ -73,6 +74,7 @@ from .const import (
     DEFAULT_AREA,
     DEFAULT_CONFIDENCE,
     DEFAULT_EMIT_DETECTION_EVENTS,
+    DEFAULT_EMIT_FACE_MATCH_EVENTS,
     DEFAULT_TIMEOUT,
     DOMAIN,
 )
@@ -359,6 +361,11 @@ def _options_for_form(options: Mapping[str, Any]) -> dict[str, Any]:
             if isinstance(options.get(CONF_EMIT_DETECTION_EVENTS), bool)
             else DEFAULT_EMIT_DETECTION_EVENTS
         ),
+        CONF_EMIT_FACE_MATCH_EVENTS: (
+            options.get(CONF_EMIT_FACE_MATCH_EVENTS)
+            if isinstance(options.get(CONF_EMIT_FACE_MATCH_EVENTS), bool)
+            else DEFAULT_EMIT_FACE_MATCH_EVENTS
+        ),
     }
 
 
@@ -418,6 +425,11 @@ def _normalize_options(options: Mapping[str, Any]) -> dict[str, Any]:
             options.get(CONF_EMIT_DETECTION_EVENTS)
             if isinstance(options.get(CONF_EMIT_DETECTION_EVENTS), bool)
             else DEFAULT_EMIT_DETECTION_EVENTS
+        ),
+        CONF_EMIT_FACE_MATCH_EVENTS: (
+            options.get(CONF_EMIT_FACE_MATCH_EVENTS)
+            if isinstance(options.get(CONF_EMIT_FACE_MATCH_EVENTS), bool)
+            else DEFAULT_EMIT_FACE_MATCH_EVENTS
         ),
     }
 

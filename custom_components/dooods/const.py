@@ -27,7 +27,9 @@ CONF_EMIT_DETECTION_EVENTS = "emit_detection_events"
 CONF_FACE_DETECTION_CAMERAS = "face_detection_cameras"
 
 EVENT_DETECTION = f"{DOMAIN}_detection"
+EVENT_FACE_MATCH = f"{DOMAIN}_face_match"
 DEFAULT_EMIT_DETECTION_EVENTS = False
+DEFAULT_EMIT_FACE_MATCH_EVENTS = False
 
 # Явная настройка камеры без сканирования по событиям движения.
 MOTION_SENSOR_NONE = "none"

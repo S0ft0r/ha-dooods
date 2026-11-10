@@ -10,6 +10,34 @@ from typing import Any
 _BOUNDING_BOX_FIELDS = ("left", "top", "right", "bottom")
 
 
+def face_match_event_data(
+    *,
+    entry_id: str,
+    camera_entity_id: str,
+    checked_at: datetime | None,
+    person_id: str | None,
+    person_name: str | None,
+    similarity: float | None,
+    state: str,
+) -> dict[str, Any]:
+    """Return one serializable, privacy-safe event payload for a face match.
+
+    The payload intentionally contains only match metadata. It does not contain
+    the source frame, filesystem paths, embeddings, or server credentials.
+    """
+    return {
+        "entry_id": entry_id,
+        "camera_entity_id": camera_entity_id,
+        "timestamp": checked_at.isoformat() if checked_at is not None else None,
+        "person_id": person_id,
+        "person_name": person_name,
+        "similarity": round(float(similarity), 4)
+        if isinstance(similarity, (int, float))
+        else None,
+        "state": state,
+    }
+
+
 def detection_event_data(
     *,
     entry_id: str,
