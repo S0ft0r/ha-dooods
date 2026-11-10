@@ -76,6 +76,9 @@ class FaceAnalyzer:
         model_directory: str | Path = "/data/face_models",
         *,
         yunet_score_threshold: float = _DEFAULT_YUNET_SCORE_THRESHOLD,
+        face_match_threshold: float = 0.7,
+        face_detection_cameras: list[str] | None = None,
+        face_gallery_store: Any = None,
         debug_store: Any = None,
     ) -> None:
         """Initialize analyzer and validate the configurable alpha YuNet threshold."""
@@ -83,6 +86,13 @@ class FaceAnalyzer:
         self.yunet_score_threshold = self._normalize_yunet_score_threshold(
             yunet_score_threshold
         )
+        self.face_match_threshold = self._normalize_match_threshold(
+            face_match_threshold
+        )
+        self.face_detection_cameras = set(
+            camera for camera in (face_detection_cameras or []) if isinstance(camera, str)
+        )
+        self.face_gallery_store = face_gallery_store
         self.debug_store = debug_store
         self._state_lock = threading.RLock()
         self._initialize_lock = threading.Lock()
@@ -188,6 +198,33 @@ class FaceAnalyzer:
 
     def process(self, frame: Any, source_id: str) -> dict[str, Any]:
         """Analyze one motion-candidate frame and return no biometric payload."""
+        # Если список камер для face detection задан, анализировать только их.
+        # Остальные камеры получают диагностику без распознавания лиц.
+        if (
+            self.face_detection_cameras
+            and source_id not in self.face_detection_cameras
+        ):
+            with self._state_lock:
+                previous = self._camera_diagnostics.get(source_id, {})
+                frame_count = int(previous.get("frames_processed_total", 0)) + 1
+            diagnostics = {
+                "state": "disabled",
+                "frames_processed_total": frame_count,
+                "faces_detected": None,
+                "largest_face_width_px": None,
+                "largest_face_height_px": None,
+                "embedding_ready": None,
+                "inference_ms": None,
+                "last_processed_at": datetime.now(UTC).isoformat(),
+                "last_error": None,
+            }
+            with self._state_lock:
+                self._camera_diagnostics[source_id] = diagnostics
+                self._camera_diagnostics.move_to_end(source_id)
+                while len(self._camera_diagnostics) > _MAX_CAMERA_STATES:
+                    self._camera_diagnostics.popitem(last=False)
+            return diagnostics
+
         with self._state_lock:
             if self._model_state != "ready" or self._cv2 is None:
                 return self.snapshot(source_id)
@@ -203,6 +240,7 @@ class FaceAnalyzer:
         face_height: int | None = None
         embedding_ready: bool | None = None
         face_detections: list[dict[str, Any]] = []
+        match_result: dict[str, Any] | None = None
         state = "error"
         error_code: str | None = None
 
@@ -282,6 +320,57 @@ class FaceAnalyzer:
                         raise _FaceInferenceError("feature_failed") from err
                     state = "face_detected"
                     embedding_ready = True
+
+                    # Сопоставление с галереей людей
+                    if self.face_gallery_store is not None:
+                        try:
+                            people = self.face_gallery_store.get_people_with_embeddings()
+                            if people:
+                                feature_list = [float(v) for v in feature.flatten().tolist()]
+                                best_match = None
+                                best_similarity = 0.0
+                                second_best_similarity = 0.0
+                                for person in people:
+                                    for sample in person.get("samples", []):
+                                        sample_embedding = sample.get("embedding")
+                                        if not sample_embedding:
+                                            continue
+                                        similarity = self._cosine_similarity(
+                                            feature_list,
+                                            [float(v) for v in sample_embedding],
+                                        )
+                                        if similarity > best_similarity:
+                                            second_best_similarity = best_similarity
+                                            best_similarity = similarity
+                                            best_match = person
+                                        elif similarity > second_best_similarity:
+                                            second_best_similarity = similarity
+                                if best_match is not None:
+                                    if best_similarity >= self.face_match_threshold:
+                                        gap = best_similarity - second_best_similarity
+                                        if gap >= 0.1:
+                                            match_result = {
+                                                "state": "matched",
+                                                "person_id": best_match["id"],
+                                                "person_name": best_match["name"],
+                                                "similarity": round(best_similarity, 4),
+                                            }
+                                        else:
+                                            match_result = {
+                                                "state": "ambiguous",
+                                                "person_id": best_match["id"],
+                                                "person_name": best_match["name"],
+                                                "similarity": round(best_similarity, 4),
+                                            }
+                                    else:
+                                        match_result = {
+                                            "state": "unknown",
+                                        }
+                        except Exception as err:
+                            _LOGGER.debug(
+                                "Face gallery matching failed (%s)",
+                                type(err).__name__,
+                            )
         except _FaceInferenceError as err:
             error_code = err.code
             state = "error"
@@ -305,6 +394,7 @@ class FaceAnalyzer:
             "largest_face_width_px": face_width,
             "largest_face_height_px": face_height,
             "embedding_ready": embedding_ready,
+            "match": match_result,
             "inference_ms": round(elapsed_ms, 2),
             "last_processed_at": datetime.now(UTC).isoformat(),
             "last_error": error_code if error_code in _ERROR_CODES else None,
@@ -345,6 +435,107 @@ class FaceAnalyzer:
                     type(err).__name__,
                 )
         return dict(diagnostics)
+
+    def match_frame(
+        self,
+        frame: Any,
+        source_id: str,
+    ) -> dict[str, Any] | None:
+        """Run face detection + SFace embedding + gallery matching on a frame.
+
+        Returns the match result dict (state, person_id, person_name, similarity)
+        or None when no match is possible. Does not write to the debug store.
+        """
+        with self._state_lock:
+            if self._model_state != "ready" or self._cv2 is None:
+                return None
+            cv2 = self._cv2
+            detector = self._detector
+            recognizer = self._recognizer
+
+        height, width = self._frame_size(frame)
+        if width <= 0 or height <= 0:
+            return None
+
+        scale = min(1.0, _MAX_ANALYSIS_SIDE / float(max(width, height)))
+        if scale < 1.0:
+            analysis_width = max(1, round(width * scale))
+            analysis_height = max(1, round(height * scale))
+            analysis_frame = cv2.resize(
+                frame,
+                (analysis_width, analysis_height),
+                interpolation=cv2.INTER_AREA,
+            )
+        else:
+            analysis_frame = frame
+            analysis_width = width
+            analysis_height = height
+
+        with self._inference_lock:
+            try:
+                detector.setInputSize((analysis_width, analysis_height))
+                _result, detected_faces = detector.detect(analysis_frame)
+                rows = list(detected_faces) if detected_faces is not None else []
+                if not rows:
+                    return None
+                largest_face = max(
+                    rows,
+                    key=lambda face: float(face[2]) * float(face[3]),
+                )
+                aligned_face = recognizer.alignCrop(analysis_frame, largest_face)
+                feature = recognizer.feature(aligned_face)
+                self._validate_feature(feature)
+            except _FaceInferenceError:
+                return None
+            except Exception:
+                return None
+
+        # Сопоставление с галереей людей
+        if self.face_gallery_store is None:
+            return None
+        try:
+            people = self.face_gallery_store.get_people_with_embeddings()
+            if not people:
+                return None
+            feature_list = [float(v) for v in feature.flatten().tolist()]
+            best_match = None
+            best_similarity = 0.0
+            second_best_similarity = 0.0
+            for person in people:
+                for sample in person.get("samples", []):
+                    sample_embedding = sample.get("embedding")
+                    if not sample_embedding:
+                        continue
+                    similarity = self._cosine_similarity(
+                        feature_list,
+                        [float(v) for v in sample_embedding],
+                    )
+                    if similarity > best_similarity:
+                        second_best_similarity = best_similarity
+                        best_similarity = similarity
+                        best_match = person
+                    elif similarity > second_best_similarity:
+                        second_best_similarity = similarity
+            if best_match is None:
+                return None
+            if best_similarity < self.face_match_threshold:
+                return None
+            gap = best_similarity - second_best_similarity
+            if gap < 0.1:
+                return {
+                    "state": "ambiguous",
+                    "person_id": best_match["id"],
+                    "person_name": best_match["name"],
+                    "similarity": round(best_similarity, 4),
+                }
+            return {
+                "state": "matched",
+                "person_id": best_match["id"],
+                "person_name": best_match["name"],
+                "similarity": round(best_similarity, 4),
+            }
+        except Exception:
+            return None
 
     @staticmethod
     def _encode_debug_capture(
@@ -491,6 +682,41 @@ class FaceAnalyzer:
             )
             return _DEFAULT_YUNET_SCORE_THRESHOLD
         return threshold
+
+    @staticmethod
+    def _normalize_match_threshold(value: Any) -> float:
+        """Accept only a finite face match threshold in the 0.1–1.0 range."""
+        try:
+            threshold = float(value)
+        except (TypeError, ValueError, OverflowError):
+            return 0.7
+        if (
+            isinstance(value, bool)
+            or not math.isfinite(threshold)
+            or not 0.1 <= threshold <= 1.0
+        ):
+            _LOGGER.warning(
+                "Invalid face match threshold; using default %.1f",
+                0.7,
+            )
+            return 0.7
+        return threshold
+
+    @staticmethod
+    def _cosine_similarity(first: list[float], second: list[float]) -> float:
+        """Cosine similarity between two embedding vectors (0.0–1.0)."""
+        if not first or not second or len(first) != len(second):
+            return 0.0
+        dot = 0.0
+        norm_a = 0.0
+        norm_b = 0.0
+        for a, b in zip(first, second):
+            dot += a * b
+            norm_a += a * a
+            norm_b += b * b
+        if norm_a <= 1e-24 or norm_b <= 1e-24:
+            return 0.0
+        return dot / math.sqrt(norm_a * norm_b)
 
     def _ensure_model_file(self, spec: dict[str, Any]) -> Path:
         """Return a SHA-256-verified model file, downloading it atomically if absent."""

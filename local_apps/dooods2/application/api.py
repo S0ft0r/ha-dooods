@@ -253,16 +253,21 @@ class API():
         async def enforce_api_key(request: Request, call_next):
             path = request.url.path
             if self.auth_key and is_protected_api_path(path):
-                supplied_key = request.headers.get("doods-auth-key")
-                has_api_key = api_key_matches(self.auth_key, supplied_key)
-                if not has_api_key:
-                    response = JSONResponse(
-                        status_code=status.HTTP_401_UNAUTHORIZED,
-                        content={"detail": "API authentication required."},
-                    )
-                    response.headers["Cache-Control"] = "no-store"
-                    response.headers["X-Content-Type-Options"] = "nosniff"
-                    return response
+                # Разрешить аутентифицированным пользователям Home Assistant
+                # через Supervisor Ingress без API-ключа; прямые вызовы всё
+                # равно требуют doods-auth-key.
+                remote_host = request.client.host if request.client else None
+                if not is_authenticated_ingress_request(remote_host, request.headers):
+                    supplied_key = request.headers.get("doods-auth-key")
+                    has_api_key = api_key_matches(self.auth_key, supplied_key)
+                    if not has_api_key:
+                        response = JSONResponse(
+                            status_code=status.HTTP_401_UNAUTHORIZED,
+                            content={"detail": "API authentication required."},
+                        )
+                        response.headers["Cache-Control"] = "no-store"
+                        response.headers["X-Content-Type-Options"] = "nosniff"
+                        return response
             response = await call_next(request)
             if path == "/faces" or path.startswith("/faces/"):
                 response.headers["Cache-Control"] = "no-store"
@@ -490,6 +495,59 @@ class API():
                     )
             return Response(status_code=status.HTTP_204_NO_CONTENT)
 
+        @self.api.post("/faces/cameras")
+        async def set_face_detection_cameras(request: Request):
+            """Установить список камер, для которых выполнять face detection.
+
+            Принимает JSON {"cameras": ["camera.entity_id", ...]}.
+            Пустой список отключает face detection на всех камерах.
+            """
+            if self.face_analyzer is None:
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail="Face analysis is unavailable.",
+                )
+            payload = await read_limited_json(request, 8192)
+            if not isinstance(payload, dict) or set(payload) != {"cameras"}:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail='Expected {"cameras": ["camera.entity_id", ...]}.',
+                )
+            cameras = payload.get("cameras")
+            if not isinstance(cameras, list) or any(
+                not isinstance(c, str) or not c.strip() for c in cameras
+            ):
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="cameras must be a list of non-empty strings.",
+                )
+            # Убираем дубли и пустые строки, сохраняя порядок первого вхождения.
+            seen: set[str] = set()
+            unique_cameras: list[str] = []
+            for camera in cameras:
+                camera = camera.strip()
+                if camera and camera not in seen:
+                    seen.add(camera)
+                    unique_cameras.append(camera)
+            self.face_analyzer.face_detection_cameras = set(unique_cameras)
+            self.logger.info(
+                "Face detection cameras updated: %s",
+                ", ".join(unique_cameras) if unique_cameras else "(none)",
+            )
+            return {"cameras": sorted(unique_cameras)}
+
+        @self.api.get("/faces/cameras")
+        async def get_face_detection_cameras():
+            """Вернуть текущий список камер для face detection."""
+            if self.face_analyzer is None:
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail="Face analysis is unavailable.",
+                )
+            return {
+                "cameras": sorted(self.face_analyzer.face_detection_cameras),
+            }
+
         @self.api.get("/faces/debug/status")
         async def face_debug_status():
             """Текущий статус модели и локального ограниченного хранилища."""
@@ -498,6 +556,9 @@ class API():
                 "model": self.face_analyzer.model_status(),
                 "storage": self.face_debug_store.status(),
                 "gallery_enabled": face_gallery_enabled(),
+                "face_detection_cameras": sorted(
+                    self.face_analyzer.face_detection_cameras
+                ),
             }
 
         @self.api.get("/faces/debug/log")
@@ -654,6 +715,8 @@ class API():
                     model_version="2021dec",
                     embedding=embedding,
                     manual_confirmation=True,
+                    capture_id=capture_id,
+                    face_index=face_index,
                 )
             except FaceGalleryNotFoundError as err:
                 raise HTTPException(
@@ -790,6 +853,264 @@ class API():
                 )
             return Response(status_code=status.HTTP_204_NO_CONTENT)
 
+        @self.api.get("/faces/debug/persons/{person_id}/face")
+        async def get_person_face_image(person_id: str):
+            """Вернуть сохранённое изображение лица персоны для визуального сравнения."""
+            require_face_debug_enabled()
+            require_face_gallery_enabled()
+            try:
+                reference = await asyncio.to_thread(
+                    self.face_gallery_store.get_person_face_reference,
+                    person_id,
+                )
+                if reference is None:
+                    raise HTTPException(
+                        status_code=status.HTTP_404_NOT_FOUND,
+                        detail="No face image reference found for this person.",
+                    )
+                capture_id = reference["capture_id"]
+                face_index = reference["face_index"]
+                jpeg_bytes = await asyncio.to_thread(
+                    self.face_debug_store.get_capture_image,
+                    capture_id,
+                    kind="face",
+                    face_index=face_index,
+                )
+            except FaceDebugNotFoundError as err:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Face image no longer available in capture buffer.",
+                ) from err
+            except FaceDebugValidationError as err:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=str(err),
+                ) from err
+            except FaceDebugStoreError as err:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Could not read person face image.",
+                ) from err
+            return Response(
+                content=jpeg_bytes,
+                media_type="image/jpeg",
+                headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
+            )
+
+        @self.api.get("/faces/debug/persons/{person_id}/faces")
+        async def list_person_faces(person_id: str):
+            """Список эталонных кадров персоны (образцы galerie с привязкой к кадрам)."""
+            require_face_debug_enabled()
+            require_face_gallery_enabled()
+            try:
+                person = await asyncio.to_thread(
+                    self.face_gallery_store.get_person,
+                    person_id,
+                )
+            except FaceGalleryValidationError as err:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=str(err),
+                ) from err
+            if person is None:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Face gallery person not found.",
+                )
+            samples = []
+            for sample in person.get("samples", []) or []:
+                samples.append({
+                    "id": sample.get("id"),
+                    "capture_id": sample.get("capture_id"),
+                    "face_index": sample.get("face_index"),
+                    "confirmed_at": sample.get("confirmed_at"),
+                    "model_id": sample.get("model_id"),
+                    "model_version": sample.get("model_version"),
+                    # Обратная совместимость: образцы без привязки к кадру
+                    # (добавленные до этапа сохранения изображений эталона)
+                    # не имеют миниатюры, но их можно удалить из галереи.
+                    "has_image": sample.get("capture_id") is not None
+                    and sample.get("face_index") is not None,
+                })
+            return samples
+
+        @self.api.get("/faces/debug/persons/{person_id}/faces/{sample_id}/image")
+        async def get_person_face_sample_image(person_id: str, sample_id: str):
+            """Вернуть изображение конкретного эталонного лица персоны."""
+            require_face_debug_enabled()
+            require_face_gallery_enabled()
+            try:
+                jpeg_bytes = await asyncio.to_thread(
+                    self.face_gallery_store.get_person_face_image,
+                    person_id,
+                    sample_id,
+                )
+            except FaceGalleryValidationError as err:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=str(err),
+                ) from err
+            if jpeg_bytes is None:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Face sample image not found.",
+                )
+            return Response(
+                content=jpeg_bytes,
+                media_type="image/jpeg",
+                headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
+            )
+
+        @self.api.get("/faces/debug/matches")
+        async def list_face_matches():
+            """Список кадров-совпадений лиц (состояние matched)."""
+            require_face_debug_enabled()
+            try:
+                matches = await asyncio.to_thread(
+                    self.face_debug_store.list_matches,
+                )
+            except FaceDebugStoreError as err:
+                self.logger.error("Face debug store read failed: %s", err)
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Could not read match buffer.",
+                ) from err
+            return matches
+
+        @self.api.get("/faces/debug/matches/{capture_id}/image")
+        async def get_match_image(capture_id: str):
+            """Вернуть изображение кадра-совпадения."""
+            require_face_debug_enabled()
+            try:
+                jpeg_bytes = await asyncio.to_thread(
+                    self.face_debug_store.get_match_image,
+                    capture_id,
+                )
+            except FaceDebugNotFoundError as err:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Match image not found.",
+                ) from err
+            except FaceDebugStoreError as err:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Could not read match image.",
+                ) from err
+            return Response(
+                content=jpeg_bytes,
+                media_type="image/jpeg",
+                headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
+            )
+
+        @self.api.get("/faces/debug/updates")
+        async def face_debug_updates():
+            """Флаги новых данных для автообновления фронтенда (без самих кадров)."""
+            require_face_debug_enabled()
+            return {
+                "frames": await asyncio.to_thread(
+                    self.face_debug_store.has_new_frames
+                ),
+                "matches": await asyncio.to_thread(
+                    self.face_debug_store.has_new_matches
+                ),
+            }
+
+        @self.api.post("/faces/debug/rematch")
+        async def rematch_existing_captures():
+            """Перепроверить существующие кадры в буфере на совпадение с галереей.
+
+            Для каждого кадра с лицом повторно вычисляет SFace-embedding и
+            сравнивает с эталонными образцами. Новые совпадения записываются
+            в приватный буфер совпадений.
+            """
+            require_face_debug_enabled()
+            if self.face_analyzer is None or self.face_debug_store is None:
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail="Face analyzer or debug store is unavailable.",
+                )
+            try:
+                captures = await asyncio.to_thread(
+                    self.face_debug_store.list_captures,
+                    100,
+                )
+            except FaceDebugStoreError as err:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Could not read face-debug captures.",
+                ) from err
+
+            processed = 0
+            new_matches = 0
+            errors = 0
+
+            for capture in captures:
+                capture_id = capture.get("capture_id")
+                source_id = capture.get("source_id", "rematch")
+                if not capture_id:
+                    continue
+                processed += 1
+                try:
+                    jpeg_bytes = await asyncio.to_thread(
+                        self.face_debug_store.get_capture_image,
+                        capture_id,
+                        kind="frame",
+                    )
+                except Exception:
+                    errors += 1
+                    continue
+                try:
+                    import numpy as np
+
+                    encoded = np.frombuffer(jpeg_bytes, dtype=np.uint8)
+                    import cv2
+
+                    frame = cv2.imdecode(encoded, cv2.IMREAD_COLOR)
+                    if frame is None:
+                        errors += 1
+                        continue
+                    match_result = await asyncio.to_thread(
+                        self.face_analyzer.match_frame,
+                        frame,
+                        source_id,
+                    )
+                    if match_result and match_result.get("state") == "matched":
+                        await asyncio.to_thread(
+                            self.face_debug_store._write_match_capture,
+                            capture_id,
+                            jpeg_bytes,
+                            capture,
+                            match_info=match_result,
+                        )
+                        try:
+                            updated = await asyncio.to_thread(
+                                self.face_debug_store.update_capture_match,
+                                capture_id,
+                                match_result,
+                            )
+                            if not updated:
+                                self.logger.warning(
+                                    "rematch: capture %s matched but metadata not updated",
+                                    capture_id,
+                                )
+                        except Exception as err:
+                            # Не прерываем rematch из-за ошибки обновления метаданных кадра
+                            self.logger.warning(
+                                "rematch: capture %s metadata update failed: %s",
+                                capture_id,
+                                err,
+                            )
+                        new_matches += 1
+                except Exception:
+                    errors += 1
+                    continue
+
+            return {
+                "processed": processed,
+                "new_matches": new_matches,
+                "errors": errors,
+            }
+
         @self.api.post(
             "/faces/people/{person_id}/samples",
             status_code=status.HTTP_201_CREATED,
@@ -841,6 +1162,19 @@ class API():
         )
         async def delete_face_sample(person_id: str, sample_id: str):
             """Удалить один подтверждённый embedding."""
+            return await _do_delete_face_sample(person_id, sample_id)
+
+        @self.api.delete(
+            "/faces/debug/persons/{person_id}/faces/{sample_id}",
+            status_code=status.HTTP_204_NO_CONTENT,
+        )
+        async def delete_person_face(person_id: str, sample_id: str):
+            """Удалить образец персоны (путь панели эталонов на странице «Кадры»)."""
+            require_face_gallery_enabled()
+            require_face_debug_enabled()
+            return await _do_delete_face_sample(person_id, sample_id)
+
+        async def _do_delete_face_sample(person_id: str, sample_id: str) -> Response:
             require_face_gallery_enabled()
             try:
                 deleted = await asyncio.to_thread(

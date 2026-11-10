@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import json
+import logging
 import math
 import os
 import re
 import tempfile
 import threading
 import uuid
+
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
@@ -27,6 +29,8 @@ _MAX_MODEL_TOKEN_LENGTH = 64
 _MAX_EMBEDDING_ABS_VALUE = 1_000_000.0
 _ID_PATTERN = re.compile(r"^[0-9a-f]{32}$")
 _MODEL_TOKEN_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+
+logger = logging.getLogger(__name__)
 _STORE_FIELDS = {"schema_version", "people"}
 _BACKUP_FIELDS = {"format", "schema_version", "exported_at", "people"}
 _PERSON_FIELDS = {"id", "name", "created_at", "updated_at", "samples"}
@@ -37,6 +41,8 @@ _SAMPLE_FIELDS = {
     "embedding",
     "confirmed_at",
     "enrollment_method",
+    "capture_id",
+    "face_index",
 }
 
 
@@ -156,6 +162,8 @@ class FaceSample:
     embedding: tuple[float, ...]
     confirmed_at: str
     enrollment_method: str = "manual"
+    capture_id: str | None = None
+    face_index: int | None = None
 
     def summary(self) -> dict[str, Any]:
         """Метаданные образца без раскрытия самого biometric embedding."""
@@ -166,11 +174,13 @@ class FaceSample:
             "embedding_dimension": len(self.embedding),
             "confirmed_at": self.confirmed_at,
             "enrollment_method": self.enrollment_method,
+            "capture_id": self.capture_id,
+            "face_index": self.face_index,
         }
 
     def as_dict(self) -> dict[str, Any]:
         """Полное представление только для локального файла/защищённой копии."""
-        return {
+        data: dict[str, Any] = {
             "id": self.id,
             "model_id": self.model_id,
             "model_version": self.model_version,
@@ -178,6 +188,11 @@ class FaceSample:
             "confirmed_at": self.confirmed_at,
             "enrollment_method": self.enrollment_method,
         }
+        if self.capture_id is not None:
+            data["capture_id"] = self.capture_id
+        if self.face_index is not None:
+            data["face_index"] = self.face_index
+        return data
 
 
 @dataclass(frozen=True, slots=True)
@@ -230,12 +245,22 @@ def _sample_from_dict(value: Any) -> FaceSample:
         raise FaceGalleryValidationError(
             "Галерея принимает только вручную подтверждённые образцы"
         )
+    capture_id = value.get("capture_id")
+    if capture_id is not None and not isinstance(capture_id, str):
+        raise FaceGalleryValidationError("capture_id образца должен быть строкой")
+    face_index = value.get("face_index")
+    if face_index is not None and (
+        isinstance(face_index, bool) or not isinstance(face_index, int) or face_index < 0
+    ):
+        raise FaceGalleryValidationError("face_index образца должен быть неотрицательным целым числом")
     return FaceSample(
         id=sample_id,
         model_id=model_id,
         model_version=model_version,
         embedding=embedding,
         confirmed_at=confirmed_at,
+        capture_id=capture_id,
+        face_index=face_index,
     )
 
 
@@ -287,9 +312,10 @@ def _person_from_dict(value: Any) -> FacePerson:
 class FaceGalleryStore:
     """Потокобезопасная JSON-галерея с атомарной записью и версией схемы."""
 
-    def __init__(self, path: str | Path) -> None:
+    def __init__(self, path: str | Path, face_debug_store: Any = None) -> None:
         self.path = Path(path)
         self._lock = threading.RLock()
+        self.face_debug_store = face_debug_store
         self._people = self._read_file()
 
     @staticmethod
@@ -404,12 +430,92 @@ class FaceGalleryStore:
         with self._lock:
             return [self._people[key].summary() for key in sorted(self._people)]
 
+    def get_people_with_embeddings(self) -> list[dict[str, Any]]:
+        """Вернуть людей с embedding-векторами для сопоставления (внутреннее использование)."""
+        with self._lock:
+            return [
+                {
+                    "id": person.id,
+                    "name": person.name,
+                    "samples": [
+                        {
+                            "id": sample.id,
+                            "model_id": sample.model_id,
+                            "model_version": sample.model_version,
+                            "embedding": list(sample.embedding),
+                            "confirmed_at": sample.confirmed_at,
+                        }
+                        for sample in person.samples
+                    ],
+                }
+                for person in self._people.values()
+            ]
+
     def get_person(self, person_id: str) -> dict[str, Any] | None:
         """Вернуть запись и метаданные образцов без embedding-векторов."""
         person_id = _validate_id(person_id, "ID человека")
         with self._lock:
             person = self._people.get(person_id)
             return person.detail() if person is not None else None
+
+    def get_person_face_reference(self, person_id: str) -> dict[str, Any] | None:
+        """Вернуть (capture_id, face_index) первого образца с привязкой к кадру.
+
+        Используется для получения изображения лица персоны из приватного буфера.
+        """
+        person_id = _validate_id(person_id, "ID человека")
+        with self._lock:
+            person = self._people.get(person_id)
+            if person is None:
+                return None
+            for sample in person.samples:
+                if sample.capture_id is not None and sample.face_index is not None:
+                    return {
+                        "capture_id": sample.capture_id,
+                        "face_index": sample.face_index,
+                        "sample_id": sample.id,
+                    }
+        return None
+
+    def _person_face_image_path(self, person_id: str, sample_id: str) -> Path:
+        return self.path.parent / "face_debug" / "person_faces" / person_id / f"face-{sample_id}.jpg"
+
+    def get_person_face_image(self, person_id: str, sample_id: str) -> bytes | None:
+        """Вернуть байты JPEG эталонного лица образца или None, если недоступно.
+
+        Сначала читает сохранённый файл из приватного буфера App;
+        при отсутствии — пытается достать кроп из буфера событий FaceDebugStore
+        по capture_id/face_index образца.
+        """
+        person_id = _validate_id(person_id, "ID человека")
+        sample_id = _validate_id(sample_id, "ID образца")
+        with self._lock:
+            person = self._people.get(person_id)
+            if person is None:
+                return None
+            sample = next((s for s in person.samples if s.id == sample_id), None)
+            if sample is None:
+                return None
+        path = self._person_face_image_path(person_id, sample_id)
+        try:
+            return path.read_bytes()
+        except FileNotFoundError:
+            pass
+        except OSError:
+            return None
+        if sample.capture_id is not None and sample.face_index is not None and self.face_debug_store is not None:
+            try:
+                from face_debug_store import (
+                    FaceDebugNotFoundError,
+                    FaceDebugStoreError,
+                    FaceDebugValidationError,
+                )
+                return self.face_debug_store.get_capture_image(
+                    sample.capture_id, kind="face", face_index=sample.face_index
+                )
+            except (FaceDebugNotFoundError, FaceDebugValidationError, FaceDebugStoreError):
+                return None
+        return None
 
     def create_person(self, name: Any) -> dict[str, Any]:
         """Создать человека с серверным стабильным ID и пустой галереей образцов."""
@@ -472,6 +578,8 @@ class FaceGalleryStore:
         model_version: Any,
         embedding: Any,
         manual_confirmation: Any,
+        capture_id: Any = None,
+        face_index: Any = None,
     ) -> dict[str, Any]:
         """Сохранить embedding только при явном подтверждении администратора."""
         person_id = _validate_id(person_id, "ID человека")
@@ -485,6 +593,12 @@ class FaceGalleryStore:
             "model_version",
         )
         normalized_embedding = _validate_embedding(embedding)
+        if capture_id is not None and not isinstance(capture_id, str):
+            raise FaceGalleryValidationError("capture_id должен быть строкой")
+        if face_index is not None and (
+            isinstance(face_index, bool) or not isinstance(face_index, int) or face_index < 0
+        ):
+            raise FaceGalleryValidationError("face_index должен быть неотрицательным целым числом")
         with self._lock:
             person = self._people.get(person_id)
             if person is None:
@@ -504,6 +618,8 @@ class FaceGalleryStore:
                 model_version=normalized_model_version,
                 embedding=normalized_embedding,
                 confirmed_at=_utc_now(),
+                capture_id=capture_id,
+                face_index=face_index,
             )
             updated_person = replace(
                 person,
@@ -514,7 +630,71 @@ class FaceGalleryStore:
             updated_people[person_id] = updated_person
             self._write_file(updated_people)
             self._people = updated_people
+
+            if capture_id is not None and face_index is not None:
+                self._save_person_face_image(
+                    person_id, sample.id, capture_id, face_index
+                )
         return sample.summary()
+
+    def _save_person_face_image(
+        self,
+        person_id: str,
+        sample_id: str,
+        capture_id: str,
+        face_index: int,
+    ) -> None:
+        """Сохранить кадр лица персоны в приватном буфере App.
+
+        Путь: /data/face_debug/person_faces/{person_id}/face-{sample_id}.jpg.
+        Ошибка чтения из буфера не откатывает запись образца — только логируется.
+        """
+        if self.face_debug_store is None:
+            return
+        from face_debug_store import (
+            FaceDebugNotFoundError,
+            FaceDebugStoreError,
+            FaceDebugValidationError,
+        )
+        try:
+            jpeg_bytes = self.face_debug_store.get_capture_image(
+                capture_id, kind="face", face_index=face_index
+            )
+        except (FaceDebugNotFoundError, FaceDebugValidationError) as err:
+            logger.warning(
+                "Не удалось получить изображение лица %s из кадра %s: %s",
+                sample_id,
+                capture_id,
+                err,
+            )
+            return
+        except FaceDebugStoreError as err:
+            logger.warning(
+                "Ошибка чтения изображения лица %s из кадра %s: %s",
+                sample_id,
+                capture_id,
+                err,
+            )
+            return
+        try:
+            target_dir = self.path.parent / "face_debug" / "person_faces" / person_id
+            target_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+            try:
+                os.chmod(target_dir, 0o700)
+            except OSError:
+                pass
+            target_path = target_dir / f"face-{sample_id}.jpg"
+            target_path.write_bytes(jpeg_bytes)
+            try:
+                os.chmod(target_path, 0o600)
+            except OSError:
+                pass
+        except OSError as err:
+            logger.warning(
+                "Не удалось сохранить изображение лица %s в приватный буфер: %s",
+                sample_id,
+                err,
+            )
 
     def delete_sample(self, person_id: str, sample_id: str) -> bool:
         """Удалить один образец, не удаляя запись человека."""
@@ -529,6 +709,7 @@ class FaceGalleryStore:
             )
             if len(remaining_samples) == len(person.samples):
                 return False
+            sample_removed = next((s for s in person.samples if s.id == sample_id), None)
             updated_person = replace(
                 person,
                 updated_at=_utc_now(),
@@ -538,6 +719,12 @@ class FaceGalleryStore:
             updated_people[person_id] = updated_person
             self._write_file(updated_people)
             self._people = updated_people
+        # Удалить сохранённый файл эталона из приватного буфера App (если есть).
+        if sample_removed is not None:
+            try:
+                self._person_face_image_path(person_id, sample_id).unlink(missing_ok=True)
+            except OSError:
+                pass
         return True
 
     def export_backup(self) -> dict[str, Any]:

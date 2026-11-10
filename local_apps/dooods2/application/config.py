@@ -70,6 +70,8 @@ class FaceConfig(BaseSettings):
     """Experimental YuNet/SFace settings for the RTSP face pipeline."""
 
     yunet_score_threshold: Optional[float] = 0.9
+    face_match_threshold: Optional[float] = 0.7
+    face_detection_cameras: Optional[List[str]] = []
     class Config:
         extra = Extra.ignore
 

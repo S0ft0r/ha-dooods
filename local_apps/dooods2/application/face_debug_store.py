@@ -27,6 +27,7 @@ _SOURCE_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 _ALLOWED_STATES = {"face_detected", "no_face", "error"}
 _DEFAULT_MAX_CAPTURES = 100
 _DEFAULT_MAX_LOG_ENTRIES = 1000
+_DEFAULT_MAX_MATCHES = 30
 _DEFAULT_MAX_IMAGE_BYTES = 8 * 1024 * 1024
 _DEFAULT_MIN_FACE_WIDTH = 100
 _DEFAULT_MIN_FACE_HEIGHT = 100
@@ -60,6 +61,7 @@ class FaceDebugStore:
         queue_size: int = 16,
         min_face_width: int = _DEFAULT_MIN_FACE_WIDTH,
         min_face_height: int = _DEFAULT_MIN_FACE_HEIGHT,
+        max_matches: int = _DEFAULT_MAX_MATCHES,
     ) -> None:
         if max_captures < 1 or max_log_entries < 1 or queue_size < 1:
             raise ValueError("Face-debug limits must be positive")
@@ -69,8 +71,11 @@ class FaceDebugStore:
             raise ValueError("min_face_width must be positive")
         if min_face_height < 1:
             raise ValueError("min_face_height must be positive")
+        if max_matches < 1:
+            raise ValueError("max_matches must be positive")
         self.directory = Path(directory)
         self.capture_directory = self.directory / "captures"
+        self.match_directory = self.directory / "matches"
         self.database_path = self.directory / "events.sqlite3"
         self.max_captures = int(max_captures)
         self.max_log_entries = int(max_log_entries)
@@ -78,6 +83,9 @@ class FaceDebugStore:
         self.max_event_bytes = int(max_event_bytes)
         self.min_face_width = int(min_face_width)
         self.min_face_height = int(min_face_height)
+        self.max_matches = int(max_matches)
+        self._has_new_frames = False
+        self._has_new_matches = False
         self._queue: queue.Queue[dict[str, Any] | None] = queue.Queue(maxsize=queue_size)
         self._thread: threading.Thread | None = None
         self._lock = threading.RLock()
@@ -85,6 +93,7 @@ class FaceDebugStore:
         try:
             self._make_private_directory(self.directory)
             self._make_private_directory(self.capture_directory)
+            self._make_private_directory(self.match_directory)
             self._connection = sqlite3.connect(
                 self.database_path,
                 timeout=10,
@@ -255,6 +264,9 @@ class FaceDebugStore:
         if not isinstance(error_code, str) or len(error_code) > 48:
             error_code = None
 
+        match_diagnostic = diagnostics.get("match")
+        if not isinstance(match_diagnostic, dict):
+            match_diagnostic = None
         payload: dict[str, Any] = {
             "occurred_at": timestamp,
             "source_id": self._safe_source_id(source_id),
@@ -264,6 +276,7 @@ class FaceDebugStore:
             "yunet_score_threshold": round(threshold, 4),
             "inference_ms": round(inference_ms, 2) if inference_ms is not None else None,
             "last_error": error_code,
+            "match": match_diagnostic,
             "capture_id": None,
             "capture_status": "not_applicable",
         }
@@ -347,6 +360,123 @@ class FaceDebugStore:
                 shutil.rmtree(capture_directory, ignore_errors=True)
             raise
 
+        # Сохранить копию кадра в отдельном буфере совпадений (макс. 30 кадров).
+        if (
+            capture_directory is not None
+            and metadata is not None
+            and image_bytes
+            and len(image_bytes) > 0
+        ):
+            match_diagnostic = payload.get("match")
+            if isinstance(match_diagnostic, dict) and match_diagnostic.get("state") == "matched":
+                try:
+                    self._write_match_capture(capture_id, image_bytes[0], metadata)
+                except Exception as err:
+                    _LOGGER.warning(
+                        "Face-debug match buffer write failed (%s)", type(err).__name__
+                    )
+
+    def _write_match_capture(
+        self,
+        capture_id: str,
+        frame_jpeg: bytes,
+        metadata: dict[str, Any],
+        *,
+        match_info: dict[str, Any] | None = None,
+    ) -> None:
+        """Сохранить копию кадра-совпадения в отдельном приватном буфере.
+
+        Хранит только последние max_matches кадров; старые удаляются FIFO.
+        Идемпотентен: при повторном вызове для того же capture_id старые
+        файлы перезаписываются, а не вызывают FileExistsError.
+        """
+        destination = self.match_directory / capture_id
+        if destination.exists():
+            shutil.rmtree(destination, ignore_errors=True)
+        self._make_private_directory(destination)
+        try:
+            self._write_private_file(destination / "frame.jpg", frame_jpeg)
+            meta = dict(metadata)
+            if match_info:
+                meta["person_name"] = match_info.get("person_name")
+                meta["person_id"] = match_info.get("person_id")
+                meta["similarity"] = match_info.get("similarity")
+                meta["state"] = match_info.get("state", "matched")
+            else:
+                meta["match_state"] = "matched"
+            content = json.dumps(meta, ensure_ascii=False, separators=(",", ":")).encode(
+                "utf-8"
+            )
+            self._write_private_file(destination / "metadata.json", content)
+        except Exception:
+            shutil.rmtree(destination, ignore_errors=True)
+            raise
+        self._prune_matches()
+        with self._lock:
+            self._has_new_matches = True
+
+    def _prune_matches(self) -> None:
+        """Оставить только последние max_matches кадров-совпадений."""
+        with self._lock:
+            match_dirs = sorted(
+                (
+                    d
+                    for d in self.match_directory.iterdir()
+                    if d.is_dir() and _EVENT_ID_PATTERN.fullmatch(d.name)
+                ),
+                key=lambda d: (
+                    (d / "metadata.json").stat().st_mtime
+                    if (d / "metadata.json").exists()
+                    else 0
+                ),
+                reverse=True,
+            )
+        for stale in match_dirs[self.max_matches :]:
+            shutil.rmtree(stale, ignore_errors=True)
+
+    def list_matches(self, limit: int = _DEFAULT_MAX_MATCHES) -> list[dict[str, Any]]:
+        """Вернуть метаданные сохранённых кадров-совпадений (новые сначала)."""
+        limit = self._validate_limit(limit, self.max_matches)
+        with self._lock:
+            match_dirs = sorted(
+                (
+                    d
+                    for d in self.match_directory.iterdir()
+                    if d.is_dir() and _EVENT_ID_PATTERN.fullmatch(d.name)
+                ),
+                key=lambda d: (
+                    (d / "metadata.json").stat().st_mtime
+                    if (d / "metadata.json").exists()
+                    else 0
+                ),
+                reverse=True,
+            )
+        result: list[dict[str, Any]] = []
+        for d in match_dirs[:limit]:
+            meta_path = d / "metadata.json"
+            try:
+                meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            result.append(meta)
+        with self._lock:
+            self._has_new_matches = False
+        return result
+
+    def get_match_image(self, capture_id: str) -> bytes:
+        """Вернуть JPEG полного кадра из буфера совпадений."""
+        capture_id = self._validate_capture_id(capture_id)
+        path = self.match_directory / capture_id / "frame.jpg"
+        try:
+            content = path.read_bytes()
+        except FileNotFoundError as err:
+            raise FaceDebugNotFoundError("Match image not found") from err
+        except OSError as err:
+            raise FaceDebugStoreError("Could not read match image") from err
+        if not content.startswith(b"\xff\xd8\xff") or len(content) > self.max_image_bytes:
+            raise FaceDebugStoreError("Stored match image is invalid")
+        return content
+
     def _write_capture(
         self,
         capture_id: str,
@@ -371,6 +501,7 @@ class FaceDebugStore:
                 "faces": payload["faces"],
                 "yunet_score_threshold": payload["yunet_score_threshold"],
                 "inference_ms": payload["inference_ms"],
+                "match": payload.get("match"),
             }
             content = (json.dumps(metadata, ensure_ascii=False, separators=(",", ":")) + "\n").encode("utf-8")
             self._write_private_file(temporary / "metadata.json", content)
@@ -379,6 +510,8 @@ class FaceDebugStore:
                 os.chmod(destination, 0o700)
             except OSError:
                 pass
+            with self._lock:
+                self._has_new_frames = True
             return metadata
         except Exception:
             shutil.rmtree(temporary, ignore_errors=True)
@@ -484,6 +617,16 @@ class FaceDebugStore:
                     except OSError:
                         pass
 
+    def has_new_frames(self) -> bool:
+        """Есть ли не прочитанные новые кадры (сбросится при list_captures)."""
+        with self._lock:
+            return self._has_new_frames
+
+    def has_new_matches(self) -> bool:
+        """Есть ли не прочитанные новые совпадения (сбросится при list_matches)."""
+        with self._lock:
+            return self._has_new_matches
+
     def status(self) -> dict[str, int]:
         """Return bounded store counts and configured limits."""
         with self._lock:
@@ -491,11 +634,20 @@ class FaceDebugStore:
                 self._connection.execute("SELECT COUNT(*) FROM captures").fetchone()[0]
             )
             logs = int(self._connection.execute("SELECT COUNT(*) FROM logs").fetchone()[0])
+            matches = len(
+                [
+                    d
+                    for d in self.match_directory.iterdir()
+                    if d.is_dir() and _EVENT_ID_PATTERN.fullmatch(d.name)
+                ]
+            )
         return {
             "captures": captures,
             "max_captures": self.max_captures,
             "log_entries": logs,
             "max_log_entries": self.max_log_entries,
+            "matches": matches,
+            "max_matches": self.max_matches,
         }
 
     def list_captures(self, limit: int = _DEFAULT_MAX_CAPTURES) -> list[dict[str, Any]]:
@@ -505,6 +657,7 @@ class FaceDebugStore:
                 "SELECT metadata_json FROM captures ORDER BY rowid DESC LIMIT ?",
                 (limit,),
             ).fetchall()
+            self._has_new_frames = False
         return [json.loads(row["metadata_json"]) for row in rows]
 
     def list_logs(self, limit: int = _DEFAULT_MAX_LOG_ENTRIES) -> list[dict[str, Any]]:
@@ -515,6 +668,58 @@ class FaceDebugStore:
                 (limit,),
             ).fetchall()
         return [json.loads(row["payload_json"]) for row in rows]
+
+    def update_capture_match(
+        self,
+        capture_id: str,
+        match: dict[str, Any],
+    ) -> bool:
+        """Обновить поле match в метаданных существующего кадра.
+
+        Вызывается после rematch, чтобы на странице «Кадры» появились
+        метки «Человек» и «Похожесть» для уже сохранённых кадров.
+        Возвращает True при успешном обновлении.
+        """
+        capture_id = self._validate_capture_id(capture_id)
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT metadata_json FROM captures WHERE capture_id = ?",
+                (capture_id,),
+            ).fetchone()
+            if row is None:
+                _LOGGER.warning(
+                    "update_capture_match: capture %s not found in captures table", capture_id
+                )
+                return False
+            meta = json.loads(row["metadata_json"])
+            meta["match"] = match
+            content = json.dumps(meta, ensure_ascii=False, separators=(",", ":")).encode(
+                "utf-8"
+            )
+            try:
+                self._connection.execute("BEGIN IMMEDIATE")
+                self._connection.execute(
+                    "UPDATE captures SET metadata_json = ? WHERE capture_id = ?",
+                    (content.decode("utf-8"), capture_id),
+                )
+                self._connection.execute("COMMIT")
+                _LOGGER.info(
+                    "update_capture_match: capture %s updated with match state=%s",
+                    capture_id,
+                    match.get("state"),
+                )
+                return True
+            except sqlite3.Error as err:
+                try:
+                    self._connection.execute("ROLLBACK")
+                except sqlite3.Error:
+                    pass
+                _LOGGER.warning(
+                    "update_capture_match: capture %s update failed: %s", capture_id, err
+                )
+                raise FaceDebugStoreError(
+                    "Could not update capture match metadata"
+                )
 
     @staticmethod
     def _validate_limit(limit: Any, maximum: int) -> int:

@@ -95,14 +95,6 @@ def main():
     doods = Doods(config.doods, profile_store=profile_store)
 
     if args.action == 'api':
-        # Галерея лиц хранится только в постоянном каталоге данных App.
-        # Повреждённый файл отключает новую функцию, но не основной DOOODS API.
-        face_gallery_store = None
-        try:
-            face_gallery_store = FaceGalleryStore("/data/face_gallery.json")
-        except FaceGalleryStoreError as err:
-            logger.error("Face gallery is disabled because storage is unavailable: %s", err)
-
         # Face analysis is alpha: model initialization and capture persistence run
         # off the API event loop and failures do not affect object detection.
         face_options = getattr(config, "face", None)
@@ -113,18 +105,40 @@ def main():
         )
         min_face_width = getattr(face_options, "min_face_width", 100)
         min_face_height = getattr(face_options, "min_face_height", 100)
+        face_detection_cameras = getattr(
+            face_options, "face_detection_cameras", []
+        ) or []
         face_debug_store = None
         try:
             face_debug_store = FaceDebugStore(
                 "/data/face_debug",
                 min_face_width=min_face_width,
                 min_face_height=min_face_height,
+                max_matches=30,
             )
         except FaceDebugStoreError as err:
             logger.error("Face-debug capture storage is unavailable: %s", err)
+
+        # Галерея лиц хранится только в постоянном каталоге данных App.
+        # Повреждённый файл отключает новую функцию, но не основной DOOODS API.
+        face_gallery_store = None
+        try:
+            face_gallery_store = FaceGalleryStore(
+                "/data/face_gallery.json",
+                face_debug_store=face_debug_store,
+            )
+        except FaceGalleryStoreError as err:
+            logger.error("Face gallery is disabled because storage is unavailable: %s", err)
+
+        face_match_threshold = getattr(
+            face_options, "face_match_threshold", 0.7
+        )
         face_analyzer = FaceAnalyzer(
             "/data/face_models",
             yunet_score_threshold=yunet_score_threshold,
+            face_match_threshold=face_match_threshold,
+            face_detection_cameras=face_detection_cameras,
+            face_gallery_store=face_gallery_store,
             debug_store=face_debug_store,
         )
 
