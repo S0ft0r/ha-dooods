@@ -22,9 +22,10 @@ _JPEG_QUALITY = 88
 class MotionStreamWorker:
     """Read an RTSP stream continuously and publish only motion candidates.
 
-    The worker deliberately does not call the object detector. Candidate JPEGs
-    are sent to Home Assistant, which uses the existing authenticated /detect
-    request path and existing per-camera profile/label filtering.
+    The worker does not call the object detector. It may run the experimental
+    YuNet/SFace diagnostic on each candidate in memory; candidate JPEGs still go
+    to Home Assistant through the existing authenticated /detect path and its
+    per-camera profile/label filtering.
     """
 
     def __init__(
@@ -33,11 +34,14 @@ class MotionStreamWorker:
         gate: MotionGate,
         stop_event: threading.Event,
         publish: Callable[[dict[str, Any]], None],
+        *,
+        face_analyzer: Any = None,
     ) -> None:
         self.request = request
         self.gate = gate
         self.stop_event = stop_event
         self.publish = publish
+        self.face_analyzer = face_analyzer
 
     def run(self) -> None:
         """Connect, sample frames, and reconnect until the websocket closes."""
@@ -218,7 +222,7 @@ class MotionStreamWorker:
         return capture
 
     def _publish_candidate(self, frame, score: float) -> str | None:
-        """Encode an original-resolution candidate and return its capture timestamp."""
+        """Encode a motion candidate and attach only sanitized face diagnostics."""
         encoded_ok, encoded = cv2.imencode(
             ".jpg",
             frame,
@@ -228,15 +232,29 @@ class MotionStreamWorker:
             self._emit_status("frame_encode_failed")
             return None
         captured_at = datetime.now(UTC).isoformat()
-        self.publish(
-            {
-                "type": "candidate",
-                "source_id": self.request.source_id,
-                "captured_at": captured_at,
-                "motion_score": round(score, 6),
-                "image": base64.b64encode(encoded.tobytes()).decode("ascii"),
-            }
-        )
+        event: dict[str, Any] = {
+            "type": "candidate",
+            "source_id": self.request.source_id,
+            "captured_at": captured_at,
+            "motion_score": round(score, 6),
+            "image": base64.b64encode(encoded.tobytes()).decode("ascii"),
+        }
+        if self.face_analyzer is not None:
+            try:
+                face_diagnostics = self.face_analyzer.process(
+                    frame,
+                    self.request.source_id,
+                )
+            except Exception as err:
+                # Alpha analysis must never interrupt the established YOLO path.
+                _LOGGER.debug(
+                    "Experimental face analysis skipped (%s)",
+                    type(err).__name__,
+                )
+            else:
+                if isinstance(face_diagnostics, dict):
+                    event["face_diagnostics"] = face_diagnostics
+        self.publish(event)
         return captured_at
 
     def _emit_status(self, state: str, **statistics: Any) -> None:
@@ -247,4 +265,17 @@ class MotionStreamWorker:
             "state": state,
         }
         event.update(statistics)
+        if self.face_analyzer is not None:
+            try:
+                face_diagnostics = self.face_analyzer.snapshot(
+                    self.request.source_id,
+                )
+            except Exception as err:
+                _LOGGER.debug(
+                    "Experimental face diagnostic snapshot skipped (%s)",
+                    type(err).__name__,
+                )
+            else:
+                if isinstance(face_diagnostics, dict):
+                    event["face_diagnostics"] = face_diagnostics
         self.publish(event)

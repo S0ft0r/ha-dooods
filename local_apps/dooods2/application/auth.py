@@ -1,21 +1,36 @@
-"""Проверка API-ключа DOOODS2 Overhaul."""
+"""Проверка API-ключа DOOODS2."""
 
 from __future__ import annotations
 
 import hmac
+from ipaddress import IPv4Address, IPv4Network
 from typing import Any
 
+_SUPERVISOR_NETWORK = IPv4Network("172.30.0.0/16")
 
-_INGRESS_PROXY_HOST = "172.30.32.2"
+
+def _is_supervisor_host(remote_host: Any) -> bool:
+    """Проверяет, что запрос пришёл из внутренней сети Supervisor (Ingress)."""
+    if not isinstance(remote_host, str):
+        return False
+    try:
+        return IPv4Address(remote_host) in _SUPERVISOR_NETWORK
+    except ValueError:
+        return False
 
 
-def is_authenticated_ingress_request(remote_host: Any, remote_user_id: Any) -> bool:
-    """Доверять только аутентифицированному HA-пользователю от Supervisor Ingress."""
-    return (
-        remote_host == _INGRESS_PROXY_HOST
-        and isinstance(remote_user_id, str)
-        and bool(remote_user_id.strip())
-    )
+def is_authenticated_ingress_request(remote_host: Any, headers: Any) -> bool:
+    """Доверять только аутентифицированному HA-пользователю от Supervisor Ingress.
+
+    HA Ingress проксирует запросы из внутренней сети Supervisor и добавляет
+    заголовок Authorization для аутентифицированных пользователей.
+    """
+    if not _is_supervisor_host(remote_host):
+        return False
+    if not isinstance(headers, dict):
+        return False
+    auth = headers.get("authorization") or headers.get("Authorization")
+    return isinstance(auth, str) and bool(auth.strip())
 
 
 def api_key_matches(expected: Any, provided: Any) -> bool:

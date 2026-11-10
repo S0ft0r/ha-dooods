@@ -1,6 +1,6 @@
 name: "DOOODS2"
 slug: "dooods2"
-version: "0.1.18-dev"
+version: "0.1.32-dev"
 description: ""
 arch:
   - aarch64
@@ -8,7 +8,11 @@ arch:
 startup: services
 boot: auto
 stage: experimental
-ingress: false
+ingress: true
+ingress_port: 8080
+ingress_entry: /faces.html
+panel_title: "faces"
+panel_icon: mdi:face-recognition
 watchdog: "http://[HOST]:8080/health"
 map:
   - type: share
@@ -23,6 +27,12 @@ options:
     profiles_file: /data/profiles.json
     metrics: false
     trace: false
+  face:
+    yunet_score_threshold: 0.9
+    face_match_threshold: 0.4
+    face_match_min_gap: 0.1
+    min_face_width: 100
+    min_face_height: 100
   doods:
     log: detections
     annotation_labels: "{}"
@@ -66,6 +76,12 @@ schema:
     profiles_file: str?
     metrics: bool?
     trace: bool?
+  face:
+    yunet_score_threshold: float(0.1,1.0)?
+    face_match_threshold: float(0.1,1.0)?
+    face_match_min_gap: float(0.0,0.5)?
+    min_face_width: int?
+    min_face_height: int?
   doods:
     log: str?
     annotation_labels: str?
