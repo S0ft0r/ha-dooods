@@ -30,6 +30,7 @@ from homeassistant.helpers.selector import (
 )
 
 from .api import (
+    DooodsApiError,
     DooodsAuthError,
     DooodsConnectionError,
     DooodsInvalidResponseError,
@@ -145,6 +146,10 @@ OUTPUT_FIELDS = {
     probatio.Required(
         CONF_EMIT_DETECTION_EVENTS,
         default=DEFAULT_EMIT_DETECTION_EVENTS,
+    ): BooleanSelector(),
+    probatio.Required(
+        CONF_EMIT_FACE_MATCH_EVENTS,
+        default=DEFAULT_EMIT_FACE_MATCH_EVENTS,
     ): BooleanSelector(),
 }
 OUTPUT_SCHEMA = probatio.Schema(OUTPUT_FIELDS)

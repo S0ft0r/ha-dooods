@@ -24,6 +24,7 @@ CONF_FILE_OUT = "file_out"
 CONF_ARCHIVE_MAX_COUNT = "archive_max_count"
 CONF_ARCHIVE_MAX_AGE_DAYS = "archive_max_age_days"
 CONF_EMIT_DETECTION_EVENTS = "emit_detection_events"
+CONF_EMIT_FACE_MATCH_EVENTS = "emit_face_match_events"
 CONF_FACE_DETECTION_CAMERAS = "face_detection_cameras"
 
 EVENT_DETECTION = f"{DOMAIN}_detection"
