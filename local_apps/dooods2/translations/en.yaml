@@ -33,6 +33,18 @@ configuration:
       yunet_score_threshold:
         name: YuNet confidence threshold
         description: Range 0.1–1.0; default 0.9. Lower values may detect weaker/smaller faces but can increase false detections. The change takes effect after restarting the App.
+      face_match_threshold:
+        name: SFace similarity threshold
+        description: Range 0.1–1.0; default 0.4. SFace 2021dec works best around 0.36–0.45 by cosine. A threshold of 0.7 or higher keeps only frames almost identical to the reference.
+      face_match_min_gap:
+        name: Minimum gap to the next person
+        description: Range 0.0–0.5; default 0.1. How much better the best person must be compared with the runner-up. Larger values reduce confusion between similar people but produce "ambiguous" more often.
+      min_face_width:
+        name: Minimum face width, px
+        description: Frames with a smaller face are not stored in the diagnostics buffer. Default 100.
+      min_face_height:
+        name: Minimum face height, px
+        description: Frames with a shorter face are not stored in the diagnostics buffer. Default 100.
   doods:
     name: Detection
     description: Default detector and annotation settings.

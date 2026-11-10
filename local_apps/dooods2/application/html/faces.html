@@ -4,6 +4,10 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="referrer" content="no-referrer">
+  <meta http-equiv="cache-control" content="no-store, must-revalidate">
+  <meta http-equiv="pragma" content="no-cache">
+  <meta http-equiv="expires" content="0">
+  <meta name="dooods-build" content="0.1.32-dev">
   <title>faces — диагностика и галерея</title>
   <style>
     :root {
@@ -92,6 +96,13 @@
     .face-card .note { color: var(--muted); font-size: .82rem; text-align: center; }
     .modal-empty { padding: 1rem; color: var(--muted); font-size: .9rem; text-align: center; }
     .modal-note { padding: .5rem 1rem 1rem; color: var(--muted); font-size: .82rem; text-align: center; border-top: 1px solid var(--line); }
+    .modal-diag { padding: .8rem 1rem 1rem; border-top: 1px solid var(--line); }
+    .modal-diag h4 { margin: 0 0 .5rem; font-size: .8rem; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); font-weight: 600; }
+    .diag-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: .45rem .9rem; font-size: .84rem; }
+    .diag-item { display: flex; flex-direction: column; gap: .1rem; }
+    .diag-item .k { color: var(--muted); font-size: .76rem; }
+    .diag-item .v { color: var(--text); font-variant-numeric: tabular-nums; }
+    .diag-group + .diag-group { margin-top: .8rem; }
     .crop-row { display: flex; gap: .45rem; overflow-x: auto; margin-top: .5rem; padding-bottom: .2rem; }
     .crop { flex: 0 0 90px; border: 1px solid #536777; border-radius: 7px; padding: .25rem; background: #10171e; cursor: pointer; }
     .crop.selected { border: 2px solid var(--accent); }
@@ -267,6 +278,7 @@
       </section>
     </div>
     <p class="footer-note">Alpha: данные остаются локально в App. Не используется для управления замком. Не публикуйте API-ключ и не проверяйте на производственной Raspberry Pi.</p>
+    <p class="footer-note" id="build-info">сборка: —</p>
   </main>
 
   <div class="modal-overlay" id="match-modal">
@@ -283,7 +295,7 @@
       </div>
       <div id="modal-pair" class="modal-pair" hidden></div>
       <div id="modal-empty" class="modal-empty" hidden></div>
-      <p class="modal-note">Изображения хранятся только в приватном буфере App.</p>
+      <div id="modal-diagnostics" class="modal-diag" hidden></div>
     </div>
   </div>
   <div class="person-modal-overlay" id="person-faces-modal">
@@ -397,6 +409,18 @@
       if (!value) return "—";
       const date = new Date(value);
       return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString();
+    }
+
+    async function loadBuildInfo() {
+      const target = $("build-info");
+      if (!target) return;
+      target.textContent = `сборка страницы: ${PAGE_BUILD}`;
+      try {
+        const info = await apiRequest("capabilities");
+        target.textContent = `сборка страницы: ${PAGE_BUILD} · App ${info.app_version ?? "?"} · API ${info.api_version ?? "?"}`;
+      } catch (error) {
+        target.textContent = `сборка страницы: ${PAGE_BUILD} · App недоступен (${error.message})`;
+      }
     }
 
     async function refreshStatus() {
@@ -569,6 +593,115 @@
       modalUrls = [];
     }
 
+    // Гарантировать наличие узла модалки, даже если разметка пришла из
+    // старой сборки (иначе обращение к null роняет весь обработчик клика).
+    function ensureModalNode(id, className) {
+      let node = $(id);
+      if (node) return node;
+      const modal = document.querySelector("#match-modal .modal");
+      node = document.createElement("div");
+      node.id = id;
+      if (className) node.className = className;
+      if (modal) modal.append(node);
+      return node;
+    }
+
+    const PAGE_BUILD = (document.querySelector('meta[name="dooods-build"]') || {}).content || "?";
+
+    const MATCH_STATE_LABELS = {
+      matched: "совпадение",
+      ambiguous: "неоднозначно",
+      unknown: "неизвестно",
+    };
+
+    const MATCH_STATE_PILLS = {
+      matched: "совпадение",
+      ambiguous: "неоднозначно",
+      unknown: "неизвестно",
+    };
+
+    function formatPercent(value) {
+      if (typeof value !== "number" || !Number.isFinite(value)) return "—";
+      return Math.round(value * 100) + "%";
+    }
+
+    function formatNumber(value, digits) {
+      if (typeof value !== "number" || !Number.isFinite(value)) return "—";
+      return value.toFixed(digits);
+    }
+
+    function diagItem(label, value) {
+      const item = document.createElement("div");
+      item.className = "diag-item";
+      const key = document.createElement("span");
+      key.className = "k";
+      key.textContent = label;
+      const val = document.createElement("span");
+      val.className = "v";
+      val.textContent = value === null || value === undefined || value === "" ? "—" : String(value);
+      item.append(key, val);
+      return item;
+    }
+
+    function diagGroup(title, items) {
+      const group = document.createElement("div");
+      group.className = "diag-group";
+      const heading = document.createElement("h4");
+      heading.textContent = title;
+      const grid = document.createElement("div");
+      grid.className = "diag-grid";
+      for (const [label, value] of items) grid.append(diagItem(label, value));
+      group.append(heading, grid);
+      return group;
+    }
+
+    function renderMatchDiagnostics(target, capture, match) {
+      target.replaceChildren();
+      const source = match || {};
+      const faces = Array.isArray(capture.faces) ? capture.faces : [];
+      const detected = faces.length ? faces : (source.yunet_bbox ? [{ bbox: source.yunet_bbox, score: source.yunet_score }] : []);
+      const face = detected[0] || {};
+      const box = face.bbox || {};
+
+      const yunetItems = [
+        ["Порог score", formatNumber(source.yunet_score_threshold ?? capture.yunet_score_threshold, 3)],
+        ["Лиц найдено", source.yunet_faces_detected ?? capture.faces_detected ?? faces.length],
+        ["Score лучшего лица", formatNumber(source.yunet_score ?? face.score, 3)],
+        ["BBox X", formatNumber(box.x, 1)],
+        ["BBox Y", formatNumber(box.y, 1)],
+        ["BBox W", formatNumber(box.width ?? box.w, 1)],
+        ["BBox H", formatNumber(box.height ?? box.h, 1)],
+      ];
+
+      const sfaceItems = [
+        ["Состояние", MATCH_STATE_LABELS[source.state] || source.state || "—"],
+        ["Лучшее сходство", formatPercent(source.sface_best_similarity ?? source.similarity ?? capture.similarity)],
+        ["Порог сходства", formatNumber(source.sface_threshold, 3)],
+        ["Лучший другой человек", source.sface_other_person || "—"],
+        ["Его сходство", formatPercent(source.sface_second_best_similarity)],
+        ["Отрыв", formatNumber(source.sface_similarity_gap, 3)],
+        ["Минимальный отрыв", formatNumber(source.sface_min_gap, 3)],
+        ["Сработавший образец", Number.isInteger(source.sface_sample_index)
+          ? `${source.sface_sample_index + 1} из ${source.sface_samples_total ?? "?"}`
+          : "—"],
+      ];
+
+      const captureItems = [
+        ["Камера", capture.source_id],
+        ["Время кадра", formatTime(capture.occurred_at)],
+        ["Инференс кадра", capture.inference_ms === null || capture.inference_ms === undefined ? null : `${capture.inference_ms} ms`],
+        ["Инференс match", source.match_inference_ms === null || source.match_inference_ms === undefined ? null : `${source.match_inference_ms} ms`],
+        ["Capture ID", capture.capture_id],
+      ];
+
+      target.append(
+        diagGroup("YuNet — детекция лица", yunetItems),
+        diagGroup("SFace — сравнение с галереей", sfaceItems),
+        diagGroup("Кадр", captureItems),
+      );
+      target.hidden = false;
+    }
+
     async function openMatchModal(capture) {
       revokeModalUrls();
       const overlay = $("match-modal");
@@ -577,82 +710,151 @@
       const stateEl = $("modal-state");
       const personEl = $("modal-person");
       const simEl = $("modal-similarity");
-      const pair = $("modal-pair");
-      const empty = $("modal-empty");
+      const pair = ensureModalNode("modal-pair", "modal-pair");
+      const empty = ensureModalNode("modal-empty", "modal-empty");
+      const diagnostics = ensureModalNode("modal-diagnostics", "modal-diag");
       overlay.classList.add("shown");
       pair.hidden = true;
       empty.hidden = true;
+      diagnostics.hidden = true;
       pair.innerHTML = "";
+      diagnostics.replaceChildren();
 
       const match = capture.match && typeof capture.match === "object" ? capture.match : null;
       const stateText = match ? String(match.state) : "unknown";
-      stateEl.textContent = {
-        matched: "совпадение",
-        ambiguous: "неоднозначно",
-        unknown: "неизвестно",
-      }[stateText] || "—";
+      stateEl.textContent = MATCH_STATE_LABELS[stateText] || "—";
       personEl.textContent = match && match.person_name ? match.person_name : "—";
-      simEl.textContent = match && match.similarity !== null && match.similarity !== undefined ? Math.round(match.similarity * 100) + "%" : "—";
+      simEl.textContent = match && match.similarity !== null && match.similarity !== undefined
+        ? Math.round(match.similarity * 100) + "%"
+        : "—";
 
       if (match) {
         pill.hidden = false;
-        pill.textContent = match.state;
+        pill.textContent = MATCH_STATE_PILLS[match.state] || match.state;
         pill.style.color = match.state === "matched" ? "var(--good)" : "var(--warn)";
       } else {
         pill.hidden = true;
       }
       title.textContent = match && match.person_name ? `Лицо персоны «${match.person_name}»` : "Совпадение лица";
 
-      let faceUrl = null;
       const faces = Array.isArray(capture.faces) ? capture.faces : [];
+      const matchedFaceIndex = match && Number.isInteger(match.face_index) ? match.face_index : 0;
+      // Кадр может прийти и с вкладки «Кадры», которой нет в буфере совпадений,
+      // поэтому перебираем оба хранилища: сначала кроп, затем полный кадр.
+      const imageCandidates = [];
       if (faces.length) {
-        try {
-          faceUrl = await apiImage(`faces/debug/captures/${capture.capture_id}/image?kind=face&face_index=0`);
-          modalUrls.push(faceUrl);
-        } catch (_) {
-          faceUrl = null;
-        }
+        imageCandidates.push(`faces/debug/matches/${capture.capture_id}/image?kind=face&face_index=${matchedFaceIndex}`);
+        imageCandidates.push(`faces/debug/captures/${capture.capture_id}/image?kind=face&face_index=${matchedFaceIndex}`);
       }
-      if (!faceUrl) {
+      imageCandidates.push(`faces/debug/matches/${capture.capture_id}/image?kind=frame`);
+      imageCandidates.push(`faces/debug/captures/${capture.capture_id}/image?kind=frame`);
+      let faceUrl = null;
+      let faceFromCrop = false;
+      for (const candidate of imageCandidates) {
         try {
-          faceUrl = await apiImage(`faces/debug/captures/${capture.capture_id}/image?kind=frame`);
+          faceUrl = await apiImage(candidate);
           modalUrls.push(faceUrl);
+          faceFromCrop = candidate.includes("kind=face");
+          break;
         } catch (_) {
           faceUrl = null;
         }
       }
 
-      const html = [
-        '<div class="face-card">',
-        '  <div class="label">На кадре</div>',
-        faceUrl ? `<img src="${faceUrl}" alt="Найденное лицо на кадре">` : '<div class="note">Изображение лица недоступно</div>',
-        '  <div class="note">' + (faces.length ? `лицо №1 из ${faces.length}` : "кадр без обнаруженных лиц") + '</div>',
-        '</div>',
-      ];
-      pair.innerHTML = html.join("");
+      pair.append(...[
+        (() => {
+          const card = document.createElement("div");
+          card.className = "face-card";
+          const label = document.createElement("div");
+          label.className = "label";
+          label.textContent = "Найденное лицо";
+          card.append(label);
+          if (faceUrl) {
+            const img = document.createElement("img");
+            img.src = faceUrl;
+            img.alt = "Найденное лицо на кадре";
+            card.append(img);
+          } else {
+            const note = document.createElement("div");
+            note.className = "note";
+            note.textContent = "Кроп лица недоступен";
+            card.append(note);
+          }
+          const note = document.createElement("div");
+          note.className = "note";
+          note.textContent = faceUrl && !faceFromCrop
+            ? "кроп недоступен, показан полный кадр"
+            : (faces.length
+              ? `лицо №${matchedFaceIndex + 1} из ${faces.length}`
+              : "кадр без обнаруженных лиц");
+          card.append(note);
+          return card;
+        })(),
+      ]);
 
       if (match && match.person_id) {
-        try {
-          const refUrl = await apiImage(`faces/debug/persons/${encodeURIComponent(match.person_id)}/face`);
-          modalUrls.push(refUrl);
-          pair.insertAdjacentHTML("beforeend", [
-            '<div class="face-card">',
-            '  <div class="label">Эталон из галереи</div>',
-            `  <img src="${refUrl}" alt="Эталонное лицо персоны">`,
-            `  <div class="note">образец персоны «${String(match.person_name)}»</div>`,
-            '</div>',
-          ].join(""));
-        } catch (error) {
-          pair.insertAdjacentHTML("beforeend", [
-            '<div class="face-card">',
-            '  <div class="label">Эталон из галереи</div>',
-            `  <div class="note">Эталонное изображение недоступно: ${String(error.message)}.</div>`,
-            '</div>',
-          ].join(""));
+        const card = document.createElement("div");
+        card.className = "face-card";
+        const label = document.createElement("div");
+        label.className = "label";
+        label.textContent = "Эталон из галереи";
+        card.append(label);
+        let refLoaded = false;
+        if (match.sface_sample_id) {
+          try {
+            const sampleUrl = await apiImage(
+              `faces/debug/persons/${encodeURIComponent(match.person_id)}/faces/${encodeURIComponent(match.sface_sample_id)}/image`
+            );
+            modalUrls.push(sampleUrl);
+            const img = document.createElement("img");
+            img.src = sampleUrl;
+            img.alt = "Эталонное лицо, по которому найдено совпадение";
+            img.dataset.sampleId = match.sface_sample_id;
+            card.append(img);
+            refLoaded = true;
+          } catch (_) {
+            refLoaded = false;
+          }
         }
+        if (!refLoaded) {
+          try {
+            const refUrl = await apiImage(`faces/debug/persons/${encodeURIComponent(match.person_id)}/face`);
+            modalUrls.push(refUrl);
+            const img = document.createElement("img");
+            img.src = refUrl;
+            img.alt = "Эталонное лицо персоны";
+            card.append(img);
+            refLoaded = true;
+          } catch (error) {
+            const note = document.createElement("div");
+            note.className = "note";
+            note.textContent = `Эталон недоступен: ${String(error.message)}`;
+            card.append(note);
+          }
+        }
+        const note = document.createElement("div");
+        note.className = "note";
+        const sampleLabel = Number.isInteger(match.sface_sample_index) && match.sface_samples_total
+          ? ` · образец ${match.sface_sample_index + 1} из ${match.sface_samples_total}`
+          : "";
+        note.textContent = `образец персоны «${String(match.person_name ?? "—")}»${sampleLabel}`;
+        card.append(note);
+        pair.append(card);
       } else if (!match) {
         empty.hidden = false;
         empty.textContent = "На этом кадре совпадений не зафиксировано.";
+      }
+
+      pair.hidden = false;
+      renderMatchDiagnostics(diagnostics, capture, match);
+      if (match && match.state === "ambiguous") {
+        const note = document.createElement("div");
+        note.className = "note";
+        note.textContent =
+          `Отрыв от следующего человека меньше минимального: ` +
+          `${formatNumber(match.sface_similarity_gap, 3)} < ${formatNumber(match.sface_min_gap, 3)}. ` +
+          `Уменьшите «Минимальный отрыв» в настройках App, если это один и тот же человек.`;
+        pair.append(note);
       }
     }
 
@@ -957,7 +1159,7 @@
             ["Человек", m.person_name || "—"],
             ["Похожесть", m.similarity !== null && m.similarity !== undefined ? Math.round(m.similarity * 100) + "%" : "—"],
             ["Камера", m.source_id || "—"],
-            ["Статус", m.state || "matched"],
+            ["Статус", MATCH_STATE_LABELS[m.state] || m.state || "—"],
           ];
           for (const [label, value] of values) {
             const dt = document.createElement("dt"); dt.textContent = label;
@@ -965,6 +1167,7 @@
             meta.append(dt, dd);
           }
           card.append(meta);
+          card.addEventListener("click", () => openMatchModal(m));
           grid.append(card);
         }
       } catch (error) {
@@ -1001,7 +1204,7 @@
     async function refreshAll() {
       setStatus("page-status", "Обновляю данные…");
       try {
-        await Promise.all([refreshStatus(), loadCaptures(), loadLog(), loadPeople(), loadMatches()]);
+        await Promise.all([loadBuildInfo(), refreshStatus(), loadCaptures(), loadLog(), loadPeople(), loadMatches()]);
         setStatus("page-status", `Обновлено ${new Date().toLocaleTimeString()}.`, "good");
       } catch (error) {
         setStatus("page-status", `Ошибка обновления: ${error.message}`, "bad");
