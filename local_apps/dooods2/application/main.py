@@ -131,12 +131,22 @@ def main():
             logger.error("Face gallery is disabled because storage is unavailable: %s", err)
 
         face_match_threshold = getattr(
-            face_options, "face_match_threshold", 0.7
+            face_options, "face_match_threshold", 0.4
+        )
+        face_match_min_gap = getattr(
+            face_options, "face_match_min_gap", 0.1
+        )
+        logger.info(
+            "Face matching settings: threshold=%.3f, min_gap=%.3f, yunet=%.2f",
+            face_match_threshold if face_match_threshold is not None else 0.4,
+            face_match_min_gap if face_match_min_gap is not None else 0.1,
+            yunet_score_threshold if yunet_score_threshold is not None else 0.9,
         )
         face_analyzer = FaceAnalyzer(
             "/data/face_models",
             yunet_score_threshold=yunet_score_threshold,
             face_match_threshold=face_match_threshold,
+            face_match_min_gap=face_match_min_gap,
             face_detection_cameras=face_detection_cameras,
             face_gallery_store=face_gallery_store,
             debug_store=face_debug_store,

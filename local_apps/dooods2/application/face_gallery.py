@@ -477,6 +477,49 @@ class FaceGalleryStore:
                     }
         return None
 
+    def has_person_face_image(self, person_id: str, sample_id: str) -> bool:
+        """Есть ли эталонное изображение образца в постоянном буфере App."""
+        try:
+            person_id = _validate_id(person_id, "ID человека")
+            sample_id = _validate_id(sample_id, "ID образца")
+        except FaceGalleryValidationError:
+            return False
+        if self._person_face_image_path(person_id, sample_id).is_file():
+            return True
+        with self._lock:
+            person = self._people.get(person_id)
+            if person is None:
+                return False
+            sample = next((s for s in person.samples if s.id == sample_id), None)
+        return bool(
+            sample is not None
+            and sample.capture_id is not None
+            and sample.face_index is not None
+            and self.face_debug_store is not None
+        )
+
+    def get_reference_face_image(self, person_id: str) -> bytes | None:
+        """Вернуть JPEG эталона из постоянного буфера, без обращения к кадрам.
+
+        Используется страницей совпадений: кадр-источник может быть вытеснен
+        из FIFO-буфера, а копия эталона остаётся навсегда.
+        """
+        person_id = _validate_id(person_id, "ID человека")
+        with self._lock:
+            person = self._people.get(person_id)
+            if person is None:
+                return None
+            sample_ids = [sample.id for sample in person.samples]
+        for sample_id in sample_ids:
+            path = self._person_face_image_path(person_id, sample_id)
+            try:
+                content = path.read_bytes()
+            except OSError:
+                continue
+            if content.startswith(b"\xff\xd8\xff"):
+                return content
+        return None
+
     def _person_face_image_path(self, person_id: str, sample_id: str) -> Path:
         return self.path.parent / "face_debug" / "person_faces" / person_id / f"face-{sample_id}.jpg"
 
