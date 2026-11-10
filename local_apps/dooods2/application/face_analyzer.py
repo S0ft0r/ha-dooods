@@ -23,6 +23,13 @@ _LOGGER = logging.getLogger("doods.face_analyzer")
 _MAX_ANALYSIS_SIDE = 1280
 _MAX_CAMERA_STATES = 128
 _EMBEDDING_DIMENSION = 128
+# SFace (2021dec) на LFW даёт EER около 0.36 по косинусу. Порог 0.7 из
+# предыдущей версии пропускал только кадры, почти идентичные эталону.
+_DEFAULT_FACE_MATCH_THRESHOLD = 0.4
+# Минимальный отрыв лучшего человека от второго, чтобы не путать похожих.
+_DEFAULT_FACE_MATCH_MIN_GAP = 0.1
+# Сколько лиц на кадре проверять на совпадение (по убыванию площади).
+_MAX_MATCH_FACES = 5
 _DEFAULT_YUNET_SCORE_THRESHOLD = 0.9
 _MIN_YUNET_SCORE_THRESHOLD = 0.1
 _MAX_YUNET_SCORE_THRESHOLD = 1.0
@@ -76,7 +83,8 @@ class FaceAnalyzer:
         model_directory: str | Path = "/data/face_models",
         *,
         yunet_score_threshold: float = _DEFAULT_YUNET_SCORE_THRESHOLD,
-        face_match_threshold: float = 0.7,
+        face_match_threshold: float = _DEFAULT_FACE_MATCH_THRESHOLD,
+        face_match_min_gap: float = _DEFAULT_FACE_MATCH_MIN_GAP,
         face_detection_cameras: list[str] | None = None,
         face_gallery_store: Any = None,
         debug_store: Any = None,
@@ -89,6 +97,7 @@ class FaceAnalyzer:
         self.face_match_threshold = self._normalize_match_threshold(
             face_match_threshold
         )
+        self.face_match_min_gap = self._normalize_match_min_gap(face_match_min_gap)
         self.face_detection_cameras = set(
             camera for camera in (face_detection_cameras or []) if isinstance(camera, str)
         )
@@ -324,48 +333,24 @@ class FaceAnalyzer:
                     # Сопоставление с галереей людей
                     if self.face_gallery_store is not None:
                         try:
-                            people = self.face_gallery_store.get_people_with_embeddings()
-                            if people:
-                                feature_list = [float(v) for v in feature.flatten().tolist()]
-                                best_match = None
-                                best_similarity = 0.0
-                                second_best_similarity = 0.0
-                                for person in people:
-                                    for sample in person.get("samples", []):
-                                        sample_embedding = sample.get("embedding")
-                                        if not sample_embedding:
-                                            continue
-                                        similarity = self._cosine_similarity(
-                                            feature_list,
-                                            [float(v) for v in sample_embedding],
-                                        )
-                                        if similarity > best_similarity:
-                                            second_best_similarity = best_similarity
-                                            best_similarity = similarity
-                                            best_match = person
-                                        elif similarity > second_best_similarity:
-                                            second_best_similarity = similarity
-                                if best_match is not None:
-                                    if best_similarity >= self.face_match_threshold:
-                                        gap = best_similarity - second_best_similarity
-                                        if gap >= 0.1:
-                                            match_result = {
-                                                "state": "matched",
-                                                "person_id": best_match["id"],
-                                                "person_name": best_match["name"],
-                                                "similarity": round(best_similarity, 4),
-                                            }
-                                        else:
-                                            match_result = {
-                                                "state": "ambiguous",
-                                                "person_id": best_match["id"],
-                                                "person_name": best_match["name"],
-                                                "similarity": round(best_similarity, 4),
-                                            }
-                                    else:
-                                        match_result = {
-                                            "state": "unknown",
-                                        }
+                            feature_list = [
+                                float(value) for value in feature.flatten().tolist()
+                            ]
+                            aggregated = self._match_feature_against_gallery(
+                                feature_list
+                            )
+                            if aggregated is not None:
+                                largest_index = rows.index(largest_face)
+                                aggregated.update(
+                                    self._yunet_diagnostics(
+                                        row=largest_face,
+                                        rows=rows,
+                                        scale=scale,
+                                        started_at=started,
+                                    )
+                                )
+                                aggregated["face_index"] = largest_index
+                                match_result = aggregated
                         except Exception as err:
                             _LOGGER.debug(
                                 "Face gallery matching failed (%s)",
@@ -436,6 +421,83 @@ class FaceAnalyzer:
                 )
         return dict(diagnostics)
 
+    def _match_feature_against_gallery(
+        self,
+        feature_list: list[float],
+    ) -> dict[str, Any] | None:
+        """Сравнить один SFace-эмбеддинг с галереей, агрегируя по людям.
+
+        Сходство считается по каждому образцу, но для решения берётся лучший
+        образец каждого человека. Отрыв (gap) считается между лучшим человеком
+        и лучшим *другим* человеком: иначе второй по сходству образец того же
+        человека давал ложное состояние ambiguous.
+        """
+        if self.face_gallery_store is None or not feature_list:
+            return None
+        people = self.face_gallery_store.get_people_with_embeddings()
+        if not people:
+            return None
+        per_person: list[tuple[float, dict[str, Any], Any, int]] = []
+        for person in people:
+            best_for_person = 0.0
+            best_sample_id: Any = None
+            best_sample_index = -1
+            has_embedding = False
+            samples = person.get("samples", []) or []
+            for position, sample in enumerate(samples):
+                sample_embedding = sample.get("embedding")
+                if not sample_embedding:
+                    continue
+                try:
+                    values = [float(value) for value in sample_embedding]
+                except (TypeError, ValueError):
+                    continue
+                has_embedding = True
+                similarity = self._cosine_similarity(feature_list, values)
+                if similarity > best_for_person or best_sample_id is None:
+                    best_for_person = similarity
+                    best_sample_id = sample.get("id") or sample.get("sample_id")
+                    best_sample_index = position
+            # Нулевое сходство — валидный результат, но только если у человека
+            # вообще есть эмбеддинги; иначе он не участвует в сравнении.
+            if has_embedding:
+                per_person.append(
+                    (best_for_person, person, best_sample_id, best_sample_index)
+                )
+        if not per_person:
+            return None
+        per_person.sort(key=lambda item: item[0], reverse=True)
+        best_similarity, best_person, best_sample_id, best_sample_index = per_person[0]
+        if len(per_person) > 1:
+            second_similarity, second_person = per_person[1][0], per_person[1][1]
+            other_name = second_person.get("name")
+        else:
+            second_similarity, other_name = 0.0, None
+        gap = best_similarity - second_similarity
+        threshold = float(self.face_match_threshold)
+        result: dict[str, Any] = {
+            "similarity": round(best_similarity, 4),
+            "sface_threshold": round(threshold, 4),
+            "sface_best_similarity": round(best_similarity, 4),
+            "sface_second_best_similarity": round(second_similarity, 4),
+            "sface_similarity_gap": round(gap, 4),
+            "sface_min_gap": round(float(self.face_match_min_gap), 4),
+            "sface_other_person": other_name,
+            "sface_sample_id": best_sample_id,
+            "sface_sample_index": best_sample_index,
+            "sface_samples_total": len(best_person.get("samples", []) or []),
+        }
+        if best_similarity < threshold:
+            # Кандидат слишком далёк: не раскрываем личность в событии.
+            result["state"] = "unknown"
+            return result
+        result["person_id"] = best_person.get("id")
+        result["person_name"] = best_person.get("name")
+        result["state"] = (
+            "matched" if gap >= self.face_match_min_gap else "ambiguous"
+        )
+        return result
+
     def match_frame(
         self,
         frame: Any,
@@ -453,6 +515,7 @@ class FaceAnalyzer:
             detector = self._detector
             recognizer = self._recognizer
 
+        started_at = time.perf_counter()
         height, width = self._frame_size(frame)
         if width <= 0 or height <= 0:
             return None
@@ -471,6 +534,8 @@ class FaceAnalyzer:
             analysis_width = width
             analysis_height = height
 
+        candidates: list[tuple[int, Any, list[float]]] = []
+        rows: list[Any] = []
         with self._inference_lock:
             try:
                 detector.setInputSize((analysis_width, analysis_height))
@@ -478,64 +543,97 @@ class FaceAnalyzer:
                 rows = list(detected_faces) if detected_faces is not None else []
                 if not rows:
                     return None
-                largest_face = max(
-                    rows,
-                    key=lambda face: float(face[2]) * float(face[3]),
-                )
-                aligned_face = recognizer.alignCrop(analysis_frame, largest_face)
-                feature = recognizer.feature(aligned_face)
-                self._validate_feature(feature)
+                # Проверяем несколько лиц: эталон мог быть снят с лица, которое
+                # на новом кадре не самое крупное.
+                order = sorted(
+                    range(len(rows)),
+                    key=lambda index: float(rows[index][2]) * float(rows[index][3]),
+                    reverse=True,
+                )[:_MAX_MATCH_FACES]
+                for index in order:
+                    row = rows[index]
+                    try:
+                        aligned_face = recognizer.alignCrop(analysis_frame, row)
+                        feature = recognizer.feature(aligned_face)
+                        self._validate_feature(feature)
+                    except _FaceInferenceError:
+                        continue
+                    except Exception:
+                        continue
+                    candidates.append(
+                        (
+                            index,
+                            row,
+                            [float(value) for value in feature.flatten().tolist()],
+                        )
+                    )
             except _FaceInferenceError:
                 return None
             except Exception:
                 return None
 
-        # Сопоставление с галереей людей
-        if self.face_gallery_store is None:
+        if not candidates or self.face_gallery_store is None:
             return None
+
+        best_result: dict[str, Any] | None = None
+        best_score = -1.0
         try:
-            people = self.face_gallery_store.get_people_with_embeddings()
-            if not people:
-                return None
-            feature_list = [float(v) for v in feature.flatten().tolist()]
-            best_match = None
-            best_similarity = 0.0
-            second_best_similarity = 0.0
-            for person in people:
-                for sample in person.get("samples", []):
-                    sample_embedding = sample.get("embedding")
-                    if not sample_embedding:
-                        continue
-                    similarity = self._cosine_similarity(
-                        feature_list,
-                        [float(v) for v in sample_embedding],
+            for index, row, feature_list in candidates:
+                aggregated = self._match_feature_against_gallery(feature_list)
+                if aggregated is None:
+                    continue
+                # Сначала предпочитаем подтверждённое совпадение, затем больший
+                # коэффициент сходства.
+                score = float(aggregated.get("sface_best_similarity") or 0.0)
+                if aggregated.get("state") == "matched":
+                    score += 1.0
+                if score > best_score:
+                    best_score = score
+                    aggregated.update(
+                        self._yunet_diagnostics(
+                            row=row,
+                            rows=rows,
+                            scale=scale,
+                            started_at=started_at,
+                        )
                     )
-                    if similarity > best_similarity:
-                        second_best_similarity = best_similarity
-                        best_similarity = similarity
-                        best_match = person
-                    elif similarity > second_best_similarity:
-                        second_best_similarity = similarity
-            if best_match is None:
-                return None
-            if best_similarity < self.face_match_threshold:
-                return None
-            gap = best_similarity - second_best_similarity
-            if gap < 0.1:
-                return {
-                    "state": "ambiguous",
-                    "person_id": best_match["id"],
-                    "person_name": best_match["name"],
-                    "similarity": round(best_similarity, 4),
-                }
-            return {
-                "state": "matched",
-                "person_id": best_match["id"],
-                "person_name": best_match["name"],
-                "similarity": round(best_similarity, 4),
-            }
+                    aggregated["face_index"] = index
+                    best_result = aggregated
         except Exception:
             return None
+        return best_result
+
+    def _yunet_diagnostics(
+        self,
+        *,
+        row: Any,
+        rows: list[Any],
+        scale: float,
+        started_at: float,
+    ) -> dict[str, Any]:
+        """Scalar YuNet diagnostics for one detected face.
+
+        No embeddings, identity vectors or image bytes leave this method.
+        """
+        inverse = 1.0 / scale if scale > 0 else 1.0
+        score_value: float | None = None
+        if len(row) > 14:
+            try:
+                score_value = round(float(row[14]), 4)
+            except (TypeError, ValueError):
+                score_value = None
+        return {
+            "yunet_score_threshold": round(float(self.yunet_score_threshold), 4),
+            "yunet_faces_detected": len(rows),
+            "yunet_score": score_value,
+            "yunet_bbox": {
+                "x": round(float(row[0]) * inverse, 1),
+                "y": round(float(row[1]) * inverse, 1),
+                "width": round(float(row[2]) * inverse, 1),
+                "height": round(float(row[3]) * inverse, 1),
+            },
+            "match_inference_ms": round((time.perf_counter() - started_at) * 1000, 2),
+        }
 
     @staticmethod
     def _encode_debug_capture(
@@ -689,18 +787,37 @@ class FaceAnalyzer:
         try:
             threshold = float(value)
         except (TypeError, ValueError, OverflowError):
-            return 0.7
+            return _DEFAULT_FACE_MATCH_THRESHOLD
         if (
             isinstance(value, bool)
             or not math.isfinite(threshold)
             or not 0.1 <= threshold <= 1.0
         ):
             _LOGGER.warning(
-                "Invalid face match threshold; using default %.1f",
-                0.7,
+                "Invalid face match threshold; using default %.2f",
+                _DEFAULT_FACE_MATCH_THRESHOLD,
             )
-            return 0.7
+            return _DEFAULT_FACE_MATCH_THRESHOLD
         return threshold
+
+    @staticmethod
+    def _normalize_match_min_gap(value: Any) -> float:
+        """Accept only a finite minimum similarity gap in the 0.0–0.5 range."""
+        try:
+            gap = float(value)
+        except (TypeError, ValueError, OverflowError):
+            return _DEFAULT_FACE_MATCH_MIN_GAP
+        if (
+            isinstance(value, bool)
+            or not math.isfinite(gap)
+            or not 0.0 <= gap <= 0.5
+        ):
+            _LOGGER.warning(
+                "Invalid face match min gap; using default %.2f",
+                _DEFAULT_FACE_MATCH_MIN_GAP,
+            )
+            return _DEFAULT_FACE_MATCH_MIN_GAP
+        return gap
 
     @staticmethod
     def _cosine_similarity(first: list[float], second: list[float]) -> float:

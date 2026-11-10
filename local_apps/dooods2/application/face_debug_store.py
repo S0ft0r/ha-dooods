@@ -370,7 +370,12 @@ class FaceDebugStore:
             match_diagnostic = payload.get("match")
             if isinstance(match_diagnostic, dict) and match_diagnostic.get("state") == "matched":
                 try:
-                    self._write_match_capture(capture_id, image_bytes[0], metadata)
+                    self._write_match_capture(
+                        capture_id,
+                        image_bytes[0],
+                        metadata,
+                        face_images=list(image_bytes[1:]),
+                    )
                 except Exception as err:
                     _LOGGER.warning(
                         "Face-debug match buffer write failed (%s)", type(err).__name__
@@ -383,6 +388,7 @@ class FaceDebugStore:
         metadata: dict[str, Any],
         *,
         match_info: dict[str, Any] | None = None,
+        face_images: list[bytes] | None = None,
     ) -> None:
         """Сохранить копию кадра-совпадения в отдельном приватном буфере.
 
@@ -396,14 +402,46 @@ class FaceDebugStore:
         self._make_private_directory(destination)
         try:
             self._write_private_file(destination / "frame.jpg", frame_jpeg)
+            stored_faces = 0
+            for index, image in enumerate(face_images or []):
+                if not image:
+                    continue
+                self._write_private_file(destination / f"face-{index:02d}.jpg", image)
+                stored_faces += 1
             meta = dict(metadata)
             if match_info:
                 meta["person_name"] = match_info.get("person_name")
                 meta["person_id"] = match_info.get("person_id")
                 meta["similarity"] = match_info.get("similarity")
                 meta["state"] = match_info.get("state", "matched")
+                meta["match"] = {
+                    key: match_info.get(key)
+                    for key in (
+                        "state",
+                        "person_id",
+                        "person_name",
+                        "similarity",
+                        "face_index",
+                        "yunet_score_threshold",
+                        "yunet_faces_detected",
+                        "yunet_score",
+                        "yunet_bbox",
+                        "sface_threshold",
+                        "sface_best_similarity",
+                        "sface_second_best_similarity",
+                        "sface_similarity_gap",
+                        "sface_min_gap",
+                        "sface_other_person",
+                        "sface_sample_id",
+                        "sface_sample_index",
+                        "sface_samples_total",
+                        "match_inference_ms",
+                    )
+                    if match_info.get(key) is not None
+                }
             else:
                 meta["match_state"] = "matched"
+            meta["match_face_crops"] = stored_faces
             content = json.dumps(meta, ensure_ascii=False, separators=(",", ":")).encode(
                 "utf-8"
             )
@@ -463,14 +501,38 @@ class FaceDebugStore:
             self._has_new_matches = False
         return result
 
-    def get_match_image(self, capture_id: str) -> bytes:
-        """Вернуть JPEG полного кадра из буфера совпадений."""
+    def get_match_image(
+        self,
+        capture_id: str,
+        *,
+        kind: str = "frame",
+        face_index: int | None = None,
+    ) -> bytes:
+        """Вернуть JPEG кадра или кропа лица из буфера совпадений."""
         capture_id = self._validate_capture_id(capture_id)
-        path = self.match_directory / capture_id / "frame.jpg"
+        if kind == "frame":
+            filename = "frame.jpg"
+        elif kind == "face":
+            if isinstance(face_index, bool) or not isinstance(face_index, int):
+                raise FaceDebugValidationError("Face index must be an integer")
+            if not 0 <= face_index < _MAX_FACES_PER_EVENT:
+                raise FaceDebugValidationError("Face index is out of range")
+            filename = f"face-{face_index:02d}.jpg"
+        else:
+            raise FaceDebugValidationError("Image kind must be frame or face")
+        path = self.match_directory / capture_id / filename
         try:
             content = path.read_bytes()
-        except FileNotFoundError as err:
-            raise FaceDebugNotFoundError("Match image not found") from err
+        except FileNotFoundError:
+            # Записи, созданные до появления кропов в буфере совпадений, не
+            # содержат face-NN.jpg. Пробуем исходный кадр: capture_id совпадает.
+            fallback = self.capture_directory / capture_id / filename
+            try:
+                content = fallback.read_bytes()
+            except FileNotFoundError as err:
+                raise FaceDebugNotFoundError("Match image not found") from err
+            except OSError as err:
+                raise FaceDebugStoreError("Could not read match image") from err
         except OSError as err:
             raise FaceDebugStoreError("Could not read match image") from err
         if not content.startswith(b"\xff\xd8\xff") or len(content) > self.max_image_bytes:

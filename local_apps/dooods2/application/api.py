@@ -269,8 +269,16 @@ class API():
                         response.headers["X-Content-Type-Options"] = "nosniff"
                         return response
             response = await call_next(request)
-            if path == "/faces" or path.startswith("/faces/"):
-                response.headers["Cache-Control"] = "no-store"
+            if (
+                path == "/faces"
+                or path.startswith("/faces/")
+                or path.endswith(".html")
+                or path in {"/", "/index.html"}
+            ):
+                # HTML-страницы не кэшируем: после обновления App браузер и
+                # Ingress иначе продолжают отдавать старую копию faces.html.
+                response.headers["Cache-Control"] = "no-store, must-revalidate"
+                response.headers["Pragma"] = "no-cache"
                 response.headers["X-Content-Type-Options"] = "nosniff"
             return response
 
@@ -859,23 +867,30 @@ class API():
             require_face_debug_enabled()
             require_face_gallery_enabled()
             try:
-                reference = await asyncio.to_thread(
-                    self.face_gallery_store.get_person_face_reference,
+                # Эталон хранится в постоянном буфере person_faces и не вытесняется
+                # вместе с кадрами; FIFO-буфер кадров используем только как fallback.
+                jpeg_bytes = await asyncio.to_thread(
+                    self.face_gallery_store.get_reference_face_image,
                     person_id,
                 )
-                if reference is None:
-                    raise HTTPException(
-                        status_code=status.HTTP_404_NOT_FOUND,
-                        detail="No face image reference found for this person.",
+                if jpeg_bytes is None:
+                    reference = await asyncio.to_thread(
+                        self.face_gallery_store.get_person_face_reference,
+                        person_id,
                     )
-                capture_id = reference["capture_id"]
-                face_index = reference["face_index"]
-                jpeg_bytes = await asyncio.to_thread(
-                    self.face_debug_store.get_capture_image,
-                    capture_id,
-                    kind="face",
-                    face_index=face_index,
-                )
+                    if reference is None:
+                        raise HTTPException(
+                            status_code=status.HTTP_404_NOT_FOUND,
+                            detail="No face image reference found for this person.",
+                        )
+                    capture_id = reference["capture_id"]
+                    face_index = reference["face_index"]
+                    jpeg_bytes = await asyncio.to_thread(
+                        self.face_debug_store.get_capture_image,
+                        capture_id,
+                        kind="face",
+                        face_index=face_index,
+                    )
             except FaceDebugNotFoundError as err:
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND,
@@ -919,18 +934,25 @@ class API():
                 )
             samples = []
             for sample in person.get("samples", []) or []:
+                sample_id = sample.get("id")
+                has_image = False
+                if isinstance(sample_id, str):
+                    try:
+                        has_image = await asyncio.to_thread(
+                            self.face_gallery_store.has_person_face_image,
+                            person_id,
+                            sample_id,
+                        )
+                    except Exception:
+                        has_image = False
                 samples.append({
-                    "id": sample.get("id"),
+                    "id": sample_id,
                     "capture_id": sample.get("capture_id"),
                     "face_index": sample.get("face_index"),
                     "confirmed_at": sample.get("confirmed_at"),
                     "model_id": sample.get("model_id"),
                     "model_version": sample.get("model_version"),
-                    # Обратная совместимость: образцы без привязки к кадру
-                    # (добавленные до этапа сохранения изображений эталона)
-                    # не имеют миниатюры, но их можно удалить из галереи.
-                    "has_image": sample.get("capture_id") is not None
-                    and sample.get("face_index") is not None,
+                    "has_image": has_image,
                 })
             return samples
 
@@ -978,13 +1000,19 @@ class API():
             return matches
 
         @self.api.get("/faces/debug/matches/{capture_id}/image")
-        async def get_match_image(capture_id: str):
-            """Вернуть изображение кадра-совпадения."""
+        async def get_match_image(
+            capture_id: str,
+            kind: str = "frame",
+            face_index: int | None = None,
+        ):
+            """Вернуть изображение кадра-совпадения или кроп найденного лица."""
             require_face_debug_enabled()
             try:
                 jpeg_bytes = await asyncio.to_thread(
                     self.face_debug_store.get_match_image,
                     capture_id,
+                    kind=kind,
+                    face_index=face_index,
                 )
             except FaceDebugNotFoundError as err:
                 raise HTTPException(
@@ -1075,12 +1103,29 @@ class API():
                         source_id,
                     )
                     if match_result and match_result.get("state") == "matched":
+                        face_images: list[bytes] = []
+                        for face in capture.get("faces", []) or []:
+                            index = face.get("face_index")
+                            if not isinstance(index, int):
+                                continue
+                            try:
+                                face_images.append(
+                                    await asyncio.to_thread(
+                                        self.face_debug_store.get_capture_image,
+                                        capture_id,
+                                        kind="face",
+                                        face_index=index,
+                                    )
+                                )
+                            except Exception:
+                                continue
                         await asyncio.to_thread(
                             self.face_debug_store._write_match_capture,
                             capture_id,
                             jpeg_bytes,
                             capture,
                             match_info=match_result,
+                            face_images=face_images,
                         )
                         try:
                             updated = await asyncio.to_thread(
