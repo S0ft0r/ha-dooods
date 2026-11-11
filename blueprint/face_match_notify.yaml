@@ -89,15 +89,16 @@ condition:
       {% set person_name = trigger.event.data.person_name | string %}
       {% set camera = trigger.event.data.camera_entity_id | string %}
       {% if input.person_id | string != "" and person_id != input.person_id | string %}
-        {% return false %}
+        {{ false }}
       {% endif %}
       {% if input.person_name | string != "" and person_name != input.person_name | string %}
-        {% return false %}
+        {{ false }}
       {% endif %}
       {% if input.camera_entity_id and camera != input.camera_entity_id %}
-        {% return false %}
+        {{ false }}
       {% endif %}
-      {% return true %}
+      {{ true }}
+
 action:
   - parallel:
       - service: "{{ input.notification_service }}"
