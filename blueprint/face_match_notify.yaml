@@ -42,7 +42,7 @@ blueprint:
         Сервис, который вызывается при каждом совпадении. 
         Можно указать notify.mobile_app_<ваше_устройство>.
       default: []
-      selector:
+      selector: 
         entity:
           filter:
             - domain:
