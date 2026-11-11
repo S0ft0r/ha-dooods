@@ -80,7 +80,7 @@ blueprint:
       selector:
         text:
 trigger:
-  - platform: homeassistant
+  - platform: event
     event_type: dooods_face_match
 condition:
   - condition: template
