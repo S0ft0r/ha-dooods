@@ -8,19 +8,40 @@ from datetime import datetime
 from typing import Any
 
 _BOUNDING_BOX_FIELDS = ("left", "top", "right", "bottom")
+FACE_MATCH_EVENT_STATES = frozenset({"matched", "ambiguous"})
+
+
+def face_match_event_key(
+    *,
+    checked_at: str | None,
+    match: Mapping[str, Any] | None,
+) -> tuple[Any, ...] | None:
+    """Return a stable per-frame key for a publishable face match decision."""
+    if not match:
+        return None
+    state = match.get("state")
+    if state not in FACE_MATCH_EVENT_STATES:
+        return None
+    return (
+        checked_at,
+        match.get("person_id"),
+        match.get("person_name"),
+        match.get("similarity"),
+        state,
+    )
 
 
 def face_match_event_data(
     *,
     entry_id: str,
     camera_entity_id: str,
-    checked_at: datetime | None,
+    checked_at: str | None,
     person_id: str | None,
     person_name: str | None,
     similarity: float | None,
     state: str,
 ) -> dict[str, Any]:
-    """Return one serializable, privacy-safe event payload for a face match.
+    """Return one serializable, privacy-safe event payload for a face decision.
 
     The payload intentionally contains only match metadata. It does not contain
     the source frame, filesystem paths, embeddings, or server credentials.
@@ -28,7 +49,7 @@ def face_match_event_data(
     return {
         "entry_id": entry_id,
         "camera_entity_id": camera_entity_id,
-        "timestamp": checked_at.isoformat() if checked_at is not None else None,
+        "timestamp": checked_at,
         "person_id": person_id,
         "person_name": person_name,
         "similarity": round(float(similarity), 4)

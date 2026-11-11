@@ -2,9 +2,10 @@ blueprint:
   name: DOOODS — уведомление о совпадении лица
   description: >
     Реакция на события распознавания лиц DOOODS2 (dooods_face_match).
-    Отправляет уведомление, когда распознанное лицо совпало с человеком из галереи
-    на выбранной камере. Дополнительно можно отфильтровать по ID человека, имени
-    или камере, включить свет или вызвать любой сервис.
+    Отправляет уведомление при подтверждённом (matched) или неоднозначном
+    (ambiguous) совпадении с человеком из галереи. Замок открывается только
+    при подтверждённом совпадении matched; при ambiguous замок не открывается.
+    Дополнительно можно отфильтровать события по ID человека, имени или камере.
   domain: automation
   source_url: https://github.com/S0ft0r/ha-dooods/blob/main/blueprint/face_match_notify.yaml
   author: Softor
@@ -39,10 +40,10 @@ blueprint:
     notification_service:
       name: Сервис уведомлений
       description: >
-        Сервис, который вызывается при каждом совпадении. 
+        Сервис, который вызывается при matched и ambiguous.
         Можно указать notify.mobile_app_<ваше_устройство>.
       default: []
-      selector: 
+      selector:
         entity:
           filter:
             - domain:
@@ -51,64 +52,65 @@ blueprint:
     lock_entity:
       name: Замок, который надо открыть (необязательно)
       description: >
-        Оставьте пустым, чтобы пропустить. Укажите entity_id замка: он откроется
-        при совпадении лица.
+        Оставьте пустым, чтобы пропустить. Замок открывается только при matched.
+        При ambiguous отправляется уведомление, но открытие замка не выполняется.
       default: ""
       selector:
         entity:
           domain: lock
-    # light_off_delay:
-    #   name: Задержка выключения света (секунды)
-    #   description: >
-    #     Через сколько секунд выключить свет. 0 — оставить включённым.
-    #   default: 30
-    #   selector:
-    #     number:
-    #       min: 0
-    #       max: 3600
-    #       step: 1
     message_template:
       name: Шаблон сообщения
       description: >
         Шаблон Jinja2 для текста уведомления. Доступные переменные:
-        person_name, person_id, camera_entity_id, similarity, timestamp.
+        state, person_name, person_id, camera_entity_id, similarity, timestamp.
       default: >
-        👤 Совпадение лица: {{ person_name }} ({{ person_id }})
+        {% if state == "ambiguous" %}⚠️ Неоднозначное совпадение лица{% else %}👤 Совпадение лица{% endif %}: {{ person_name }} ({{ person_id }})
         Камера: {{ camera_entity_id }}
         Сходство: {{ similarity }}
         Время: {{ timestamp }}
       selector:
         text:
+
 trigger:
   - platform: event
     event_type: dooods_face_match
+
+variables:
+  state: "{{ trigger.event.data.state }}"
+  person_id: "{{ trigger.event.data.person_id }}"
+  person_name: "{{ trigger.event.data.person_name }}"
+  camera_entity_id: "{{ trigger.event.data.camera_entity_id }}"
+  similarity: "{{ trigger.event.data.similarity }}"
+  timestamp: "{{ trigger.event.data.timestamp }}"
+
 condition:
   - condition: template
     value_template: >
-      {% set person_id = trigger.event.data.person_id | string %}
-      {% set person_name = trigger.event.data.person_name | string %}
-      {% set camera = trigger.event.data.camera_entity_id | string %}
-      {% if input.person_id | string != "" and person_id != input.person_id | string %}
-        {{ false }}
-      {% endif %}
-      {% if input.person_name | string != "" and person_name != input.person_name | string %}
-        {{ false }}
-      {% endif %}
-      {% if input.camera_entity_id and camera != input.camera_entity_id %}
-        {{ false }}
-      {% endif %}
-      {{ true }}
+      {% set expected_person_id = input.person_id | string %}
+      {% set expected_person_name = input.person_name | string %}
+      {% set expected_camera = input.camera_entity_id | string %}
+      {{ state in ["matched", "ambiguous"]
+         and (expected_person_id == "" or person_id == expected_person_id)
+         and (expected_person_name == "" or person_name == expected_person_name)
+         and (expected_camera == "" or camera_entity_id == expected_camera) }}
 
 action:
   - parallel:
       - service: "{{ input.notification_service }}"
+        enabled: "{{ input.notification_service | count > 0 }}"
         data:
-          title: "DOOODS — совпадение лица"
-          message: "{{ input.message_template }}"
-          continue_on_error: true
-      - service: lock.open
-        target:
-          entity_id: "{{ input.lock_entity }}"
-        data: {}
-        enabled: "{{ input.lock_entity != '' }}"
+          title: >
+            {{ "DOOODS — неоднозначное совпадение" if state == "ambiguous"
+               else "DOOODS — совпадение лица" }}
+          message: !input message_template
         continue_on_error: true
+      - if:
+          - condition: template
+            value_template: >
+              {{ state == "matched" and input.lock_entity | string != "" }}
+        then:
+          - service: lock.open
+            target:
+              entity_id: "{{ input.lock_entity }}"
+            data: {}
+            continue_on_error: true

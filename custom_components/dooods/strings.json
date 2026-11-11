@@ -40,7 +40,7 @@
           "archive_max_count": "When a new frame is stored, the oldest files for that camera are removed until the count is within this limit.",
           "archive_max_age_days": "Expired files are cleaned on startup, daily, and when frames are stored. If both limits are set, exceeding either one removes the file.",
           "emit_detection_events": "When enabled, DOOODS fires one dooods_detection event for each successful camera scan with accepted detections. The event contains the entry and camera IDs, timestamp, labels, and detections with confidence, normalized bounding boxes, and an optional region ID. Images, file paths, and API keys are never included. Disabled by default.",
-          "emit_face_match_events": "When enabled, DOOODS fires one dooods_face_match event when a recognised face matches a gallery person on a selected camera. The event contains the entry and camera IDs, timestamp, person ID and name, similarity, and match state. Images, file paths, embeddings, and API keys are never included. Disabled by default."
+          "emit_face_match_events": "When enabled, DOOODS fires one dooods_face_match event for each new frame result in the matched or ambiguous state; unknown results are not published. Repeated status snapshots of the same result do not create duplicates. The event contains the entry and camera IDs, timestamp, person ID and name, similarity, and state. Images, file paths, embeddings, and API keys are never included. Disabled by default."
         }
       },
       "reconfigure": {
@@ -102,7 +102,7 @@
           "archive_max_count": "When a new frame is stored, the oldest files for that camera are removed until the count is within this limit.",
           "archive_max_age_days": "Expired files are cleaned on startup, daily, and when frames are stored. If both limits are set, exceeding either one removes the file.",
           "emit_detection_events": "When enabled, DOOODS fires one dooods_detection event for each successful camera scan with accepted detections. The event contains the entry and camera IDs, timestamp, labels, and detections with confidence, normalized bounding boxes, and an optional region ID. Images, file paths, and API keys are never included. Disabled by default.",
-          "emit_face_match_events": "When enabled, DOOODS fires one dooods_face_match event when a recognised face matches a gallery person on a selected camera. The event contains the entry and camera IDs, timestamp, person ID and name, similarity, and match state. Images, file paths, embeddings, and API keys are never included. Disabled by default."
+          "emit_face_match_events": "When enabled, DOOODS fires one dooods_face_match event for each new frame result in the matched or ambiguous state; unknown results are not published. Repeated status snapshots of the same result do not create duplicates. The event contains the entry and camera IDs, timestamp, person ID and name, similarity, and state. Images, file paths, embeddings, and API keys are never included. Disabled by default."
         },
         "sections": {
           "area": {

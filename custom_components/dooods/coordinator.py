@@ -53,7 +53,11 @@ from .const import (
     EVENT_DETECTION,
     EVENT_FACE_MATCH,
 )
-from .events import detection_event_data, face_match_event_data
+from .events import (
+    detection_event_data,
+    face_match_event_data,
+    face_match_event_key,
+)
 from .face_diagnostics import normalize_face_diagnostics
 from .frame_comparison import (
     source_frame_signature,
@@ -181,6 +185,7 @@ class DooodsCoordinator(DataUpdateCoordinator[dict[str, CameraScanResult]]):
         self._archive_retry_frame_signatures: dict[str, bytes] = {}
         self.emit_detection_events = bool(emit_detection_events)
         self.emit_face_match_events = bool(emit_face_match_events)
+        self._last_face_match_event_keys: dict[str, tuple[Any, ...]] = {}
         self._archive_cleanup_unsubscribe: Callable[[], None] | None = None
         self._archive_cleanup_task: asyncio.Task[Any] | None = None
         self._profile_labels_unsubscribe: Callable[[], None] | None = None
@@ -392,7 +397,7 @@ class DooodsCoordinator(DataUpdateCoordinator[dict[str, CameraScanResult]]):
         diagnostics["updated_at"] = datetime.now(UTC).isoformat()
         self._notify_face_diagnostics_listeners(camera_entity_id)
         match = normalized.get("match")
-        if match and match.get("state") == "matched":
+        if match:
             self._fire_face_match_event(
                 camera_entity_id,
                 normalized.get("last_processed_at"),
@@ -1523,16 +1528,16 @@ class DooodsCoordinator(DataUpdateCoordinator[dict[str, CameraScanResult]]):
     def _fire_face_match_event(
         self,
         camera_entity_id: str,
-        checked_at: datetime | None,
+        checked_at: str | None,
         match: dict[str, Any] | None,
     ) -> None:
-        """Emit one opt-in Home Assistant event when a face is matched.
-
-        Fires only when the normalised match state is ``matched``.
-        """
-        if not getattr(self, "emit_face_match_events", False):
+        """Emit one opt-in event for each new matched or ambiguous frame result."""
+        if not getattr(self, "emit_face_match_events", False) or not match:
             return
-        if not match or match.get("state") != "matched":
+        event_key = face_match_event_key(checked_at=checked_at, match=match)
+        if event_key is None:
+            return
+        if self._last_face_match_event_keys.get(camera_entity_id) == event_key:
             return
         event_data = face_match_event_data(
             entry_id=self.entry_id,
@@ -1544,6 +1549,7 @@ class DooodsCoordinator(DataUpdateCoordinator[dict[str, CameraScanResult]]):
             state=match.get("state", "matched"),
         )
         self.hass.bus.async_fire(EVENT_FACE_MATCH, event_data)
+        self._last_face_match_event_keys[camera_entity_id] = event_key
 
     async def _async_archive_camera_frame(
         self,
