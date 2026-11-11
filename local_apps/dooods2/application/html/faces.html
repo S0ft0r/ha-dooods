@@ -8,7 +8,7 @@
   <meta http-equiv="pragma" content="no-cache">
   <meta http-equiv="expires" content="0">
   <meta name="dooods-build" content="0.1.32-dev">
-  <title>faces — диагностика и галерея</title>
+  <title>Лица — диагностика и галерея</title>
   <style>
     :root {
       color-scheme: dark;
@@ -177,7 +177,7 @@
 </head>
 <body>
   <header>
-    <h1>faces — диагностика лиц</h1>
+    <h1>Лица — диагностика лиц</h1>
     <!--p>Экспериментальная локальная обработка YuNet/SFace · кадры доступны только после ввода API-ключа</p-->
   </header>
   <main>
@@ -192,7 +192,7 @@
       </section>
 
       <nav aria-label="Разделы faces">
-        <button type="button" data-tab="captures" aria-selected="true">Кадры</button>
+        <button type="button" data-tab="captures" aria-selected="true">Кадры-кандидаты</button>
         <button type="button" data-tab="matches" aria-selected="false">Совпадения</button>
         <button type="button" data-tab="enroll" aria-selected="false">Галерея / регистрация</button>
         <button type="button" data-tab="log" aria-selected="false">Журнал</button>
@@ -961,6 +961,23 @@
       }
     }
 
+    const CAPTURE_STATUS_LABELS = {
+      saved: "кадр сохранён",
+      queued: "в очереди",
+      saving: "запись…",
+      save_failed: "ошибка записи",
+      queue_full: "очередь переполнена",
+      too_large: "кадр больше лимита",
+      image_unavailable: "кадр недоступен",
+      below_min_size: "лицо меньше min_face",
+      not_applicable: "—",
+    };
+
+    function captureStatusLabel(status) {
+      if (!status) return "—";
+      return CAPTURE_STATUS_LABELS[status] || status;
+    }
+
     async function loadLog() {
       const result = await apiRequest("faces/debug/log?limit=200");
       const container = $("log-list");
@@ -973,11 +990,16 @@
         const time = document.createElement("span"); time.textContent = formatTime(entry.occurred_at);
         const stateLabel = document.createElement("span"); stateLabel.className = `state ${entry.state}`; stateLabel.textContent = entry.state;
         const source = document.createElement("span"); source.className = "wide"; source.textContent = entry.source_id || "—";
-        const count = document.createElement("span"); count.textContent = `Лиц: ${entry.faces_detected ?? "—"}`;
+        const count = document.createElement("span");
+        const detected = entry.faces_detected;
+        const retained = entry.faces_above_min_size;
+        count.textContent = (typeof detected === "number" && typeof retained === "number" && retained !== detected)
+          ? `Лиц: ${detected} → ${retained}`
+          : `Лиц: ${detected ?? "—"}`;
         const score = (entry.faces || []).map((face) => face.score).filter((value) => value !== null && value !== undefined);
         const scores = document.createElement("span"); scores.textContent = score.length ? `score: ${score.join(", ")}` : `порог: ${entry.yunet_score_threshold ?? "—"}`;
         const latency = document.createElement("span"); latency.textContent = entry.inference_ms === null ? "—" : `${entry.inference_ms} ms`;
-        const capture = document.createElement("span"); capture.textContent = entry.capture_status === "saved" ? "кадр сохранён" : (entry.capture_status || "—");
+        const capture = document.createElement("span"); capture.textContent = captureStatusLabel(entry.capture_status);
         row.append(time, stateLabel, source, count, scores, latency, capture);
         container.append(row);
       }

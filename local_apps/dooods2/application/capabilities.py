@@ -1,9 +1,9 @@
-"""Описание версии протокола и возможностей DOOODS2."""
+"""Описание версии протокола и возможностей DOOODS2F."""
 
 from __future__ import annotations
 
 API_VERSION = 1
-APP_VERSION = "0.1.32-dev"
+APP_VERSION = "0.1.33-dev"
 PROFILE_FEATURES: tuple[str, ...] = ("profiles", "polygon_zones")
 PREVIEW_FEATURES: tuple[str, ...] = ("camera_preview",)
 ANNOTATION_FEATURES: tuple[str, ...] = ("localized_annotations",)

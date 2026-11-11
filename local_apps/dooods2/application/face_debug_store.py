@@ -240,6 +240,9 @@ class FaceDebugStore:
         if state not in _ALLOWED_STATES:
             return
         faces = self._validate_face_detections(face_detections)
+        # Сколько лиц нашёл детектор — до фильтра по размеру. Нужно журналу:
+        # «Лиц: 2» при пустом буфере иначе выглядит как потерянный кадр.
+        detected_face_count = len(faces)
         # Фильтруем слишком маленькие лица (люди далеко от камеры), чтобы не
         # сохранять их в буфер и не предлагать для регистрации.
         faces = [
@@ -272,6 +275,7 @@ class FaceDebugStore:
             "source_id": self._safe_source_id(source_id),
             "state": state,
             "faces_detected": raw_faces_count,
+            "faces_above_min_size": len(faces),
             "faces": faces,
             "yunet_score_threshold": round(threshold, 4),
             "inference_ms": round(inference_ms, 2) if inference_ms is not None else None,
@@ -280,6 +284,10 @@ class FaceDebugStore:
             "capture_id": None,
             "capture_status": "not_applicable",
         }
+        # Лица есть, но все меньше min_face_width/min_face_height — кадра не
+        # будет по правилу фильтра, и об этом нужно сказать прямо в журнале.
+        if state == "face_detected" and detected_face_count > 0 and not faces:
+            payload["capture_status"] = "below_min_size"
 
         image_bytes: list[bytes] = []
         if faces:

@@ -98,8 +98,17 @@ class FaceAnalyzer:
             face_match_threshold
         )
         self.face_match_min_gap = self._normalize_match_min_gap(face_match_min_gap)
-        self.face_detection_cameras = set(
-            camera for camera in (face_detection_cameras or []) if isinstance(camera, str)
+        # None — фильтр не настроен, анализируются все камеры (поведение по
+        # умолчанию). Пустой набор — осознанный выбор «ни одной камеры»,
+        # иначе снять выбор в интеграции было бы невозможно.
+        self.face_detection_cameras: set[str] | None = (
+            None
+            if face_detection_cameras is None
+            else {
+                camera
+                for camera in face_detection_cameras
+                if isinstance(camera, str)
+            }
         )
         self.face_gallery_store = face_gallery_store
         self.debug_store = debug_store
@@ -209,8 +218,9 @@ class FaceAnalyzer:
         """Analyze one motion-candidate frame and return no biometric payload."""
         # Если список камер для face detection задан, анализировать только их.
         # Остальные камеры получают диагностику без распознавания лиц.
+        # Пустой набор — «не анализировать ни одну камеру».
         if (
-            self.face_detection_cameras
+            self.face_detection_cameras is not None
             and source_id not in self.face_detection_cameras
         ):
             with self._state_lock:

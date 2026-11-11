@@ -9,6 +9,7 @@ from doods import Doods
 from profiles import ProfileStore
 from face_gallery import FaceGalleryStore, FaceGalleryStoreError
 from face_debug_store import FaceDebugStore, FaceDebugStoreError
+from face_settings import FaceSettingsError, FaceSettingsStore
 from face_analyzer import FaceAnalyzer
 from supervisor_options import SupervisorOptionsError, ensure_api_key
 
@@ -105,9 +106,29 @@ def main():
         )
         min_face_width = getattr(face_options, "min_face_width", 100)
         min_face_height = getattr(face_options, "min_face_height", 100)
+        # Пустой/отсутствующий список в config.yaml — фильтр не настроен.
         face_detection_cameras = getattr(
-            face_options, "face_detection_cameras", []
-        ) or []
+            face_options, "face_detection_cameras", None
+        ) or None
+        # Список, сохранённый интеграцией, важнее значения из config.yaml:
+        # в Home Assistant файл конфигурации App только для чтения.
+        face_settings_store = FaceSettingsStore("/data/face_settings.json")
+        try:
+            saved_face_cameras = face_settings_store.load_cameras()
+        except FaceSettingsError as err:
+            logger.warning(
+                "Face settings could not be read, using config value: %s", err
+            )
+            saved_face_cameras = None
+        if saved_face_cameras is not None:
+            face_detection_cameras = saved_face_cameras
+        if face_detection_cameras is None:
+            face_cameras_label = "(all)"
+        elif not face_detection_cameras:
+            face_cameras_label = "(none)"
+        else:
+            face_cameras_label = ", ".join(face_detection_cameras)
+        logger.info("Face detection cameras: %s", face_cameras_label)
         face_debug_store = None
         try:
             face_debug_store = FaceDebugStore(
@@ -159,6 +180,7 @@ def main():
             face_gallery_store=face_gallery_store,
             face_analyzer=face_analyzer,
             face_debug_store=face_debug_store,
+            face_settings_store=face_settings_store,
         )
         api.run()
     elif args.action == 'mqtt':

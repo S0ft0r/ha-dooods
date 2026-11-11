@@ -32,6 +32,7 @@ from face_gallery import (
     FaceGalleryValidationError,
 )
 from face_analyzer import FaceEmbeddingError
+from face_settings import FaceSettingsError
 from face_debug_store import (
     FaceDebugNotFoundError,
     FaceDebugStoreError,
@@ -57,6 +58,7 @@ class API():
         face_gallery_store=None,
         face_analyzer=None,
         face_debug_store=None,
+        face_settings_store=None,
     ):
         self.config = config
         self.doods = doods
@@ -74,6 +76,7 @@ class API():
         self.face_gallery_store = face_gallery_store
         self.face_analyzer = face_analyzer
         self.face_debug_store = face_debug_store
+        self.face_settings_store = face_settings_store
         self.auth_key = getattr(config, "auth_key", "") or ""
         self.logger = logging.getLogger("doods.api")
         if not self.auth_key:
@@ -537,6 +540,21 @@ class API():
                 if camera and camera not in seen:
                     seen.add(camera)
                     unique_cameras.append(camera)
+            # Список переживает рестарт App: /data/face_settings.json, не память.
+            if self.face_settings_store is not None:
+                try:
+                    unique_cameras = await asyncio.to_thread(
+                        self.face_settings_store.save_cameras,
+                        unique_cameras,
+                    )
+                except FaceSettingsError as err:
+                    self.logger.error(
+                        "Face detection cameras were not persisted: %s", err
+                    )
+                    raise HTTPException(
+                        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                        detail="Could not persist face detection cameras.",
+                    ) from err
             self.face_analyzer.face_detection_cameras = set(unique_cameras)
             self.logger.info(
                 "Face detection cameras updated: %s",
@@ -553,7 +571,8 @@ class API():
                     detail="Face analysis is unavailable.",
                 )
             return {
-                "cameras": sorted(self.face_analyzer.face_detection_cameras),
+                "cameras": sorted(self.face_analyzer.face_detection_cameras or []),
+                "filter_configured": self.face_analyzer.face_detection_cameras is not None,
             }
 
         @self.api.get("/faces/debug/status")
@@ -565,7 +584,10 @@ class API():
                 "storage": self.face_debug_store.status(),
                 "gallery_enabled": face_gallery_enabled(),
                 "face_detection_cameras": sorted(
-                    self.face_analyzer.face_detection_cameras
+                    self.face_analyzer.face_detection_cameras or []
+                ),
+                "face_detection_filter_configured": (
+                    self.face_analyzer.face_detection_cameras is not None
                 ),
             }
 
