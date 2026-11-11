@@ -22,5 +22,5 @@ jobs:
       - name: Copy both architectures
         run: |
           skopeo copy --all --retry-times 3 \
-            docker://docker.io/snowzach/doods2:latest@sha256:ef9632aa54ac901b4489376a5a91f68576fddd4f5f460d6994ca45b59b1f0488 \
-            docker://ghcr.io/${{ github.repository_owner }}/doods2-base:ef9632aa
+            docker://docker.io/snowzach/doods2@sha256:ef9632aa54ac901b4489376a5a91f68576fddd4f5f460d6994ca45b59b1f0488 \
+            docker://ghcr.io/s0ft0r/doods2-base:ef9632aa
