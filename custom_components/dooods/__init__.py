@@ -24,6 +24,7 @@ from .api import (
     async_get_capabilities,
     async_get_detectors,
     async_get_profiles,
+    async_put_face_detection_cameras,
 )
 from .archive import normalize_archive_directory, normalize_archive_limit
 from .camera_motion_recheck_intervals import (
@@ -45,6 +46,7 @@ from .const import (
     CONF_DETECTOR,
     CONF_EMIT_DETECTION_EVENTS,
     CONF_EMIT_FACE_MATCH_EVENTS,
+    CONF_FACE_DETECTION_CAMERAS,
     CONF_FILE_OUT,
     CONF_LABELS,
     CONF_MOTION_SENSORS,
@@ -61,6 +63,7 @@ from .const import (
 )
 from .coordinator import DooodsCoordinator
 from .entity_migrations import migrate_camera_entity_registry
+from .face_cameras import normalize_face_detection_cameras
 from .panel_url import build_profile_manager_url
 from .motion import motion_sensor_is_usable, resolve_motion_sensors
 from .profile_panel import (
@@ -364,6 +367,30 @@ async def async_setup_entry(hass: HomeAssistant, entry: DooodsConfigEntry) -> bo
             camera for camera in cameras if isinstance(camera, str) and camera
         )
     )
+    # Восстановить в App список камер для face detection после перезапуска:
+    # App хранит его в /data, но файл мог быть потерян или ещё не создан.
+    # Пустой список не отправляем — иначе он затрёт выбор, сделанный напрямую.
+    face_detection_cameras = normalize_face_detection_cameras(
+        options.get(CONF_FACE_DETECTION_CAMERAS, []),
+        cameras,
+    )
+    if (
+        face_detection_cameras
+        and auth_key
+        and {"face_gallery", "face_debug_dashboard"} & capabilities
+    ):
+        try:
+            await async_put_face_detection_cameras(
+                hass,
+                base_url,
+                auth_key,
+                face_detection_cameras,
+            )
+        except DooodsApiError as err:
+            _LOGGER.debug(
+                "Не удалось передать камеры face detection в App при старте: %s",
+                type(err).__name__,
+            )
     motion_sensors = resolve_motion_sensors(
         hass,
         cameras,

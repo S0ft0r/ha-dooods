@@ -44,6 +44,7 @@ from .camera_motion_recheck_intervals import (
 )
 from .camera_scan_intervals import normalize_camera_scan_intervals
 from .camera_switches import normalize_camera_switches
+from .face_cameras import normalize_face_detection_cameras
 from .const import (
     CONF_AREA,
     CONF_ARCHIVE_MAX_AGE_DAYS,
@@ -315,11 +316,15 @@ def _options_for_form(options: Mapping[str, Any]) -> dict[str, Any]:
     cameras = options.get(CONF_SOURCE, [])
     if not isinstance(cameras, list):
         cameras = []
-    # face_detection_cameras не сохраняется в options интеграции — передаётся в App
-    # только через отдельный POST /faces/cameras, чтобы Supervisor не валидировал
-    # неизвестное поле в options App.
+    # Список хранится в options интеграции: иначе форма каждый раз открывалась
+    # пустой, а сохранение любых других настроек отправляло в App пустой список.
+    # Supervisor валидирует options самого App, а не записи интеграции.
     return {
         CONF_SOURCE: cameras,
+        CONF_FACE_DETECTION_CAMERAS: normalize_face_detection_cameras(
+            options.get(CONF_FACE_DETECTION_CAMERAS, []),
+            cameras,
+        ),
         CONF_MOTION_SENSORS: _normalize_motion_sensors(
             options.get(CONF_MOTION_SENSORS, {}), cameras
         ),
@@ -380,13 +385,18 @@ def _normalize_options(options: Mapping[str, Any]) -> dict[str, Any]:
     cameras = options.get(CONF_SOURCE, [])
     if not isinstance(cameras, list):
         cameras = []
-    # face_detection_cameras не сохраняется в options интеграции — передаётся в App
-    # только через отдельный POST /faces/cameras.
+    # Список камер для face detection сохраняется в options: App получает его
+    # отдельным POST /faces/cameras, но источник истины должен пережить
+    # перезапуск Home Assistant и повторное открытие мастера настроек.
     normalized_area = (
         {**DEFAULT_AREA, **area} if isinstance(area, Mapping) else dict(DEFAULT_AREA)
     )
     return {
         CONF_SOURCE: cameras,
+        CONF_FACE_DETECTION_CAMERAS: normalize_face_detection_cameras(
+            options.get(CONF_FACE_DETECTION_CAMERAS, []),
+            cameras,
+        ),
         CONF_MOTION_SENSORS: _normalize_motion_sensors(
             options.get(CONF_MOTION_SENSORS, {}), cameras
         ),
