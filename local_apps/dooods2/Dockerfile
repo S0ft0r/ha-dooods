@@ -1,5 +1,7 @@
 # Multi-arch образ DOODS2 с моделями и ML-зависимостями закреплён по digest.
-FROM docker.io/snowzach/doods2:latest@sha256:ef9632aa54ac901b4489376a5a91f68576fddd4f5f460d6994ca45b59b1f0488
+#FROM docker.io/snowzach/doods2:latest@sha256:ef9632aa54ac901b4489376a5a91f68576fddd4f5f460d6994ca45b59b1f0488
+FROM ghcr.io/s0ft0r/doods2-base:ef9632aa
+
 
 WORKDIR /opt/doods
 
