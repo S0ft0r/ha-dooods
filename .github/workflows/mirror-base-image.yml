@@ -1,0 +1,26 @@
+name: Mirror DOODS2 base image
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install skopeo
+        run: sudo apt-get update && sudo apt-get install -y skopeo
+
+      - name: Login to ghcr.io
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | \
+            skopeo login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Copy both architectures
+        run: |
+          skopeo copy --all --retry-times 3 \
+            docker://docker.io/snowzach/doods2:latest@sha256:ef9632aa54ac901b4489376a5a91f68576fddd4f5f460d6994ca45b59b1f0488 \
+            docker://ghcr.io/${{ github.repository_owner }}/doods2-base:ef9632aa
