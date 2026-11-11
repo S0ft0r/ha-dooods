@@ -43,11 +43,11 @@ blueprint:
         Можно указать notify.mobile_app_<ваше_устройство>.
       default: []
       selector:
-      entity:
-        filter:
-          - domain:
-              - notify
-        multiple: true
+        entity:
+          filter:
+            - domain:
+                - notify
+          multiple: true
     lock_entity:
       name: Замок, который надо открыть (необязательно)
       description: >
