@@ -1,7 +1,7 @@
 blueprint:
   name: DOOODS — уведомление о совпадении лица
   description: >
-    Реакция на события распознавания лиц DOOODS2F (dooods_face_match).
+    Реакция на события распознавания лиц DOOODS2 (dooods_face_match).
     Отправляет уведомление, когда распознанное лицо совпало с человеком из галереи
     на выбранной камере. Дополнительно можно отфильтровать по ID человека, имени
     или камере, включить свет или вызвать любой сервис.
@@ -39,12 +39,15 @@ blueprint:
     notification_service:
       name: Сервис уведомлений
       description: >
-        Сервис, который вызывается при каждом совпадении. По умолчанию
-        persistent_notification.create — работает без мобильного приложения.
+        Сервис, который вызывается при каждом совпадении. 
         Можно указать notify.mobile_app_<ваше_устройство>.
-      default: persistent_notification.create
+      default: []
       selector:
-        text:
+      entity:
+        filter:
+          - domain:
+              - notify
+        multiple: true
     lock_entity:
       name: Замок, который надо открыть (необязательно)
       description: >
