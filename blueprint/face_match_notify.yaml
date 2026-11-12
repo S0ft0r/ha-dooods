@@ -214,25 +214,28 @@ action:
         sequence:
             - parallel:
                 - sequence:
-                    - action:  !input notification_service
-                      metadata: {}
-                      data:
-                        message: clear_notification
-                        data:
-                          tag: face_match_notification
-                    - action:  !input notification_service
-                      data:
-                        title: >
-                          {{ "DOOODS — неоднозначное совпадение" if state == "ambiguous"
-                            else "DOOODS — совпадение лица" }}
-                        message: >
-                          {% if state == "ambiguous" %}⚠️ Неоднозначное совпадение лица{% else %}👤 Совпадение лица{% endif %}: {{ person_name }}
-                          Сходство: {{ (similarity * 100) | int }}%
-                          Время: {{ timestamp }}
-                        data:
-                          tag: face_match_notification
+                  - repeat:
+                      for_each: !input notification_service 
+                      sequence:
+                        - action: "{{ repeat.item }}"
+                          metadata: {}
+                          data:
+                            message: clear_notification
+                            data:
+                              tag: face_match_notification
+                        - action: "{{ repeat.item }}"
+                          data:
+                            title: >
+                              {{ "DOOODS — неоднозначное совпадение" if state == "ambiguous"
+                                else "DOOODS — совпадение лица" }}
+                            message: >
+                              {% if state == "ambiguous" %}⚠️ Неоднозначное совпадение лица{% else %}👤 Совпадение лица{% endif %}: {{ person_name }}
+                              Сходство: {{ (similarity * 100) | int }}%
+                              Время: {{ timestamp }}
+                            data:
+                              tag: face_match_notification
 
-                      continue_on_error: true
+                          continue_on_error: true
                 - if:
                     - condition: template
                       value_template: >
