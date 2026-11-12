@@ -16,7 +16,7 @@ from fastapi import (
     WebSocket,
     WebSocketDisconnect,
 )
-from fastapi.responses import JSONResponse, Response, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from streamer import Streamer
 from motion_gate import MotionGate
@@ -43,6 +43,36 @@ from prometheus_fastapi_instrumentator import Instrumentator
 
 import tracemalloc
 from pathlib import Path
+
+_FACE_DISABLED_PAGE = """<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Определение лиц отключено — DOOODS2</title>
+  <style>
+    :root { color-scheme: dark; font-family: system-ui, sans-serif; }
+    body { margin: 0; background: #111820; color: #eef4f8; }
+    main { max-width: 680px; margin: 8vh auto; padding: 24px; }
+    section { background: #1a242e; border: 1px solid #354554;
+      border-radius: 12px; padding: 24px; }
+    h1 { margin-top: 0; font-size: 1.5rem; }
+    li { margin: 0.75rem 0; }
+    p, li { line-height: 1.5; }
+    .muted { color: #a7b6c4; }
+  </style>
+</head>
+<body><main><section>
+  <h1>Определение лиц отключено</h1>
+  <p>Обработка лиц и галерея сейчас недоступны. Сохранённые данные не удалены.</p>
+  <h2>Как включить</h2>
+  <ol>
+    <li>В Home Assistant откройте <strong>Настройки → Дополнения → DOOODS2 → Конфигурация</strong>.</li>
+    <li>В разделе <strong>«Лица — экспериментальные настройки»</strong> включите <strong>«Определение лиц»</strong> и сохраните настройки.</li>
+    <li>Перезапустите App DOOODS2, затем откройте веб-интерфейс снова.</li>
+  </ol>
+  <p class="muted">Пока функция отключена, API лиц, экспорт и удаление данных недоступны.</p>
+</section></main></body></html>"""
 
 _MAX_FACE_JSON_REQUEST_BYTES = 256 * 1024
 _MAX_FACE_BACKUP_REQUEST_BYTES = 17 * 1024 * 1024
@@ -257,7 +287,22 @@ class API():
 
         @self.api.middleware("http")
         async def enforce_api_key(request: Request, call_next):
-            path = request.url.path
+            # URL.path may include the ASGI root_path used by Supervisor Ingress.
+            # Route checks must use the app-relative path, as Starlette does.
+            path = request.scope.get("path", "")
+            root_path = request.scope.get("root_path", "").rstrip("/")
+            if root_path and (path == root_path or path.startswith(root_path + "/")):
+                path = path[len(root_path):] or "/"
+            if not self.face_enabled and path == "/faces.html" and request.method in {
+                "GET", "HEAD"
+            }:
+                return HTMLResponse(
+                    content=_FACE_DISABLED_PAGE,
+                    headers={
+                        "Cache-Control": "no-store, must-revalidate",
+                        "X-Content-Type-Options": "nosniff",
+                    },
+                )
             if not self.face_enabled and (
                 path in {"/faces", "/faces.html"} or path.startswith("/faces/")
             ):
