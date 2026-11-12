@@ -167,7 +167,21 @@ OUTPUT_FIELDS = {
         ),
     ),
 }
-OUTPUT_SCHEMA = probatio.Schema(OUTPUT_FIELDS)
+
+
+def _output_schema(supports_face_detection: bool) -> probatio.Schema:
+    """Hide face options when the server does not advertise face features."""
+    fields = {
+        key: value
+        for key, value in OUTPUT_FIELDS.items()
+        if supports_face_detection
+        or key.schema
+        not in (CONF_EMIT_FACE_MATCH_EVENTS, CONF_FACE_MATCH_EVENT_COOLDOWN)
+    }
+    return probatio.Schema(fields)
+
+
+OUTPUT_SCHEMA = _output_schema(True)
 
 
 def _normalize_server_url(value: str) -> str | None:
@@ -260,11 +274,13 @@ def _manual_detection_fields(default_detector: str) -> dict[Any, Any]:
     }
 
 
-def _options_settings_schema(detector_fields: Mapping[Any, Any]) -> probatio.Schema:
+def _options_settings_schema(
+    detector_fields: Mapping[Any, Any], supports_face_detection: bool = True
+) -> probatio.Schema:
     """Объединить детектор, область распознавания и настройки архива в одну форму."""
     fields = dict(detector_fields)
     fields.update(AREA_OPTIONS_FIELDS)
-    fields.update(OUTPUT_FIELDS)
+    fields.update(_output_schema(supports_face_detection).schema)
     return probatio.Schema(fields)
 
 
@@ -621,12 +637,13 @@ class DooodsConfigFlow(ConfigFlow, domain=DOMAIN):
             if not isinstance(face_cameras, list):
                 face_cameras = []
             try:
-                await async_put_face_detection_cameras(
-                    self.hass,
-                    self._server_data[CONF_URL],
-                    self._server_data.get(CONF_AUTH_KEY, ""),
-                    face_cameras,
-                )
+                if self._supports_face_detection:
+                    await async_put_face_detection_cameras(
+                        self.hass,
+                        self._server_data[CONF_URL],
+                        self._server_data.get(CONF_AUTH_KEY, ""),
+                        face_cameras,
+                    )
             except DooodsApiError as err:
                 # Не блокировать создание интеграции из-за временной недоступности App.
                 _LOGGER.warning(
@@ -638,7 +655,7 @@ class DooodsConfigFlow(ConfigFlow, domain=DOMAIN):
         return self.async_show_form(
             step_id="output",
             data_schema=self.add_suggested_values_to_schema(
-                OUTPUT_SCHEMA,
+                _output_schema(self._supports_face_detection),
                 self._draft_options,
             ),
         )
@@ -781,6 +798,8 @@ class DooodsOptionsFlow(OptionsFlowWithReload):
                 type(err).__name__,
             )
 
+        self._supports_face_detection = supports_face_detection
+
         if user_input is not None:
             if not user_input.get(CONF_SOURCE):
                 return self.async_show_form(
@@ -836,12 +855,13 @@ class DooodsOptionsFlow(OptionsFlowWithReload):
             if not isinstance(face_cameras, list):
                 face_cameras = []
             try:
-                await async_put_face_detection_cameras(
-                    self.hass,
-                    self.config_entry.data[CONF_URL],
-                    self.config_entry.data.get(CONF_AUTH_KEY, ""),
-                    face_cameras,
-                )
+                if getattr(self, "_supports_face_detection", False):
+                    await async_put_face_detection_cameras(
+                        self.hass,
+                        self.config_entry.data[CONF_URL],
+                        self.config_entry.data.get(CONF_AUTH_KEY, ""),
+                        face_cameras,
+                    )
             except DooodsApiError as err:
                 _LOGGER.warning(
                     "Не удалось передать камеры face detection в App: %s",
@@ -868,7 +888,9 @@ class DooodsOptionsFlow(OptionsFlowWithReload):
         return self.async_show_form(
             step_id="settings",
             data_schema=self.add_suggested_values_to_schema(
-                _options_settings_schema(detector_fields),
+                _options_settings_schema(
+                    detector_fields, getattr(self, "_supports_face_detection", False)
+                ),
                 draft,
             ),
             errors=errors,

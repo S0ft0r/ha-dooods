@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable, Mapping
+from datetime import datetime, timedelta
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
@@ -13,7 +14,10 @@ from homeassistant.exceptions import ConfigEntryNotReady, HomeAssistantError
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.device_registry import DeviceInfo
-from homeassistant.helpers.event import async_track_state_change_event
+from homeassistant.helpers.event import (
+    async_track_state_change_event,
+    async_track_time_interval,
+)
 from homeassistant.helpers.typing import ConfigType
 
 from .api import (
@@ -578,6 +582,33 @@ async def async_setup_entry(hass: HomeAssistant, entry: DooodsConfigEntry) -> bo
     entry.runtime_data = coordinator
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     _remove_stale_camera_devices(hass, entry, parent_device_id, cameras)
+    # Capabilities are startup-bound in the App. Refresh after its restart and
+    # reload the entry only on a confirmed change; a failed request returns an
+    # empty set and must not turn a temporary outage into a configuration change.
+    face_reload_pending = False
+
+    async def _refresh_face_capability(_now: datetime) -> None:
+        nonlocal face_reload_pending
+        if face_reload_pending:
+            return
+        try:
+            current = await async_get_capabilities(hass, base_url, auth_key)
+        except DooodsApiError:
+            return
+        if not current:
+            return
+        current_face = bool(auth_key) and "face_pipeline_diagnostics" in current
+        if current_face == face_diagnostics_enabled:
+            return
+        face_reload_pending = True
+        try:
+            await hass.config_entries.async_reload(entry.entry_id)
+        finally:
+            face_reload_pending = False
+
+    entry.async_on_unload(
+        async_track_time_interval(hass, _refresh_face_capability, timedelta(seconds=30))
+    )
     try:
         await async_register_profile_panel(hass)
     except Exception:  # Keep camera detection available if panel registration fails.
