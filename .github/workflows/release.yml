@@ -1,0 +1,133 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Validate before publishing
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out repository and tags
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Run unit tests
+        run: python -m unittest discover -s tests -v
+
+      - name: Run local source validator
+        run: python scripts/validate.py
+
+      - name: Hassfest
+        uses: home-assistant/actions/hassfest@master
+
+      - name: HACS validation
+        if: ${{ hashFiles('LICENSE*') != '' }}
+        uses: hacs/action@main
+        with:
+          category: integration
+
+      - name: Require publication metadata
+        run: python scripts/validate.py --strict-publication
+
+  release:
+    name: Publish a newly validated version
+    needs: validate
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Check out validated commit and all tags
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Skip duplicate or older release versions
+        id: release_gate
+        run: python scripts/release_gate.py
+
+      - name: Confirm this commit is current on main before release
+        if: steps.release_gate.outputs.should_release == 'true'
+        run: |
+          git fetch origin main --tags
+          MAIN_SHA="$(git rev-parse origin/main)"
+          if [ "$MAIN_SHA" != "$GITHUB_SHA" ]; then
+            echo "main advanced after validation; refusing to publish a stale commit"
+            exit 1
+          fi
+
+      # Keep the delta for source tracking and strict validation; do not publish it as a release asset.
+      - name: Build or verify retained internal delta archive
+        if: steps.release_gate.outputs.should_release == 'true'
+        env:
+          VERSION: ${{ steps.release_gate.outputs.version }}
+        run: |
+          if [ -f release/.build_state.json ]; then
+            if python scripts/build_release.py --check; then
+              :
+            else
+              python scripts/build_release.py
+            fi
+          else
+            BASE_TAG="$(git tag --list 'v0.1.*' | grep -E '^v0\.1\.[0-9]+$' | sort -V | tail -n 1 || true)"
+            if [ -n "$BASE_TAG" ]; then
+              python scripts/build_release.py --from-git-tag "$BASE_TAG"
+            else
+              python scripts/build_release.py --bootstrap-current-version
+            fi
+          fi
+          test -f "release/domres_${VERSION}_changed_files.zip"
+          python scripts/validate.py --strict-release --strict-publication
+
+      - name: Build installable integration ZIP
+        if: steps.release_gate.outputs.should_release == 'true'
+        run: python scripts/build_release.py --component-zip domres.zip
+
+      - name: Extract release notes
+        if: steps.release_gate.outputs.should_release == 'true'
+        env:
+          VERSION: ${{ steps.release_gate.outputs.version }}
+        run: |
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          import re
+
+          version = os.environ["VERSION"]
+          changelog = Path("CHANGELOG.md").read_text(encoding="utf-8")
+          pattern = re.compile(
+              r"(?ms)^## \[" + re.escape(version) + r"\][^\n]*\n.*?(?=^## \[|\Z)"
+          )
+          match = pattern.search(changelog)
+          if match is None:
+              raise SystemExit(f"No changelog section found for {version}")
+          Path("release_notes.md").write_text(match.group(0).strip() + "\n", encoding="utf-8")
+          PY
+
+      - name: Create GitHub Release
+        if: steps.release_gate.outputs.should_release == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.release_gate.outputs.tag }}
+        run: |
+          gh release create "$TAG" domres.zip \
+            --target "$GITHUB_SHA" \
+            --title "ДомРесурс $TAG" \
+            --notes-file release_notes.md
