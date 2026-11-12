@@ -58,24 +58,22 @@ blueprint:
       selector:
         entity:
           domain: lock
-    message_template:
-      name: Шаблон сообщения
-      description: >
-        Шаблон Jinja2 для текста уведомления. Доступные переменные:
-        state, person_name, person_id, camera_entity_id, similarity, timestamp.
-      default: >
-        {% if state == "ambiguous" %}⚠️ Неоднозначное совпадение лица{% else %}👤 Совпадение лица{% endif %}: {{ person_name }} ({{ person_id }})
-        Камера: {{ camera_entity_id }}
-        Сходство: {{ similarity }}
-        Время: {{ timestamp }}
-      selector:
-        text:
+#    message_template:
+#      name: Шаблон сообщения
+#      description: >
+#        Шаблон Jinja2 для текста уведомления. Доступные переменные:
+#        state, person_name, person_id, camera_entity_id, similarity, timestamp.
+#      default: >
+#      selector:
+#        text:
 
 trigger:
   - platform: event
     event_type: dooods_face_match
 
 variables:
+  notification_service: !input notification_service
+
   state: "{{ trigger.event.data.state }}"
   person_id: "{{ trigger.event.data.person_id }}"
   person_name: "{{ trigger.event.data.person_name }}"
@@ -86,9 +84,9 @@ variables:
 condition:
   - condition: template
     value_template: >
-      {% set expected_person_id = input.person_id | string %}
-      {% set expected_person_name = input.person_name | string %}
-      {% set expected_camera = input.camera_entity_id | string %}
+      {% set expected_person_id = person_id | string %}
+      {% set expected_person_name = person_name | string %}
+      {% set expected_camera = camera_entity_id | string %}
       {{ state in ["matched", "ambiguous"]
          and (expected_person_id == "" or person_id == expected_person_id)
          and (expected_person_name == "" or person_name == expected_person_name)
@@ -96,13 +94,18 @@ condition:
 
 action:
   - parallel:
-      - service: "{{ input.notification_service }}"
-        enabled: "{{ input.notification_service | count > 0 }}"
+      - service: "{{ notification_service }}"
+        enabled: "{{ notification_service | count > 0 }}"
         data:
           title: >
             {{ "DOOODS — неоднозначное совпадение" if state == "ambiguous"
                else "DOOODS — совпадение лица" }}
-          message: !input message_template
+          message: >
+            {% if state == "ambiguous" %}⚠️ Неоднозначное совпадение лица{% else %}👤 Совпадение лица{% endif %}: {{ person_name }} ({{ person_id }})
+            Камера: {{ camera_entity_id }}
+            Сходство: {{ similarity }}
+            Время: {{ timestamp }}
+
         continue_on_error: true
       - if:
           - condition: template
