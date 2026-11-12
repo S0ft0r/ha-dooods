@@ -287,11 +287,18 @@ class API():
 
         @self.api.middleware("http")
         async def enforce_api_key(request: Request, call_next):
-            # URL.path may include the ASGI root_path used by Supervisor Ingress.
-            # Route checks must use the app-relative path, as Starlette does.
-            path = request.scope.get("path", "")
-            root_path = request.scope.get("root_path", "").rstrip("/")
-            if root_path and (path == root_path or path.startswith(root_path + "/")):
+            # Supervisor Ingress can forward consecutive slashes (//faces.html).
+            # StaticFiles accepts these, so normalize them for all access checks.
+            # Do not rewrite the ASGI scope or alter how routes handle the request.
+            path = "/" + "/".join(
+                part for part in request.scope.get("path", "").split("/") if part
+            )
+            root_path = "/" + "/".join(
+                part for part in request.scope.get("root_path", "").split("/") if part
+            )
+            if root_path != "/" and (
+                path == root_path or path.startswith(root_path + "/")
+            ):
                 path = path[len(root_path):] or "/"
             if not self.face_enabled and path == "/faces.html" and request.method in {
                 "GET", "HEAD"
