@@ -58,7 +58,7 @@ trigger:
 variables:
   expected_person_name: !input person_name
   expected_camera: !input camera_entity_id
-  lock_entry: !input lock_entry
+  lock_entity: !input lock_entity
 
   state: "{{ trigger.event.data.state }}"
   person_name: "{{ trigger.event.data.person_name }}"
