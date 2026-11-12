@@ -76,6 +76,12 @@ condition:
 action:
   - parallel:
       - action: notify.send_message
+        metadata: {}
+        data:
+          message: clear_notification
+          data:
+            tag: face_match_notification
+      - action: notify.send_message
         target:
           entity_id: !input notification_service
         data:
@@ -86,6 +92,8 @@ action:
             {% if state == "ambiguous" %}⚠️ Неоднозначное совпадение лица{% else %}👤 Совпадение лица{% endif %}: {{ person_name }}
             Сходство: {{ similarity }}
             Время: {{ timestamp }}
+          data:
+            tag: face_match_notification
 
         continue_on_error: true
       - if:
