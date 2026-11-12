@@ -110,7 +110,7 @@ blueprint:
           name: Сервис уведомлений
           description: >
             Сервис, который вызывается при matched и ambiguous.
-            Можно указать notify.mobile_app_<ваше_устройство>.
+            Можно указать notify.<ваше_устройство>.
           default: []
           selector:
             entity:
@@ -125,6 +125,7 @@ variables:
   expected_camera: !input camera_entity_id
   expected_similarity: !input similarity
   lock_entity: !input lock_entity
+  notification_service: !input notification_service 
 
 trigger_variables:
   automation_options: !input automation_options
@@ -152,6 +153,13 @@ action:
       labels: "{{ trigger.event.data.labels }}"
       detections: "{{ trigger.event.data.detections }}"
 
+      mobile_app_list: |
+        {{  integration_entities('mobile_app') 
+          | select('match', 'notify')
+          | intersect(notification_service)
+          | map('replace', 'notify.', 'notify.mobile_app_') 
+          | list }}
+
   - choose:
       - conditions: 
           - condition: trigger
@@ -160,7 +168,7 @@ action:
             - parallel:
                 - sequence:
                   - repeat:
-                      for_each: !input notification_service 
+                      for_each: "{{ mobile_app_list }}"
                       sequence:
                         - action: "{{ repeat.item }}"
                           metadata: {}
@@ -215,7 +223,7 @@ action:
             - parallel:
                 - sequence:
                   - repeat:
-                      for_each: !input notification_service 
+                      for_each: "{{ mobile_app_list }}" 
                       sequence:
                         - action: "{{ repeat.item }}"
                           metadata: {}
