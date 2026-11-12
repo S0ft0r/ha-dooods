@@ -72,8 +72,6 @@ trigger:
     event_type: dooods_face_match
 
 variables:
-  notification_service: !input notification_service
-
   state: "{{ trigger.event.data.state }}"
   person_id: "{{ trigger.event.data.person_id }}"
   person_name: "{{ trigger.event.data.person_name }}"
@@ -94,8 +92,9 @@ condition:
 
 action:
   - parallel:
-      - service: "{{ notification_service }}"
-        enabled: "{{ notification_service | count > 0 }}"
+      - action: notify.send_message
+        target:
+          entity_id: !input notification_service
         data:
           title: >
             {{ "DOOODS — неоднозначное совпадение" if state == "ambiguous"
