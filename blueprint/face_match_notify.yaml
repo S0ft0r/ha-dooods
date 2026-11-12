@@ -5,7 +5,7 @@ blueprint:
     Отправляет уведомление при подтверждённом (matched) или неоднозначном
     (ambiguous) совпадении с человеком из галереи. Замок открывается только
     при подтверждённом совпадении matched; при ambiguous замок не открывается.
-    Дополнительно можно отфильтровать события по ID человека, имени или камере.
+    Дополнительно можно отфильтровать события по имени человека или камере.
   domain: automation
   source_url: https://github.com/S0ft0r/ha-dooods/blob/main/blueprint/face_match_notify.yaml
   author: Softor
@@ -50,6 +50,18 @@ blueprint:
       selector:
         entity:
           domain: lock
+    similarity:
+      name: Процент похожести
+      description: >
+        Выберите минимальный процент похожести лица, при котором будет открыт замок.
+      default: 55
+      selector:
+        number:
+          min: 40
+          max: 100
+          step: 5
+          unit_of_measurement: '%'
+          mode: slider
 
 trigger:
   - platform: event
@@ -58,6 +70,7 @@ trigger:
 variables:
   expected_person_name: !input person_name
   expected_camera: !input camera_entity_id
+  expected_similarity: !input similarity
   lock_entity: !input lock_entity
 
   state: "{{ trigger.event.data.state }}"
@@ -75,31 +88,32 @@ condition:
 
 action:
   - parallel:
-      - action: notify.send_message
-        metadata: {}
-        data:
-          message: clear_notification
-          data:
-            tag: face_match_notification
-      - action: notify.send_message
-        target:
-          entity_id: !input notification_service
-        data:
-          title: >
-            {{ "DOOODS — неоднозначное совпадение" if state == "ambiguous"
-               else "DOOODS — совпадение лица" }}
-          message: >
-            {% if state == "ambiguous" %}⚠️ Неоднозначное совпадение лица{% else %}👤 Совпадение лица{% endif %}: {{ person_name }}
-            Сходство: {{ similarity }}
-            Время: {{ timestamp }}
-          data:
-            tag: face_match_notification
+      - sequence:
+          - action: notify.send_message
+            metadata: {}
+            data:
+              message: clear_notification
+              data:
+                tag: face_match_notification
+          - action: notify.send_message
+            target:
+              entity_id: !input notification_service
+            data:
+              title: >
+                {{ "DOOODS — неоднозначное совпадение" if state == "ambiguous"
+                  else "DOOODS — совпадение лица" }}
+              message: >
+                {% if state == "ambiguous" %}⚠️ Неоднозначное совпадение лица{% else %}👤 Совпадение лица{% endif %}: {{ person_name }}
+                Сходство: {{ (similarity * 100) | int }}%
+                Время: {{ timestamp }}
+              data:
+                tag: face_match_notification
 
-        continue_on_error: true
+            continue_on_error: true
       - if:
           - condition: template
             value_template: >
-              {{ state == "matched" and lock_entity | string != "" }}
+              {{ (state == "matched" and lock_entity | string != "") and ((similarity | float(0.39) * 100) | int >= expected_similarity | int(40)) }}
         then:
           - service: lock.open
             target:
