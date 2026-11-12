@@ -239,7 +239,7 @@ action:
                       value_template: >
                         {{ (state == "matched" and lock_entity | string != "") and ((similarity | float(0.39) * 100) | int >= expected_similarity | int(40)) }}
                   then:
-                    - service: lock.open
+                    - service: lock.unlock
                       target:
                         entity_id: !input lock_entity
                       data: {}
