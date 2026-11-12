@@ -58,6 +58,7 @@ trigger:
 variables:
   expected_person_name: !input person_name
   expected_camera: !input camera_entity_id
+  lock_entry: !input lock_entry
 
   state: "{{ trigger.event.data.state }}"
   person_name: "{{ trigger.event.data.person_name }}"
@@ -90,10 +91,10 @@ action:
       - if:
           - condition: template
             value_template: >
-              {{ state == "matched" and input.lock_entity | string != "" }}
+              {{ state == "matched" and lock_entity | string != "" }}
         then:
           - service: lock.open
             target:
-              entity_id: "{{ input.lock_entity }}"
+              entity_id: !input lock_entity
             data: {}
             continue_on_error: true
