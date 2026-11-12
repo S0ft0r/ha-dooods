@@ -31,6 +31,24 @@ def face_match_event_key(
     )
 
 
+def face_match_event_cooldown_allows(
+    *,
+    state: str,
+    previous_state: str | None,
+    elapsed: float | None,
+    cooldown: int,
+) -> bool:
+    """Allow repeats after cooldown and an immediate ambiguous-to-match upgrade."""
+    if (
+        cooldown <= 0
+        or previous_state is None
+        or elapsed is None
+        or elapsed >= cooldown
+    ):
+        return True
+    return state == "matched" and previous_state != "matched"
+
+
 def face_match_event_data(
     *,
     entry_id: str,

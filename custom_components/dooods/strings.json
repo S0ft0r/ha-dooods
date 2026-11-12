@@ -33,14 +33,16 @@
           "archive_max_count": "Maximum frames per camera (0 = unlimited)",
           "archive_max_age_days": "Maximum frame age in days (0 = unlimited)",
           "emit_detection_events": "Fire Home Assistant detection events",
-          "emit_face_match_events": "Fire Home Assistant face match events"
+          "emit_face_match_events": "Fire Home Assistant face match events",
+          "face_match_event_cooldown": "Face match event cooldown, seconds"
         },
         "data_description": {
           "file_out": "Enter one archive root directory. Relative paths are resolved under the Home Assistant configuration directory. DOOODS creates entry, camera, and date subdirectories and writes uniquely named JPEG files. Previous multi-line path templates were not used; replace them with a single directory. Cleanup only touches files created inside this entry archive. Changing or clearing the directory does not delete an older archive.",
           "archive_max_count": "When a new frame is stored, the oldest files for that camera are removed until the count is within this limit.",
           "archive_max_age_days": "Expired files are cleaned on startup, daily, and when frames are stored. If both limits are set, exceeding either one removes the file.",
           "emit_detection_events": "When enabled, DOOODS fires one dooods_detection event for each successful camera scan with accepted detections. The event contains the entry and camera IDs, timestamp, labels, and detections with confidence, normalized bounding boxes, and an optional region ID. Images, file paths, and API keys are never included. Disabled by default.",
-          "emit_face_match_events": "When enabled, DOOODS fires one dooods_face_match event for each new frame result in the matched or ambiguous state; unknown results are not published. Repeated status snapshots of the same result do not create duplicates. The event contains the entry and camera IDs, timestamp, person ID and name, similarity, and state. Images, file paths, embeddings, and API keys are never included. Disabled by default."
+          "emit_face_match_events": "When enabled, DOOODS fires one dooods_face_match event for each new frame result in the matched or ambiguous state; unknown results are not published. Repeated status snapshots of the same result do not create duplicates. The event contains the entry and camera IDs, timestamp, person ID and name, similarity, and state. Images, file paths, embeddings, and API keys are never included. Disabled by default.",
+          "face_match_event_cooldown": "Minimum interval between repeated events for the same person on the same camera. Range 0–300 seconds; default 5. Set 0 to publish every new frame result. A matched result after a recent ambiguous result is published immediately."
         }
       },
       "reconfigure": {
@@ -94,7 +96,8 @@
           "archive_max_count": "Maximum frames per camera (0 = unlimited)",
           "archive_max_age_days": "Maximum frame age in days (0 = unlimited)",
           "emit_detection_events": "Fire Home Assistant detection events",
-          "emit_face_match_events": "Fire Home Assistant face match events"
+          "emit_face_match_events": "Fire Home Assistant face match events",
+          "face_match_event_cooldown": "Face match event cooldown, seconds"
         },
         "data_description": {
           "detector": "Select a detector reported by DOOODS2. If the server is unavailable, the saved detector name can be edited manually.",
@@ -102,7 +105,8 @@
           "archive_max_count": "When a new frame is stored, the oldest files for that camera are removed until the count is within this limit.",
           "archive_max_age_days": "Expired files are cleaned on startup, daily, and when frames are stored. If both limits are set, exceeding either one removes the file.",
           "emit_detection_events": "When enabled, DOOODS fires one dooods_detection event for each successful camera scan with accepted detections. The event contains the entry and camera IDs, timestamp, labels, and detections with confidence, normalized bounding boxes, and an optional region ID. Images, file paths, and API keys are never included. Disabled by default.",
-          "emit_face_match_events": "When enabled, DOOODS fires one dooods_face_match event for each new frame result in the matched or ambiguous state; unknown results are not published. Repeated status snapshots of the same result do not create duplicates. The event contains the entry and camera IDs, timestamp, person ID and name, similarity, and state. Images, file paths, embeddings, and API keys are never included. Disabled by default."
+          "emit_face_match_events": "When enabled, DOOODS fires one dooods_face_match event for each new frame result in the matched or ambiguous state; unknown results are not published. Repeated status snapshots of the same result do not create duplicates. The event contains the entry and camera IDs, timestamp, person ID and name, similarity, and state. Images, file paths, embeddings, and API keys are never included. Disabled by default.",
+          "face_match_event_cooldown": "Minimum interval between repeated events for the same person on the same camera. Range 0–300 seconds; default 5. Set 0 to publish every new frame result. A matched result after a recent ambiguous result is published immediately."
         },
         "sections": {
           "area": {

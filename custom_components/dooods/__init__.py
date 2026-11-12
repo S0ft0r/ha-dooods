@@ -47,6 +47,7 @@ from .const import (
     CONF_EMIT_DETECTION_EVENTS,
     CONF_EMIT_FACE_MATCH_EVENTS,
     CONF_FACE_DETECTION_CAMERAS,
+    CONF_FACE_MATCH_EVENT_COOLDOWN,
     CONF_FILE_OUT,
     CONF_LABELS,
     CONF_MOTION_SENSORS,
@@ -57,6 +58,7 @@ from .const import (
     DEFAULT_ARCHIVE_MAX_COUNT,
     DEFAULT_AREA,
     DEFAULT_CONFIDENCE,
+    DEFAULT_FACE_MATCH_EVENT_COOLDOWN,
     DEFAULT_TIMEOUT,
     DOMAIN,
     MOTION_SENSOR_NONE,
@@ -566,6 +568,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: DooodsConfigEntry) -> bo
         ),
         emit_detection_events=options.get(CONF_EMIT_DETECTION_EVENTS) is True,
         emit_face_match_events=options.get(CONF_EMIT_FACE_MATCH_EVENTS) is True,
+        face_match_event_cooldown=int(
+            options.get(
+                CONF_FACE_MATCH_EVENT_COOLDOWN,
+                DEFAULT_FACE_MATCH_EVENT_COOLDOWN,
+            )
+        ),
     )
     entry.runtime_data = coordinator
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)

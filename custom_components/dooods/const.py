@@ -25,12 +25,16 @@ CONF_ARCHIVE_MAX_COUNT = "archive_max_count"
 CONF_ARCHIVE_MAX_AGE_DAYS = "archive_max_age_days"
 CONF_EMIT_DETECTION_EVENTS = "emit_detection_events"
 CONF_EMIT_FACE_MATCH_EVENTS = "emit_face_match_events"
+CONF_FACE_MATCH_EVENT_COOLDOWN = "face_match_event_cooldown"
 CONF_FACE_DETECTION_CAMERAS = "face_detection_cameras"
 
 EVENT_DETECTION = f"{DOMAIN}_detection"
 EVENT_FACE_MATCH = f"{DOMAIN}_face_match"
 DEFAULT_EMIT_DETECTION_EVENTS = False
 DEFAULT_EMIT_FACE_MATCH_EVENTS = False
+DEFAULT_FACE_MATCH_EVENT_COOLDOWN = 5
+MIN_FACE_MATCH_EVENT_COOLDOWN = 0
+MAX_FACE_MATCH_EVENT_COOLDOWN = 300
 
 # Явная настройка камеры без сканирования по событиям движения.
 MOTION_SENSOR_NONE = "none"

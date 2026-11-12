@@ -61,8 +61,9 @@ from .const import (
     CONF_DETECTOR,
     CONF_EMIT_DETECTION_EVENTS,
     CONF_EMIT_FACE_MATCH_EVENTS,
-    CONF_FILE_OUT,
     CONF_FACE_DETECTION_CAMERAS,
+    CONF_FACE_MATCH_EVENT_COOLDOWN,
+    CONF_FILE_OUT,
     CONF_LABELS,
     CONF_LEFT,
     CONF_MOTION_SENSORS,
@@ -77,8 +78,11 @@ from .const import (
     DEFAULT_CONFIDENCE,
     DEFAULT_EMIT_DETECTION_EVENTS,
     DEFAULT_EMIT_FACE_MATCH_EVENTS,
+    DEFAULT_FACE_MATCH_EVENT_COOLDOWN,
     DEFAULT_TIMEOUT,
     DOMAIN,
+    MAX_FACE_MATCH_EVENT_COOLDOWN,
+    MIN_FACE_MATCH_EVENT_COOLDOWN,
 )
 from .motion import resolve_motion_sensors
 from .profiles import normalize_camera_profiles
@@ -152,6 +156,16 @@ OUTPUT_FIELDS = {
         CONF_EMIT_FACE_MATCH_EVENTS,
         default=DEFAULT_EMIT_FACE_MATCH_EVENTS,
     ): BooleanSelector(),
+    probatio.Required(
+        CONF_FACE_MATCH_EVENT_COOLDOWN,
+        default=DEFAULT_FACE_MATCH_EVENT_COOLDOWN,
+    ): probatio.All(
+        probatio.Coerce(int),
+        probatio.Range(
+            min=MIN_FACE_MATCH_EVENT_COOLDOWN,
+            max=MAX_FACE_MATCH_EVENT_COOLDOWN,
+        ),
+    ),
 }
 OUTPUT_SCHEMA = probatio.Schema(OUTPUT_FIELDS)
 
@@ -272,6 +286,19 @@ def _label_values(value: Any) -> list[str]:
     return []
 
 
+def _normalize_face_match_event_cooldown(value: Any) -> int:
+    """Return a supported cooldown in seconds for new and existing entries."""
+    if isinstance(value, bool):
+        return DEFAULT_FACE_MATCH_EVENT_COOLDOWN
+    try:
+        cooldown = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return DEFAULT_FACE_MATCH_EVENT_COOLDOWN
+    if not MIN_FACE_MATCH_EVENT_COOLDOWN <= cooldown <= MAX_FACE_MATCH_EVENT_COOLDOWN:
+        return DEFAULT_FACE_MATCH_EVENT_COOLDOWN
+    return cooldown
+
+
 def _normalize_motion_sensors(
     value: Any,
     camera_entity_ids: list[str],
@@ -376,6 +403,9 @@ def _options_for_form(options: Mapping[str, Any]) -> dict[str, Any]:
             if isinstance(options.get(CONF_EMIT_FACE_MATCH_EVENTS), bool)
             else DEFAULT_EMIT_FACE_MATCH_EVENTS
         ),
+        CONF_FACE_MATCH_EVENT_COOLDOWN: _normalize_face_match_event_cooldown(
+            options.get(CONF_FACE_MATCH_EVENT_COOLDOWN)
+        ),
     }
 
 
@@ -445,6 +475,9 @@ def _normalize_options(options: Mapping[str, Any]) -> dict[str, Any]:
             options.get(CONF_EMIT_FACE_MATCH_EVENTS)
             if isinstance(options.get(CONF_EMIT_FACE_MATCH_EVENTS), bool)
             else DEFAULT_EMIT_FACE_MATCH_EVENTS
+        ),
+        CONF_FACE_MATCH_EVENT_COOLDOWN: _normalize_face_match_event_cooldown(
+            options.get(CONF_FACE_MATCH_EVENT_COOLDOWN)
         ),
     }
 
