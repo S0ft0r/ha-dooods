@@ -168,21 +168,21 @@ action:
                             message: clear_notification
                             data:
                               tag: detection_notification
-                        # - action: "{{ repeat.item }}"
-                        #   data:
-                        #     title: >
-                        #       {{ "DOOODS — движение на камере" }}
-                        #     message: >
-                        #       Объекты: {{ labels | join(', ') }}
-                        #       Время: {{ timestamp }}
-                        #     data:
-                        #       tag: detection_notification
-                        #       image: "{{ state_attr('image.server_dooods2_domofon_annotated_detections', 'entity_picture') }"
-                        #       clickAction: app://app.alextran.immich
-                        #       actions:
-                        #         - action: URI
-                        #           title: Просмотр камер
-                        #           uri: homeassistant://navigate/lovelace/cctv
+                        - action: "{{ repeat.item }}"
+                          data:
+                            title: >
+                              {{ "DOOODS — движение на камере" }}
+                            message: >
+                              Объекты: {{ labels | join(', ') }}
+                              Время: {{ timestamp }}
+                            data:
+                              tag: detection_notification
+                              image: "{{ state_attr('image.server_dooods2_domofon_annotated_detections', 'entity_picture') }}"
+                              clickAction: app://app.alextran.immich
+                              actions:
+                                - action: URI
+                                  title: Просмотр камер
+                                  uri: homeassistant://navigate/lovelace/cctv
                 - sequence:
                     - action: immich.upload_file
                       metadata: {}
