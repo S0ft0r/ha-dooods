@@ -56,6 +56,9 @@ trigger:
     event_type: dooods_face_match
 
 variables:
+  expected_person_name: !input person_name
+  expected_camera: !input camera_entity_id
+
   state: "{{ trigger.event.data.state }}"
   person_name: "{{ trigger.event.data.person_name }}"
   camera_entity_id: "{{ trigger.event.data.camera_entity_id }}"
@@ -65,8 +68,6 @@ variables:
 condition:
   - condition: template
     value_template: >
-      {% set expected_person_name = person_name | string %}
-      {% set expected_camera = camera_entity_id | string %}
       {{ state in ["matched", "ambiguous"]
          and (expected_person_name == "" or person_name == expected_person_name)
          and (expected_camera == "" or camera_entity_id == expected_camera) }}
