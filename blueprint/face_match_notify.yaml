@@ -11,14 +11,6 @@ blueprint:
   author: Softor
 
   input:
-    person_id:
-      name: ID человека (необязательно)
-      description: >
-        Оставьте пустым, чтобы реагировать на любого человека. Укажите person_id
-        из галереи, чтобы реагировать только на конкретного человека.
-      default: ""
-      selector:
-        text:
     person_name:
       name: Имя человека (необязательно)
       description: >
@@ -58,14 +50,6 @@ blueprint:
       selector:
         entity:
           domain: lock
-#    message_template:
-#      name: Шаблон сообщения
-#      description: >
-#        Шаблон Jinja2 для текста уведомления. Доступные переменные:
-#        state, person_name, person_id, camera_entity_id, similarity, timestamp.
-#      default: >
-#      selector:
-#        text:
 
 trigger:
   - platform: event
