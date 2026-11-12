@@ -1,6 +1,6 @@
 name: "DOOODS2"
 slug: "dooods2"
-version: "0.1.33.2-dev"
+version: "0.1.34-dev"
 description: ""
 arch:
   - aarch64
@@ -28,6 +28,7 @@ options:
     metrics: false
     trace: false
   face:
+    enabled: true
     yunet_score_threshold: 0.9
     face_match_threshold: 0.4
     face_match_min_gap: 0.1
@@ -77,6 +78,7 @@ schema:
     metrics: bool?
     trace: bool?
   face:
+    enabled: bool?
     yunet_score_threshold: float(0.1,1.0)?
     face_match_threshold: float(0.1,1.0)?
     face_match_min_gap: float(0.0,0.5)?

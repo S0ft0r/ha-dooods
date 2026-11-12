@@ -30,6 +30,9 @@ configuration:
     name: Face — experimental settings
     description: Alpha YuNet/SFace settings for RTSP motion-candidate frames.
     fields:
+      enabled:
+        name: Face detection
+        description: Enables face recognition, the Faces page and gallery API. Applied after restarting the app; data is retained.
       yunet_score_threshold:
         name: YuNet confidence threshold
         description: Range 0.1–1.0; default 0.9. Lower values may detect weaker/smaller faces but can increase false detections. The change takes effect after restarting the App.

@@ -99,79 +99,88 @@ def main():
         # Face analysis is alpha: model initialization and capture persistence run
         # off the API event loop and failures do not affect object detection.
         face_options = getattr(config, "face", None)
-        yunet_score_threshold = getattr(
-            face_options,
-            "yunet_score_threshold",
-            0.9,
-        )
-        min_face_width = getattr(face_options, "min_face_width", 100)
-        min_face_height = getattr(face_options, "min_face_height", 100)
-        # Пустой/отсутствующий список в config.yaml — фильтр не настроен.
-        face_detection_cameras = getattr(
-            face_options, "face_detection_cameras", None
-        ) or None
-        # Список, сохранённый интеграцией, важнее значения из config.yaml:
-        # в Home Assistant файл конфигурации App только для чтения.
-        face_settings_store = FaceSettingsStore("/data/face_settings.json")
-        try:
-            saved_face_cameras = face_settings_store.load_cameras()
-        except FaceSettingsError as err:
-            logger.warning(
-                "Face settings could not be read, using config value: %s", err
-            )
-            saved_face_cameras = None
-        if saved_face_cameras is not None:
-            face_detection_cameras = saved_face_cameras
-        if face_detection_cameras is None:
-            face_cameras_label = "(all)"
-        elif not face_detection_cameras:
-            face_cameras_label = "(none)"
-        else:
-            face_cameras_label = ", ".join(face_detection_cameras)
-        logger.info("Face detection cameras: %s", face_cameras_label)
+        face_enabled = getattr(face_options, "enabled", True) is not False
+        face_settings_store = None
         face_debug_store = None
-        try:
-            face_debug_store = FaceDebugStore(
-                "/data/face_debug",
-                min_face_width=min_face_width,
-                min_face_height=min_face_height,
-                max_matches=30,
-            )
-        except FaceDebugStoreError as err:
-            logger.error("Face-debug capture storage is unavailable: %s", err)
-
-        # Галерея лиц хранится только в постоянном каталоге данных App.
-        # Повреждённый файл отключает новую функцию, но не основной DOOODS API.
         face_gallery_store = None
-        try:
-            face_gallery_store = FaceGalleryStore(
-                "/data/face_gallery.json",
-                face_debug_store=face_debug_store,
+        face_analyzer = None
+        if face_enabled:
+            yunet_score_threshold = getattr(
+                face_options,
+                "yunet_score_threshold",
+                0.9,
             )
-        except FaceGalleryStoreError as err:
-            logger.error("Face gallery is disabled because storage is unavailable: %s", err)
+            min_face_width = getattr(face_options, "min_face_width", 100)
+            min_face_height = getattr(face_options, "min_face_height", 100)
+            # Пустой/отсутствующий список в config.yaml — фильтр не настроен.
+            face_detection_cameras = getattr(
+                face_options, "face_detection_cameras", None
+            ) or None
+            # Список, сохранённый интеграцией, важнее значения из config.yaml:
+            # в Home Assistant файл конфигурации App только для чтения.
+            face_settings_store = FaceSettingsStore("/data/face_settings.json")
+            try:
+                saved_face_cameras = face_settings_store.load_cameras()
+            except FaceSettingsError as err:
+                logger.warning(
+                    "Face settings could not be read, using config value: %s", err
+                )
+                saved_face_cameras = None
+            if saved_face_cameras is not None:
+                face_detection_cameras = saved_face_cameras
+            if face_detection_cameras is None:
+                face_cameras_label = "(all)"
+            elif not face_detection_cameras:
+                face_cameras_label = "(none)"
+            else:
+                face_cameras_label = ", ".join(face_detection_cameras)
+            logger.info("Face detection cameras: %s", face_cameras_label)
+            face_debug_store = None
+            try:
+                face_debug_store = FaceDebugStore(
+                    "/data/face_debug",
+                    min_face_width=min_face_width,
+                    min_face_height=min_face_height,
+                    max_matches=30,
+                )
+            except FaceDebugStoreError as err:
+                logger.error("Face-debug capture storage is unavailable: %s", err)
 
-        face_match_threshold = getattr(
-            face_options, "face_match_threshold", 0.4
-        )
-        face_match_min_gap = getattr(
-            face_options, "face_match_min_gap", 0.1
-        )
-        logger.info(
-            "Face matching settings: threshold=%.3f, min_gap=%.3f, yunet=%.2f",
-            face_match_threshold if face_match_threshold is not None else 0.4,
-            face_match_min_gap if face_match_min_gap is not None else 0.1,
-            yunet_score_threshold if yunet_score_threshold is not None else 0.9,
-        )
-        face_analyzer = FaceAnalyzer(
-            "/data/face_models",
-            yunet_score_threshold=yunet_score_threshold,
-            face_match_threshold=face_match_threshold,
-            face_match_min_gap=face_match_min_gap,
-            face_detection_cameras=face_detection_cameras,
-            face_gallery_store=face_gallery_store,
-            debug_store=face_debug_store,
-        )
+            # Галерея лиц хранится только в постоянном каталоге данных App.
+            # Повреждённый файл отключает новую функцию, но не основной DOOODS API.
+            face_gallery_store = None
+            try:
+                face_gallery_store = FaceGalleryStore(
+                    "/data/face_gallery.json",
+                    face_debug_store=face_debug_store,
+                )
+            except FaceGalleryStoreError as err:
+                logger.error("Face gallery is disabled because storage is unavailable: %s", err)
+
+            face_match_threshold = getattr(
+                face_options, "face_match_threshold", 0.4
+            )
+            face_match_min_gap = getattr(
+                face_options, "face_match_min_gap", 0.1
+            )
+            logger.info(
+                "Face matching settings: threshold=%.3f, min_gap=%.3f, yunet=%.2f",
+                face_match_threshold if face_match_threshold is not None else 0.4,
+                face_match_min_gap if face_match_min_gap is not None else 0.1,
+                yunet_score_threshold if yunet_score_threshold is not None else 0.9,
+            )
+            face_analyzer = FaceAnalyzer(
+                "/data/face_models",
+                yunet_score_threshold=yunet_score_threshold,
+                face_match_threshold=face_match_threshold,
+                face_match_min_gap=face_match_min_gap,
+                face_detection_cameras=face_detection_cameras,
+                face_gallery_store=face_gallery_store,
+                debug_store=face_debug_store,
+            )
+
+        else:
+            logger.info("Face detection is disabled")
 
         # Start the server
         api = API(
@@ -181,6 +190,7 @@ def main():
             face_analyzer=face_analyzer,
             face_debug_store=face_debug_store,
             face_settings_store=face_settings_store,
+            face_enabled=face_enabled,
         )
         api.run()
     elif args.action == 'mqtt':

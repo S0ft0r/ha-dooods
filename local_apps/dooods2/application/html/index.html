@@ -236,8 +236,17 @@ xmlhttp.send();
 <div id="title"><h1>DOODS Web Interface</h3></div>
 <div style="clear:both;padding:0 10px 10px">
   <a href="./profiles.html" style="color:#102f4a;font-weight:700">Редактор профилей зон Overhaul →</a>
-  &nbsp;·&nbsp;
-  <a href="./faces.html" style="color:#102f4a;font-weight:700">faces: диагностика, кадры и галерея →</a>
+  <span id="faces-link" hidden> &nbsp;·&nbsp;
+    <a href="./faces.html" style="color:#102f4a;font-weight:700">faces: диагностика, кадры и галерея →</a>
+  </span>
+  <script>
+    fetch('./capabilities').then(response => response.ok ? response.json() : null)
+      .then(data => {
+        if (data && data.features && data.features.includes('face_debug_dashboard')) {
+          document.getElementById('faces-link').hidden = false;
+        }
+      }).catch(() => {});
+  </script>
 </div>
 <div id="body">
 <hr/>

@@ -59,6 +59,7 @@ class API():
         face_analyzer=None,
         face_debug_store=None,
         face_settings_store=None,
+        face_enabled=True,
     ):
         self.config = config
         self.doods = doods
@@ -73,10 +74,11 @@ class API():
                 source_store_path = profiles_path.with_name("profile_preview_sources.json")
             self.profile_source_store = ProfileSourceStore(source_store_path)
         self.preview_store = preview_store or PreviewStore()
-        self.face_gallery_store = face_gallery_store
-        self.face_analyzer = face_analyzer
-        self.face_debug_store = face_debug_store
-        self.face_settings_store = face_settings_store
+        self.face_enabled = bool(face_enabled)
+        self.face_gallery_store = face_gallery_store if self.face_enabled else None
+        self.face_analyzer = face_analyzer if self.face_enabled else None
+        self.face_debug_store = face_debug_store if self.face_enabled else None
+        self.face_settings_store = face_settings_store if self.face_enabled else None
         self.auth_key = getattr(config, "auth_key", "") or ""
         self.logger = logging.getLogger("doods.api")
         if not self.auth_key:
@@ -168,7 +170,7 @@ class API():
                 )
 
         def face_gallery_enabled():
-            return bool(self.auth_key and self.face_gallery_store is not None)
+            return bool(self.face_enabled and self.auth_key and self.face_gallery_store is not None)
 
         def require_face_gallery_enabled():
             if self.face_gallery_store is None:
@@ -179,7 +181,8 @@ class API():
 
         def face_debug_enabled():
             return bool(
-                self.face_debug_store is not None
+                self.face_enabled
+                and self.face_debug_store is not None
                 and self.face_analyzer is not None
             )
 
@@ -255,6 +258,14 @@ class API():
         @self.api.middleware("http")
         async def enforce_api_key(request: Request, call_next):
             path = request.url.path
+            if not self.face_enabled and (
+                path in {"/faces", "/faces.html"} or path.startswith("/faces/")
+            ):
+                return JSONResponse(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    content={"detail": "Not found."},
+                    headers={"Cache-Control": "no-store"},
+                )
             if self.auth_key and is_protected_api_path(path):
                 # Разрешить аутентифицированным пользователям Home Assistant
                 # через Supervisor Ingress без API-ключа; прямые вызовы всё
@@ -318,7 +329,7 @@ class API():
                 localized_annotations_enabled=True,
                 motion_stream_enabled=bool(self.auth_key),
                 face_pipeline_diagnostics_enabled=bool(
-                    self.auth_key and self.face_analyzer is not None
+                    self.face_enabled and self.auth_key and self.face_analyzer is not None
                 ),
                 face_debug_enabled=face_debug_enabled(),
             )
