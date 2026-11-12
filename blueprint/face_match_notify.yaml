@@ -37,6 +37,7 @@ blueprint:
           selector: 
             entity:
               domain: camera
+              integration: dooods
               multiple: true
         immich_instance:
           name: Интеграция Immich (необязательно)
@@ -77,6 +78,7 @@ blueprint:
           selector:
             entity:
               domain: camera
+              integration: dooods
         lock_entity:
           name: Замок, который надо открыть (необязательно)
           description: >
@@ -117,6 +119,12 @@ blueprint:
                     - notify
               multiple: true
 
+variables:
+  camera_entity: !input camera_entity
+  expected_person_name: !input person_name
+  expected_camera: !input camera_entity_id
+  expected_similarity: !input similarity
+  lock_entity: !input lock_entity
 
 trigger_variables:
   automation_options: !input automation_options
@@ -135,20 +143,60 @@ trigger:
     enabled: "{{ is_object_enabled }}"
 
 action:
+  - variables:
+      state: "{{ trigger.event.data.state }}"
+      person_name: "{{ trigger.event.data.person_name }}"
+      camera_entity_id: "{{ trigger.event.data.camera_entity_id }}"
+      similarity: "{{ trigger.event.data.similarity }}"
+      timestamp: "{{ trigger.event.data.timestamp }}"
+      labels: "{{ trigger.event.data.labels }}"
+      detections: "{{ trigger.event.data.detections }}"
+
   - choose:
       - conditions: 
           - condition: trigger
             id: dooods_detection_trigger
         sequence:
-            - variables:
-                camera_entity: !input camera_entity
-
-            - action: notify.send_message
-              metadata: {}
-              data:
-                message: clear_notification
-                data:
-                  tag: detection_notification
+            - parallel:
+                - sequence:
+                    - action: !input notification_service
+                      metadata: {}
+                      data:
+                        message: clear_notification
+                        data:
+                          tag: detection_notification
+                    - action:  !input notification_service
+                      data:
+                        title: >
+                          {{ "DOOODS — движение на камере }}
+                        message: >
+                          Объекты: {{ labels | join(', ') }}
+                          Время: {{ timestamp }}
+                        data:
+                          tag: detection_notification
+                          image: "ЗДЕСЬ НУЖНО ИЗОБРАЖЕНИЕ ИЗ СЕНСОРА image."
+                          clickAction: app://app.alextran.immich
+                          actions:
+                            - action: URI
+                              title: Просмотр камер
+                              uri: homeassistant://navigate/lovelace/cctv
+                - sequence:
+                    - action: immich.upload_file
+                      metadata: {}
+                      data:
+                        config_entry_id: !input immich_instance
+                        file:
+                          media_content_id: media-source://media_source/snapshots/ - ОПЯТЬ ИЗОБРАЖЕНИЕ ИЗ СЕНСОРА
+                          media_content_type: image/jpeg
+                        album_id: !input immich_album_id
+                    - action: immich.upload_file
+                      metadata: {}
+                      data:
+                        config_entry_id: !input immich_instance
+                        file:
+                          media_content_id: media-source://media_source/records/ - ВИДЕО НАДО ПИСАТЬ!
+                          media_content_type: video/mp4
+                        album_id: !input immich_album_id
 
   - choose:
       - conditions: 
@@ -161,29 +209,15 @@ action:
                 and (expected_camera == "" or camera_entity_id == expected_camera) }}
 
         sequence:
-            - variables:
-                expected_person_name: !input person_name
-                expected_camera: !input camera_entity_id
-                expected_similarity: !input similarity
-                lock_entity: !input lock_entity
-
-                state: "{{ trigger.event.data.state }}"
-                person_name: "{{ trigger.event.data.person_name }}"
-                camera_entity_id: "{{ trigger.event.data.camera_entity_id }}"
-                similarity: "{{ trigger.event.data.similarity }}"
-                timestamp: "{{ trigger.event.data.timestamp }}"
-
             - parallel:
                 - sequence:
-                    - action: notify.send_message
+                    - action:  !input notification_service
                       metadata: {}
                       data:
                         message: clear_notification
                         data:
                           tag: face_match_notification
-                    - action: notify.send_message
-                      target:
-                        entity_id: !input notification_service
+                    - action:  !input notification_service
                       data:
                         title: >
                           {{ "DOOODS — неоднозначное совпадение" if state == "ambiguous"
