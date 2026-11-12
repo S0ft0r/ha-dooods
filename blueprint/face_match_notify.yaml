@@ -73,7 +73,6 @@ trigger:
 
 variables:
   state: "{{ trigger.event.data.state }}"
-  person_id: "{{ trigger.event.data.person_id }}"
   person_name: "{{ trigger.event.data.person_name }}"
   camera_entity_id: "{{ trigger.event.data.camera_entity_id }}"
   similarity: "{{ trigger.event.data.similarity }}"
@@ -82,11 +81,9 @@ variables:
 condition:
   - condition: template
     value_template: >
-      {% set expected_person_id = person_id | string %}
       {% set expected_person_name = person_name | string %}
       {% set expected_camera = camera_entity_id | string %}
       {{ state in ["matched", "ambiguous"]
-         and (expected_person_id == "" or person_id == expected_person_id)
          and (expected_person_name == "" or person_name == expected_person_name)
          and (expected_camera == "" or camera_entity_id == expected_camera) }}
 
@@ -100,8 +97,7 @@ action:
             {{ "DOOODS — неоднозначное совпадение" if state == "ambiguous"
                else "DOOODS — совпадение лица" }}
           message: >
-            {% if state == "ambiguous" %}⚠️ Неоднозначное совпадение лица{% else %}👤 Совпадение лица{% endif %}: {{ person_name }} ({{ person_id }})
-            Камера: {{ camera_entity_id }}
+            {% if state == "ambiguous" %}⚠️ Неоднозначное совпадение лица{% else %}👤 Совпадение лица{% endif %}: {{ person_name }}
             Сходство: {{ similarity }}
             Время: {{ timestamp }}
 
