@@ -1,7 +1,7 @@
 blueprint:
-  name: DOOODS — уведомление о совпадении лица
+  name: DOOODS — уведомление о совпадении лица/движения
   description: >
-    Реакция на события распознавания лиц DOOODS2 (dooods_face_match).
+    Реакция на события распознавания лиц DOOODS2 (dooods_face_match) и детекция движения (dooods_detection).
     Отправляет уведомление при подтверждённом (matched) или неоднозначном
     (ambiguous) совпадении с человеком из галереи. Замок открывается только
     при подтверждённом совпадении matched; при ambiguous замок не открывается.
@@ -11,112 +11,198 @@ blueprint:
   author: Softor
 
   input:
-    person_name:
-      name: Имя человека (необязательно)
-      description: >
-        Оставьте пустым, чтобы реагировать на любое имя. Укажите отображаемое имя
-        из галереи, чтобы реагировать только на конкретного человека.
-      default: ""
-      selector:
-        text:
-    camera_entity_id:
-      name: Камера (необязательно)
-      description: >
-        Оставьте пустым, чтобы реагировать на любую камеру. Укажите entity_id
-        камеры (например, camera.entry_1), чтобы реагировать только на совпадения
-        с этой камеры.
-      default: ""
-      selector:
-        entity:
-          domain: camera
-    notification_service:
-      name: Сервис уведомлений
-      description: >
-        Сервис, который вызывается при matched и ambiguous.
-        Можно указать notify.mobile_app_<ваше_устройство>.
+    automation_options:
+      name: Режимы работы 
+      description: Режимы работы автоматизации
       default: []
       selector:
-        entity:
-          filter:
-            - domain:
-                - notify
+        select:
           multiple: true
-    lock_entity:
-      name: Замок, который надо открыть (необязательно)
-      description: >
-        Оставьте пустым, чтобы пропустить. Замок открывается только при matched.
-        При ambiguous отправляется уведомление, но открытие замка не выполняется.
-      default: ""
-      selector:
-        entity:
-          domain: lock
-    similarity:
-      name: Процент похожести
-      description: >
-        Выберите минимальный процент похожести лица, при котором будет открыт замок.
-      default: 55
-      selector:
-        number:
-          min: 40
-          max: 100
-          step: 5
-          unit_of_measurement: '%'
-          mode: slider
+          options:
+            - label: Детектирование объектов
+              value: dooods_detection_options
+            - label: Распознование лиц
+              value: dooods_face_match_options
+
+    object_section:
+      name: Настройки детектирования объектов
+      icon: mdi:cube-scan
+      collapsed: true
+      input:
+        camera_entity:
+          name: Камера
+          description: >
+            Описание
+          default: []
+          selector: 
+            entity:
+              domain: camera
+              multiple: true
+        immich_instance:
+          name: Интеграция Immich (необязательно)
+          description: Выберите настроенный экземпляр интеграции Immich в Home Assistant.
+          default: ""
+          selector:
+            config_entry:
+              integration: immich
+        immich_album_id:
+          name: ID альбома Immich (необязательно)
+          description: >
+            Укажите ID из последней части адреса альбома в веб-интерфейсе Immich.
+            Пустое значение означает, что альбом не выбран.
+          default: ""
+          selector:
+            text:
+
+    face_section:
+      name: Настройки распознавания лиц
+      icon: mdi:face-recognition
+      collapsed: true
+      input:
+        person_name:
+          name: Имя человека (необязательно)
+          description: >
+            Оставьте пустым, чтобы реагировать на любое имя. Укажите отображаемое имя
+            из галереи, чтобы реагировать только на конкретного человека.
+          default: ""
+          selector:
+            text:
+        camera_entity_id:
+          name: Камера (необязательно)
+          description: >
+            Оставьте пустым, чтобы реагировать на любую камеру. Укажите entity_id
+            камеры (например, camera.entry_1), чтобы реагировать только на совпадения
+            с этой камеры.
+          default: ""
+          selector:
+            entity:
+              domain: camera
+        lock_entity:
+          name: Замок, который надо открыть (необязательно)
+          description: >
+            Оставьте пустым, чтобы пропустить. Замок открывается только при matched.
+            При ambiguous отправляется уведомление, но открытие замка не выполняется.
+          default: ""
+          selector:
+            entity:
+              domain: lock
+        similarity:
+          name: Процент похожести
+          description: >
+            Выберите минимальный процент похожести лица, при котором будет открыт замок.
+          default: 55
+          selector:
+            number:
+              min: 40
+              max: 100
+              step: 5
+              unit_of_measurement: '%'
+              mode: slider
+
+    notification_section:
+      name: Настройки уведомлений
+      icon: mdi:bell-outline
+      collapsed: true
+      input:
+        notification_service:
+          name: Сервис уведомлений
+          description: >
+            Сервис, который вызывается при matched и ambiguous.
+            Можно указать notify.mobile_app_<ваше_устройство>.
+          default: []
+          selector:
+            entity:
+              filter:
+                - domain:
+                    - notify
+              multiple: true
+
+
+trigger_variables:
+  automation_options: !input automation_options
+  is_face_enabled: "{{ 'dooods_face_match_options' in automation_options }} "
+  is_object_enabled: "{{ 'dooods_detection_options' in automation_options }} "
 
 trigger:
   - platform: event
     event_type: dooods_face_match
+    id: dooods_face_match_trigger
+    enabled: "{{ is_face_enabled }}"
 
-variables:
-  expected_person_name: !input person_name
-  expected_camera: !input camera_entity_id
-  expected_similarity: !input similarity
-  lock_entity: !input lock_entity
-
-  state: "{{ trigger.event.data.state }}"
-  person_name: "{{ trigger.event.data.person_name }}"
-  camera_entity_id: "{{ trigger.event.data.camera_entity_id }}"
-  similarity: "{{ trigger.event.data.similarity }}"
-  timestamp: "{{ trigger.event.data.timestamp }}"
-
-condition:
-  - condition: template
-    value_template: >
-      {{ state in ["matched", "ambiguous"]
-         and (expected_person_name == "" or person_name == expected_person_name)
-         and (expected_camera == "" or camera_entity_id == expected_camera) }}
+  - platform: event
+    event_type: dooods_detection
+    id: dooods_detection_trigger
+    enabled: "{{ is_object_enabled }}"
 
 action:
-  - parallel:
-      - sequence:
-          - action: notify.send_message
-            metadata: {}
-            data:
-              message: clear_notification
-              data:
-                tag: face_match_notification
-          - action: notify.send_message
-            target:
-              entity_id: !input notification_service
-            data:
-              title: >
-                {{ "DOOODS — неоднозначное совпадение" if state == "ambiguous"
-                  else "DOOODS — совпадение лица" }}
-              message: >
-                {% if state == "ambiguous" %}⚠️ Неоднозначное совпадение лица{% else %}👤 Совпадение лица{% endif %}: {{ person_name }}
-                Сходство: {{ (similarity * 100) | int }}%
-                Время: {{ timestamp }}
-              data:
-                tag: face_match_notification
+  - choose:
+      - conditions: 
+          - condition: trigger
+            id: dooods_detection_trigger
+        sequence:
+            - variables:
+                camera_entity: !input camera_entity
 
-            continue_on_error: true
-      - if:
+            - action: notify.send_message
+              metadata: {}
+              data:
+                message: clear_notification
+                data:
+                  tag: detection_notification
+
+  - choose:
+      - conditions: 
+          - condition: trigger
+            id: dooods_face_match_trigger
           - condition: template
             value_template: >
-              {{ (state == "matched" and lock_entity | string != "") and ((similarity | float(0.39) * 100) | int >= expected_similarity | int(40)) }}
-        then:
-          - service: lock.open
-            target:
-              entity_id: !input lock_entity
-            data: {}
-            continue_on_error: true
+              {{ state in ["matched", "ambiguous"]
+                and (expected_person_name == "" or person_name == expected_person_name)
+                and (expected_camera == "" or camera_entity_id == expected_camera) }}
+
+        sequence:
+            - variables:
+                expected_person_name: !input person_name
+                expected_camera: !input camera_entity_id
+                expected_similarity: !input similarity
+                lock_entity: !input lock_entity
+
+                state: "{{ trigger.event.data.state }}"
+                person_name: "{{ trigger.event.data.person_name }}"
+                camera_entity_id: "{{ trigger.event.data.camera_entity_id }}"
+                similarity: "{{ trigger.event.data.similarity }}"
+                timestamp: "{{ trigger.event.data.timestamp }}"
+
+            - parallel:
+                - sequence:
+                    - action: notify.send_message
+                      metadata: {}
+                      data:
+                        message: clear_notification
+                        data:
+                          tag: face_match_notification
+                    - action: notify.send_message
+                      target:
+                        entity_id: !input notification_service
+                      data:
+                        title: >
+                          {{ "DOOODS — неоднозначное совпадение" if state == "ambiguous"
+                            else "DOOODS — совпадение лица" }}
+                        message: >
+                          {% if state == "ambiguous" %}⚠️ Неоднозначное совпадение лица{% else %}👤 Совпадение лица{% endif %}: {{ person_name }}
+                          Сходство: {{ (similarity * 100) | int }}%
+                          Время: {{ timestamp }}
+                        data:
+                          tag: face_match_notification
+
+                      continue_on_error: true
+                - if:
+                    - condition: template
+                      value_template: >
+                        {{ (state == "matched" and lock_entity | string != "") and ((similarity | float(0.39) * 100) | int >= expected_similarity | int(40)) }}
+                  then:
+                    - service: lock.open
+                      target:
+                        entity_id: !input lock_entity
+                      data: {}
+                      continue_on_error: true
