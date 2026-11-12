@@ -159,34 +159,37 @@ action:
         sequence:
             - parallel:
                 - sequence:
-                    - action: !input notification_service
-                      metadata: {}
-                      data:
-                        message: clear_notification
-                        data:
-                          tag: detection_notification
-                    - action:  !input notification_service
-                      data:
-                        title: >
-                          {{ "DOOODS — движение на камере }}
-                        message: >
-                          Объекты: {{ labels | join(', ') }}
-                          Время: {{ timestamp }}
-                        data:
-                          tag: detection_notification
-                          image: "ЗДЕСЬ НУЖНО ИЗОБРАЖЕНИЕ ИЗ СЕНСОРА image."
-                          clickAction: app://app.alextran.immich
-                          actions:
-                            - action: URI
-                              title: Просмотр камер
-                              uri: homeassistant://navigate/lovelace/cctv
+                  - repeat:
+                      for_each: !input notification_service 
+                      sequence:
+                        - action: "{{ repeat.item }}"
+                          metadata: {}
+                          data:
+                            message: clear_notification
+                            data:
+                              tag: detection_notification
+                        - action: "{{ repeat.item }}"
+                          data:
+                            title: >
+                              {{ "DOOODS — движение на камере" }}
+                            message: >
+                              Объекты: {{ labels | join(', ') }}
+                              Время: {{ timestamp }}
+                            data:
+                              tag: detection_notification
+                              image: "{{ state_attr('image.server_dooods2_domofon_annotated_detections', 'entity_picture') }"
+                              clickAction: app://app.alextran.immich
+                              actions:
+                                - action: URI
+                                  title: Просмотр камер
+                                  uri: homeassistant://navigate/lovelace/cctv
                 - sequence:
                     - action: immich.upload_file
                       metadata: {}
                       data:
                         config_entry_id: !input immich_instance
                         file:
-                          media_content_id: media-source://media_source/snapshots/ - ОПЯТЬ ИЗОБРАЖЕНИЕ ИЗ СЕНСОРА
+                          media_content_id: media-source://media_source/snapshots/1.jpg
                           media_content_type: image/jpeg
                         album_id: !input immich_album_id
                     - action: immich.upload_file
@@ -194,7 +197,7 @@ action:
                       data:
                         config_entry_id: !input immich_instance
                         file:
-                          media_content_id: media-source://media_source/records/ - ВИДЕО НАДО ПИСАТЬ!
+                          media_content_id: media-source://media_source/records/1.mp4
                           media_content_type: video/mp4
                         album_id: !input immich_album_id
 
