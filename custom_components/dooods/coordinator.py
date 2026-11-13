@@ -205,7 +205,7 @@ class DooodsCoordinator(DataUpdateCoordinator[dict[str, CameraScanResult]]):
         self.emit_face_match_events = bool(emit_face_match_events)
         self.face_match_event_cooldown = max(0, face_match_event_cooldown)
         self._last_face_match_event_keys: dict[str, tuple[Any, ...]] = {}
-        self._last_face_match_events: dict[tuple[str, str], tuple[float, str]] = {}
+        self._last_face_match_events: dict[tuple[str, str], tuple[float, str, float | None]] = {}
         self._archive_cleanup_unsubscribe: Callable[[], None] | None = None
         self._archive_cleanup_task: asyncio.Task[Any] | None = None
         self._profile_labels_unsubscribe: Callable[[], None] | None = None
@@ -1633,11 +1633,15 @@ class DooodsCoordinator(DataUpdateCoordinator[dict[str, CameraScanResult]]):
         now = time.monotonic()
         elapsed = now - previous_event[0] if previous_event is not None else None
         previous_state = previous_event[1] if previous_event is not None else None
+        previous_similarity = previous_event[2] if previous_event is not None else None
+        similarity = match.get("similarity")
         if not face_match_event_cooldown_allows(
             state=state,
             previous_state=previous_state,
             elapsed=elapsed,
             cooldown=self.face_match_event_cooldown,
+            similarity=similarity,
+            previous_similarity=previous_similarity,
         ):
             # Do not publish this suppressed frame later
             # from a repeated status snapshot.
@@ -1654,7 +1658,7 @@ class DooodsCoordinator(DataUpdateCoordinator[dict[str, CameraScanResult]]):
         )
         self.hass.bus.async_fire(EVENT_FACE_MATCH, event_data)
         self._last_face_match_event_keys[camera_entity_id] = event_key
-        self._last_face_match_events[cooldown_key] = (now, state)
+        self._last_face_match_events[cooldown_key] = (now, state, similarity)
 
     async def _async_archive_camera_frame(
         self,

@@ -37,8 +37,10 @@ def face_match_event_cooldown_allows(
     previous_state: str | None,
     elapsed: float | None,
     cooldown: int,
+    similarity: float | None = None,
+    previous_similarity: float | None = None,
 ) -> bool:
-    """Allow repeats after cooldown and an immediate ambiguous-to-match upgrade."""
+    """Allow expiry, confirmed upgrades, and higher-confidence confirmed matches."""
     if (
         cooldown <= 0
         or previous_state is None
@@ -46,7 +48,13 @@ def face_match_event_cooldown_allows(
         or elapsed >= cooldown
     ):
         return True
-    return state == "matched" and previous_state != "matched"
+    if state != "matched":
+        return False
+    if previous_state != "matched":
+        return True
+    return similarity is not None and (
+        previous_similarity is None or similarity > previous_similarity
+    )
 
 
 def face_match_event_data(
