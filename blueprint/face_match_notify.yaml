@@ -143,6 +143,9 @@ trigger:
     id: dooods_detection_trigger
     enabled: "{{ is_object_enabled }}"
 
+mode: queued
+max: 25
+
 action:
   - variables:
       state: "{{ trigger.event.data.get('state') or '' }}"
