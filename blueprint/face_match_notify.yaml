@@ -12,7 +12,7 @@ blueprint:
 
   input:
     automation_options:
-      name: Режимы работы 
+      name: Режимы работы
       description: Режимы работы автоматизации
       default: []
       selector:
@@ -34,7 +34,7 @@ blueprint:
 #           description: >
 #             Описание
 #           default: []
-#           selector: 
+#           selector:
 #             entity:
 #               domain: camera
 # #              integration: dooods
@@ -72,6 +72,12 @@ blueprint:
       icon: mdi:face-recognition
       collapsed: true
       input:
+        notify_ambiguous:
+          name: Уведомлять о неоднозначном совпадении
+          description: При выключении уведомления ambiguous не отправляются. Замок при ambiguous никогда не открывается.
+          default: true
+          selector:
+            boolean:
         person_name:
           name: Имя человека (необязательно)
           description: >
@@ -134,10 +140,11 @@ blueprint:
 variables:
 #  camera_entity: !input camera_entity
   expected_person_name: !input person_name
+  notify_ambiguous: !input notify_ambiguous
 #  expected_camera: !input camera_entity_id
   expected_similarity: !input similarity
   lock_entity: !input lock_entity
-  notification_service: !input notification_service 
+  notification_service: !input notification_service
   immich_instance: !input immich_instance
   immich_album_id: !input immich_album_id
   record_duration: !input record_duration
@@ -168,22 +175,22 @@ action:
       camera_entity_id: "{{ trigger.event.data.get('camera_entity_id') or '' }}"
       similarity: "{{ trigger.event.data.get('similarity') | float(0) }}"
       timestamp: "{{ trigger.event.data.get('timestamp') or '' }}"
-      labels: "{{ trigger.event.data.get('labels') or [] }}"
+      labels: "{{ trigger.event.data.get('labels_translated') or trigger.event.data.get('labels') or [] }}"
       detections: "{{ trigger.event.data.get('detections') or [] }}"
       image_entity_id: "{{ trigger.event.data.get('image_entity_id') or '' }}"
 
       mobile_app_list: |
-        {{  integration_entities('mobile_app') 
+        {{  integration_entities('mobile_app')
           | select('match', 'notify')
           | intersect(notification_service)
-          | map('replace', 'notify.', 'notify.mobile_app_') 
+          | map('replace', 'notify.', 'notify.mobile_app_')
           | list }}
 
       snapshot_name: "{{ camera_entity_id.split('.')[1] }}_latest.jpg"
       record_name: "{{ camera_entity_id.split('.')[1] }}_latest.mp4"
 
   - choose:
-      - conditions: 
+      - conditions:
           - condition: trigger
             id: dooods_detection_trigger
         sequence:
@@ -213,7 +220,7 @@ action:
                               Время: {{ as_timestamp(timestamp) | timestamp_custom('%H:%M', true) }}
                             data:
                               tag: detection_notification
-                              image: "media-source://media_source/snapshots/{{ snapshot_name }}"
+                              image: "/local/snapshots/{{ snapshot_name }}"
                               clickAction: app://app.alextran.immich
                               actions:
                                 - action: URI
@@ -247,19 +254,19 @@ action:
                                 album_id: "{{ immich_album_id }}"
 
   - choose:
-      - conditions: 
+      - conditions:
           - condition: trigger
             id: dooods_face_match_trigger
           - condition: template
             value_template: >
-              {{ state in ["matched", "ambiguous"]
+              {{ (state == "matched" or (state == "ambiguous" and notify_ambiguous))
                 and (expected_person_name == "" or person_name == expected_person_name) }}
 
         sequence:
             - parallel:
                 - sequence:
                   - repeat:
-                      for_each: "{{ mobile_app_list }}" 
+                      for_each: "{{ mobile_app_list }}"
                       sequence:
                         - action: "{{ repeat.item }}"
                           metadata: {}
@@ -272,9 +279,9 @@ action:
                             title: >
                               {{ "DOOODS — неоднозначное совпадение" if state == "ambiguous"
                                 else "DOOODS — совпадение лица" }}
-                            message: >
-                              {% if state == "ambiguous" %}⚠️ Неоднозначное совпадение лица{% else %}👤 Совпадение лица{% endif %}: {{ person_name }}
-                              Сходство: {{ (similarity * 100) | int }}%
+                            message: |
+                              {% if state == "ambiguous" %}⚠️ Неоднозначное совпадение лица{% else %}👤 Совпадение лица: {{ person_name }}{% endif %}
+                              Сходство: {{ (similarity * 100) | int }}
                               Время: {{ timestamp }}
                             data:
                               tag: face_match_notification
