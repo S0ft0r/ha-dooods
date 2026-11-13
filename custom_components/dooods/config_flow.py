@@ -43,8 +43,12 @@ from .camera_motion_recheck_intervals import (
     normalize_camera_motion_recheck_intervals,
 )
 from .camera_scan_intervals import normalize_camera_scan_intervals
+from .camera_selection import (
+    SELECTION_VERSION,
+    SELECTION_VERSION_KEY,
+    resolve_camera_selection,
+)
 from .camera_switches import normalize_camera_switches
-from .face_cameras import normalize_face_detection_cameras
 from .const import (
     CONF_AREA,
     CONF_ARCHIVE_MAX_AGE_DAYS,
@@ -62,6 +66,7 @@ from .const import (
     CONF_EMIT_DETECTION_EVENTS,
     CONF_EMIT_FACE_MATCH_EVENTS,
     CONF_FACE_DETECTION_CAMERAS,
+    CONF_OBJECT_DETECTION_CAMERAS,
     CONF_FACE_MATCH_EVENT_COOLDOWN,
     CONF_FILE_OUT,
     CONF_LABELS,
@@ -356,18 +361,15 @@ def _first_person_detector(
 def _options_for_form(options: Mapping[str, Any]) -> dict[str, Any]:
     """Подготовить сохранённые параметры и значения по умолчанию для мастеров."""
     area = options.get(CONF_AREA, {})
-    cameras = options.get(CONF_SOURCE, [])
-    if not isinstance(cameras, list):
-        cameras = []
+    cameras, object_cameras, face_cameras = resolve_camera_selection(options)
     # Список хранится в options интеграции: иначе форма каждый раз открывалась
     # пустой, а сохранение любых других настроек отправляло в App пустой список.
     # Supervisor валидирует options самого App, а не записи интеграции.
     return {
         CONF_SOURCE: cameras,
-        CONF_FACE_DETECTION_CAMERAS: normalize_face_detection_cameras(
-            options.get(CONF_FACE_DETECTION_CAMERAS, []),
-            cameras,
-        ),
+        SELECTION_VERSION_KEY: SELECTION_VERSION,
+        CONF_FACE_DETECTION_CAMERAS: face_cameras,
+        CONF_OBJECT_DETECTION_CAMERAS: object_cameras,
         CONF_MOTION_SENSORS: _normalize_motion_sensors(
             options.get(CONF_MOTION_SENSORS, {}), cameras
         ),
@@ -428,9 +430,7 @@ def _options_for_form(options: Mapping[str, Any]) -> dict[str, Any]:
 def _normalize_options(options: Mapping[str, Any]) -> dict[str, Any]:
     """Преобразовать значения мастера в типы, сохраняемые в параметрах записи интеграции."""
     area = options.get(CONF_AREA, {})
-    cameras = options.get(CONF_SOURCE, [])
-    if not isinstance(cameras, list):
-        cameras = []
+    cameras, object_cameras, face_cameras = resolve_camera_selection(options)
     # Список камер для face detection сохраняется в options: App получает его
     # отдельным POST /faces/cameras, но источник истины должен пережить
     # перезапуск Home Assistant и повторное открытие мастера настроек.
@@ -439,10 +439,9 @@ def _normalize_options(options: Mapping[str, Any]) -> dict[str, Any]:
     )
     return {
         CONF_SOURCE: cameras,
-        CONF_FACE_DETECTION_CAMERAS: normalize_face_detection_cameras(
-            options.get(CONF_FACE_DETECTION_CAMERAS, []),
-            cameras,
-        ),
+        SELECTION_VERSION_KEY: SELECTION_VERSION,
+        CONF_FACE_DETECTION_CAMERAS: face_cameras,
+        CONF_OBJECT_DETECTION_CAMERAS: object_cameras,
         CONF_MOTION_SENSORS: _normalize_motion_sensors(
             options.get(CONF_MOTION_SENSORS, {}), cameras
         ),
@@ -587,17 +586,16 @@ class DooodsConfigFlow(ConfigFlow, domain=DOMAIN):
             draft_cameras = []
 
         if user_input is not None:
-            if not user_input.get(CONF_SOURCE):
-                return self.async_show_form(
-                    step_id="cameras",
-                    data_schema=self.add_suggested_values_to_schema(
-                        _cameras_schema(draft_cameras, self._supports_face_detection),
-                        user_input,
-                    ),
-                    errors={"base": "no_cameras"},
-                )
             self._draft_options.update(user_input)
-            cameras = self._draft_options[CONF_SOURCE]
+            self._draft_options[CONF_OBJECT_DETECTION_CAMERAS] = user_input.get(
+                CONF_OBJECT_DETECTION_CAMERAS, []
+            )
+            self._draft_options[CONF_FACE_DETECTION_CAMERAS] = user_input.get(
+                CONF_FACE_DETECTION_CAMERAS, []
+            )
+            self._draft_options[SELECTION_VERSION_KEY] = SELECTION_VERSION
+            cameras, _, _ = resolve_camera_selection(self._draft_options)
+            self._draft_options[CONF_SOURCE] = cameras
             self._draft_options[CONF_MOTION_SENSORS] = resolve_motion_sensors(
                 self.hass,
                 cameras,
@@ -714,33 +712,20 @@ class DooodsConfigFlow(ConfigFlow, domain=DOMAIN):
 
 
 def _cameras_schema(
-    draft_cameras: list[str],
-    supports_face_detection: bool,
+    _draft_cameras: list[str],
+    _supports_face_detection: bool,
 ) -> probatio.Schema:
-    """Схема выбора камер с опциональным набором для face detection."""
-    camera_options = [
-        SelectOptionDict(value=camera, label=camera) for camera in draft_cameras
-    ]
-    fields: dict[Any, Any] = {
-        probatio.Required(CONF_SOURCE, default=draft_cameras): EntitySelector(
-            EntitySelectorConfig(domain="camera", multiple=True)
-        ),
-    }
-    if supports_face_detection:
-        fields[
-            probatio.Optional(
-                CONF_FACE_DETECTION_CAMERAS,
-                default=[],
-            )
-        ] = SelectSelector(
-            SelectSelectorConfig(
-                options=camera_options,
-                mode=SelectSelectorMode.DROPDOWN,
-                multiple=True,
-                translation_key="face_detection_cameras",
-            )
-        )
-    return probatio.Schema(fields)
+    """Choose two independent camera sets; either may be empty."""
+    return probatio.Schema(
+        {
+            probatio.Optional(CONF_OBJECT_DETECTION_CAMERAS, default=[]): EntitySelector(
+                EntitySelectorConfig(domain="camera", multiple=True)
+            ),
+            probatio.Optional(CONF_FACE_DETECTION_CAMERAS, default=[]): EntitySelector(
+                EntitySelectorConfig(domain="camera", multiple=True)
+            ),
+        }
+    )
 
 
 class DooodsOptionsFlow(OptionsFlowWithReload):
@@ -801,17 +786,16 @@ class DooodsOptionsFlow(OptionsFlowWithReload):
         self._supports_face_detection = supports_face_detection
 
         if user_input is not None:
-            if not user_input.get(CONF_SOURCE):
-                return self.async_show_form(
-                    step_id="init",
-                    data_schema=self.add_suggested_values_to_schema(
-                        _cameras_schema(draft_cameras, supports_face_detection),
-                        user_input,
-                    ),
-                    errors={"base": "no_cameras"},
-                )
             draft.update(user_input)
-            cameras = draft[CONF_SOURCE]
+            draft[CONF_OBJECT_DETECTION_CAMERAS] = user_input.get(
+                CONF_OBJECT_DETECTION_CAMERAS, []
+            )
+            draft[CONF_FACE_DETECTION_CAMERAS] = user_input.get(
+                CONF_FACE_DETECTION_CAMERAS, []
+            )
+            draft[SELECTION_VERSION_KEY] = SELECTION_VERSION
+            cameras, _, _ = resolve_camera_selection(draft)
+            draft[CONF_SOURCE] = cameras
             draft[CONF_MOTION_SENSORS] = resolve_motion_sensors(
                 self.hass,
                 cameras,

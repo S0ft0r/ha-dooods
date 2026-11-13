@@ -27,6 +27,7 @@ CONF_EMIT_DETECTION_EVENTS = "emit_detection_events"
 CONF_EMIT_FACE_MATCH_EVENTS = "emit_face_match_events"
 CONF_FACE_MATCH_EVENT_COOLDOWN = "face_match_event_cooldown"
 CONF_FACE_DETECTION_CAMERAS = "face_detection_cameras"
+CONF_OBJECT_DETECTION_CAMERAS = "object_detection_cameras"
 
 EVENT_DETECTION = f"{DOMAIN}_detection"
 EVENT_FACE_MATCH = f"{DOMAIN}_face_match"

@@ -35,6 +35,11 @@ from .camera_motion_recheck_intervals import (
     normalize_camera_motion_recheck_intervals,
 )
 from .camera_scan_intervals import normalize_camera_scan_intervals
+from .camera_selection import (
+    SELECTION_VERSION,
+    SELECTION_VERSION_KEY,
+    resolve_camera_selection,
+)
 from .camera_switches import normalize_camera_switches
 from .const import (
     CONF_AREA,
@@ -69,7 +74,6 @@ from .const import (
 )
 from .coordinator import DooodsCoordinator
 from .entity_migrations import migrate_camera_entity_registry
-from .face_cameras import normalize_face_detection_cameras
 from .panel_url import build_profile_manager_url
 from .motion import motion_sensor_is_usable, resolve_motion_sensors
 from .profile_panel import (
@@ -365,37 +369,27 @@ async def async_setup_entry(hass: HomeAssistant, entry: DooodsConfigEntry) -> bo
     if not isinstance(area, Mapping):
         area = {}
     normalized_area = {**DEFAULT_AREA, **area}
-    cameras = options.get(CONF_SOURCE, [])
-    if not isinstance(cameras, list):
-        cameras = []
-    cameras = list(
-        dict.fromkeys(
-            camera for camera in cameras if isinstance(camera, str) and camera
-        )
+    cameras, object_detection_cameras, face_detection_cameras = (
+        resolve_camera_selection(options)
     )
-    # Восстановить в App список камер для face detection после перезапуска:
-    # App хранит его в /data, но файл мог быть потерян или ещё не создан.
-    # Пустой список не отправляем — иначе он затрёт выбор, сделанный напрямую.
-    face_detection_cameras = normalize_face_detection_cameras(
-        options.get(CONF_FACE_DETECTION_CAMERAS, []),
-        cameras,
+    # Old installations may have configured faces directly in the App. Preserve
+    # their previous empty-list behavior until the new settings are saved.
+    should_sync_faces = (
+        bool(face_detection_cameras)
+        or options.get(SELECTION_VERSION_KEY) == SELECTION_VERSION
     )
     if (
-        face_detection_cameras
+        should_sync_faces
         and auth_key
         and {"face_gallery", "face_debug_dashboard"} & capabilities
     ):
         try:
             await async_put_face_detection_cameras(
-                hass,
-                base_url,
-                auth_key,
-                face_detection_cameras,
+                hass, base_url, auth_key, face_detection_cameras
             )
         except DooodsApiError as err:
             _LOGGER.debug(
-                "Не удалось передать камеры face detection в App при старте: %s",
-                type(err).__name__,
+                "Не удалось передать камеры face detection в App при старте: %s", err
             )
     motion_sensors = resolve_motion_sensors(
         hass,
@@ -541,6 +535,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: DooodsConfigEntry) -> bo
         auth_key=auth_key,
         detector_name=detector["name"],
         cameras=cameras,
+        object_detection_cameras=object_detection_cameras,
         labels=labels,
         detector_labels=detector["labels"],
         confidence=float(options.get(CONF_CONFIDENCE, DEFAULT_CONFIDENCE)),

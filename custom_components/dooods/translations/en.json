@@ -15,14 +15,14 @@
       },
       "cameras": {
         "title": "Cameras",
-        "description": "Choose cameras. Configure each camera’s scan interval, Recognition switch, and motion source in that camera device’s Settings. The selector offers an HA motion sensor, RTSP stream (when supported), or no motion trigger. The selected source is used directly: an unavailable HA sensor does not trigger an RTSP fallback. On initial setup, a working HA sensor is selected by default; otherwise RTSP is selected when supported. Recognition off disables all scans.",
+        "description": "Choose object detection cameras and face recognition cameras. The lists are independent and can overlap. An empty list disables the corresponding function for all cameras.",
         "data": {
-          "source": "Camera entities",
-          "face_detection_cameras": "Cameras for face detection"
+          "face_detection_cameras": "Cameras for face recognition",
+          "object_detection_cameras": "Cameras for object detection"
         },
         "data_description": {
-          "source": "Select one or more camera entities. Configure each camera’s interval, recognition, and motion source in its device Settings. Choose an HA motion sensor, RTSP (when supported), or no trigger; the selected source is exclusive and does not fall back if unavailable. Initial setup prefers a working HA sensor, otherwise RTSP when supported. A separate profile is created for each selected camera when supported; edit its zones in the DOOODS panel.",
-          "face_detection_cameras": "Select the cameras from the list above where DOOODS2F should run face detection. Only selected cameras are analysed for faces; others are processed without face pipeline. This field appears only when the connected App reports face gallery or face debug capabilities."
+          "face_detection_cameras": "Face recognition runs only for selected cameras. An empty list disables it for all cameras. Recognition and RTSP stream must be enabled.",
+          "object_detection_cameras": "Object detection runs only for selected cameras. An empty list disables object detection for all cameras."
         }
       },
       "output": {
@@ -77,14 +77,14 @@
     "step": {
       "init": {
         "title": "Cameras",
-        "description": "Choose cameras. Set each camera’s scan interval in its device Settings (30 seconds by default), Recognition, and motion source. The selector chooses an HA sensor, RTSP stream when supported, or no trigger. The selected source is used directly; there is no runtime fallback if an HA sensor becomes unavailable. Each selected camera keeps its own profile on servers that support profiles.",
+        "description": "Choose object detection cameras and face recognition cameras. The lists are independent and can overlap. An empty list disables the corresponding function for all cameras.",
         "data": {
-          "source": "Camera entities",
-          "face_detection_cameras": "Cameras for face detection"
+          "face_detection_cameras": "Cameras for face recognition",
+          "object_detection_cameras": "Cameras for object detection"
         },
         "data_description": {
-          "source": "Select the cameras to scan. Choose each camera’s motion source in its device Settings: an HA sensor, RTSP stream, or no trigger. Initial setup prefers a usable HA sensor and otherwise selects RTSP when supported. After selection, the source is used directly without fallback. A separate profile is ensured for each selected camera when supported.",
-          "face_detection_cameras": "Select the cameras from the list above where DOOODS2F should run face detection. Only selected cameras are analysed for faces; others are processed without face pipeline. This field appears only when the connected App reports face gallery or face debug capabilities."
+          "face_detection_cameras": "Face recognition runs only for selected cameras. An empty list disables it for all cameras. Recognition and RTSP stream must be enabled.",
+          "object_detection_cameras": "Object detection runs only for selected cameras. An empty list disables object detection for all cameras."
         }
       },
       "settings": {

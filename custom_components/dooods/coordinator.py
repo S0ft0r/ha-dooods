@@ -100,6 +100,7 @@ class DooodsCoordinator(DataUpdateCoordinator[dict[str, CameraScanResult]]):
         camera_scan_intervals: Mapping[str, int] | None,
         parent_device_id: str,
         parent_device_identifier: str,
+        object_detection_cameras: list[str] | None = None,
         camera_motion_recheck_intervals: Mapping[str, int] | None = None,
         preview_enabled: bool = False,
         annotation_localization_enabled: bool = False,
@@ -135,6 +136,15 @@ class DooodsCoordinator(DataUpdateCoordinator[dict[str, CameraScanResult]]):
         self.auth_key = auth_key
         self.detector_name = detector_name
         self.cameras = cameras
+        # None preserves the legacy constructor default; an explicit empty
+        # selection disables object detection on all cameras.
+        self.object_detection_cameras = (
+            frozenset(
+                camera for camera in object_detection_cameras if isinstance(camera, str)
+            )
+            if isinstance(object_detection_cameras, list)
+            else None
+        )
         self.labels = labels
         self.detector_labels = list(
             detector_labels if detector_labels is not None else labels
@@ -296,6 +306,14 @@ class DooodsCoordinator(DataUpdateCoordinator[dict[str, CameraScanResult]]):
         """Считать распознавание включённым для старых записей, где нет переключателя."""
         enabled = getattr(self, "camera_detection_enabled", {}).get(camera_entity_id)
         return enabled if isinstance(enabled, bool) else True
+
+    @callback
+    def camera_object_detection_is_enabled(self, camera_entity_id: str) -> bool:
+        """Check the object-only camera filter without affecting RTSP or faces."""
+        selected = getattr(self, "object_detection_cameras", None)
+        return camera_entity_id in self.cameras and (
+            selected is None or camera_entity_id in selected
+        )
 
     @callback
     def camera_stream_processing_is_enabled(self, camera_entity_id: str) -> bool:
@@ -1057,6 +1075,7 @@ class DooodsCoordinator(DataUpdateCoordinator[dict[str, CameraScanResult]]):
             self._is_shutting_down
             or camera_entity_id not in self.cameras
             or not self.camera_recognition_is_enabled(camera_entity_id)
+            or not self.camera_object_detection_is_enabled(camera_entity_id)
             or not self.camera_uses_rtsp_motion_gate(camera_entity_id)
             or not isinstance(image, bytes)
             or not image
@@ -1271,6 +1290,7 @@ class DooodsCoordinator(DataUpdateCoordinator[dict[str, CameraScanResult]]):
             camera_entity_id
             for camera_entity_id in camera_ids
             if self.camera_recognition_is_enabled(camera_entity_id)
+            and self.camera_object_detection_is_enabled(camera_entity_id)
         }
         if not camera_ids:
             if full_scan:
@@ -1379,11 +1399,15 @@ class DooodsCoordinator(DataUpdateCoordinator[dict[str, CameraScanResult]]):
                 camera_entity_id
                 for camera_entity_id in requested_camera_ids
                 if self.camera_recognition_is_enabled(camera_entity_id)
+                and self.camera_object_detection_is_enabled(camera_entity_id)
             }
             self._force_full_scan = False
             results = dict(self.data or {})
             for camera_entity_id in self.cameras:
-                if not self.camera_recognition_is_enabled(camera_entity_id):
+                if not self.camera_object_detection_is_enabled(camera_entity_id):
+                    # No stale object results while the independent face stream runs.
+                    results.pop(camera_entity_id, None)
+                elif not self.camera_recognition_is_enabled(camera_entity_id):
                     results[camera_entity_id] = CameraScanResult(
                         counts={},
                         confidences={},
@@ -1612,6 +1636,8 @@ class DooodsCoordinator(DataUpdateCoordinator[dict[str, CameraScanResult]]):
     ) -> CameraScanResult:
         """Run YOLO on a motion-candidate JPEG or a regular HA camera snapshot."""
         try:
+            if not self.camera_object_detection_is_enabled(camera_entity_id):
+                return CameraScanResult({}, {}, (), None, None)
             if not self.camera_recognition_is_enabled(camera_entity_id):
                 return CameraScanResult({}, {}, (), None, None)
             if image_data is None:
