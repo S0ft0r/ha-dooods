@@ -143,8 +143,8 @@ trigger:
     id: dooods_detection_trigger
     enabled: "{{ is_object_enabled }}"
 
-mode: queued
-max: 25
+mode: single
+#max: 25
 
 action:
   - variables:
@@ -171,7 +171,7 @@ action:
             - action: image.snapshot
               metadata: {}
               target:
-                entity_id: image.server_dooods2_pered_kvartiroi_hd_stream_annotated_detections
+                entity_id: "{{ camera_entity_id }}"
               data:
                 filename: "/config/www/{{ camera_entity_id.split('.')[1] }}_latest.jpg"
             - parallel:
