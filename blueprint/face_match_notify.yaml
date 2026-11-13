@@ -165,6 +165,12 @@ action:
           - condition: trigger
             id: dooods_detection_trigger
         sequence:
+            - action: image.snapshot
+              metadata: {}
+              target:
+                entity_id: image.server_dooods2_pered_kvartiroi_hd_stream_annotated_detections
+              data:
+                filename: media-source://media_source/snapshots/{{ camera_entity_id }}_latest.jpg
             - parallel:
                 - sequence:
                   - repeat:
@@ -186,7 +192,7 @@ action:
                               Время: {{ timestamp }}
                             data:
                               tag: detection_notification
-                              image: "{{ state_attr('image.server_dooods2_domofon_annotated_detections', 'entity_picture') }}"
+                              image: media-source://media_source/snapshots/{{ camera_entity_id }}_latest.jpg
                               clickAction: app://app.alextran.immich
                               actions:
                                 - action: URI
@@ -198,7 +204,7 @@ action:
                       data:
                         config_entry_id: !input immich_instance
                         file:
-                          media_content_id: media-source://media_source/snapshots/1.jpg
+                          media_content_id: media-source://media_source/snapshots/{{ camera_entity_id }}_latest.jpg
                           media_content_type: image/jpeg
                         album_id: !input immich_album_id
                     - action: immich.upload_file
