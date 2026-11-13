@@ -37,7 +37,7 @@ blueprint:
           selector: 
             entity:
               domain: camera
-              integration: dooods
+#              integration: dooods
               multiple: true
         immich_instance:
           name: Интеграция Immich (необязательно)
@@ -78,7 +78,7 @@ blueprint:
           selector:
             entity:
               domain: camera
-              integration: dooods
+#              integration: dooods
         lock_entity:
           name: Замок, который надо открыть (необязательно)
           description: >
