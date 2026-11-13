@@ -3,6 +3,7 @@ name: Validate Home Assistant components
 on:
   push:
     paths:
+      - "docs/CHANGELOG.md"
       - "custom_components/**"
       - "local_apps/dooods2/**"
       - ".github/workflows/**"
@@ -10,6 +11,7 @@ on:
       - ".github/requirements-validator.txt"
   pull_request:
     paths:
+      - "docs/CHANGELOG.md"
       - "custom_components/**"
       - "local_apps/dooods2/**"
       - ".github/workflows/**"
@@ -45,6 +47,9 @@ jobs:
 
       - name: Validate component metadata, syntax, and available App source mirror
         run: python .github/scripts/validate_components.py
+
+      - name: Validate changelog headings
+        run: python .github/scripts/integration_release_notes.py --validate-only
 
       - name: Set up Node.js
         uses: actions/setup-node@v4

@@ -77,6 +77,16 @@ jobs:
           print(f'tag=v{version}')
           PY
 
+      # Compare each changelog entry with the immediately older entry.
+      - name: Подготовить описание изменений интеграции
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          python .github/scripts/integration_release_notes.py \
+            --version "$VERSION" \
+            --output "$RUNNER_TEMP/integration-notes.md"
+
       - name: Refuse to reuse an existing tag
         env:
           RELEASE_TAG: ${{ steps.version.outputs.tag }}
@@ -112,13 +122,6 @@ jobs:
           OUTPUT_DIR: ${{ runner.temp }}/dooods-release
         run: |
           set -euo pipefail
-          cat > "$RUNNER_TEMP/integration-notes.md" <<EOF
-          ## DOOODS integration $VERSION
-
-          The attached dooods.zip contains the contents of custom_components/dooods/ at the ZIP root. For manual installation, extract it to custom_components/dooods/ and restart Home Assistant. The DOOODS2 App is distributed separately.
-
-          The SHA-256 checksum is provided in dooods.zip.sha256. GitHub's automatically generated source archives contain the complete repository at this tag, not just the integration.          
-          EOF
           args=(--target "$GITHUB_SHA" --title "DOOODS $VERSION" --notes-file "$RUNNER_TEMP/integration-notes.md")
           if [[ "$PRERELEASE" == true ]]; then args+=(--prerelease --latest=false); fi
           gh release create "$RELEASE_TAG" \
