@@ -115,10 +115,9 @@ jobs:
           cat > "$RUNNER_TEMP/integration-notes.md" <<EOF
           ## DOOODS integration $VERSION
 
-          The attached 030dooods.zip030 contains the contents of 030custom_components/dooods/030 at the ZIP root. For manual installation, extract it to 030custom_components/dooods/030 and restart Home Assistant. The DOOODS2 App is distributed separately.
+          The attached dooods.zip contains the contents of custom_components/dooods/ at the ZIP root. For manual installation, extract it to custom_components/dooods/ and restart Home Assistant. The DOOODS2 App is distributed separately.
 
-          The SHA-256 checksum is provided in 030dooods.zip.sha256030. GitHub's automatically generated source archives contain the complete repository at this tag, not just the integration.
-          EOF
+          The SHA-256 checksum is provided in dooods.zip.sha256. GitHub's automatically generated source archives contain the complete repository at this tag, not just the integration.          EOF
           args=(--target "$GITHUB_SHA" --title "DOOODS $VERSION" --notes-file "$RUNNER_TEMP/integration-notes.md")
           if [[ "$PRERELEASE" == true ]]; then args+=(--prerelease --latest=false); fi
           gh release create "$RELEASE_TAG" \
