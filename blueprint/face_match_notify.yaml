@@ -126,6 +126,8 @@ variables:
   expected_similarity: !input similarity
   lock_entity: !input lock_entity
   notification_service: !input notification_service 
+  immich_instance: !input immich_instance
+  immich_album_id: !input immich_album_id
 
 trigger_variables:
   automation_options: !input automation_options
@@ -155,6 +157,7 @@ action:
       timestamp: "{{ trigger.event.data.get('timestamp') or '' }}"
       labels: "{{ trigger.event.data.get('labels') or [] }}"
       detections: "{{ trigger.event.data.get('detections') or [] }}"
+      image_entity_id: "{{ trigger.event.data.get('image_entity_id') or '' }}"
 
       mobile_app_list: |
         {{  integration_entities('mobile_app') 
@@ -162,6 +165,9 @@ action:
           | intersect(notification_service)
           | map('replace', 'notify.', 'notify.mobile_app_') 
           | list }}
+
+      snapshot_name: "{{ camera_entity_id.split('.')[1] }}_latest.jpg"
+
 
   - choose:
       - conditions: 
@@ -173,7 +179,7 @@ action:
               target:
                 entity_id: "{{ camera_entity_id }}"
               data:
-                filename: "/config/www/{{ camera_entity_id.split('.')[1] }}_latest.jpg"
+                filename: "/config/www/{{ snapshot_name }}"
             - parallel:
                 - sequence:
                   - repeat:
@@ -189,13 +195,12 @@ action:
                           data:
                             title: >
                               {{ "DOOODS — движение на камере" }}
-                            message: >
-                              Камера: {{ camera_entity_id }}
+                            message: |
                               Объекты: {{ labels | join(', ') }}
-                              Время: {{ timestamp }}
+                              Время: {{ as_timestamp(timestamp) | timestamp_custom('%H:%M', true) }}
                             data:
                               tag: detection_notification
-                              image: media-source://media_source/snapshots/{{ camera_entity_id.split('.')[1] }}_latest.jpg
+                              image: "media-source://media_source/snapshots/{{ snapshot_name }}"
                               clickAction: app://app.alextran.immich
                               actions:
                                 - action: URI
@@ -205,19 +210,19 @@ action:
                     - action: immich.upload_file
                       metadata: {}
                       data:
-                        config_entry_id: !input immich_instance
+                        config_entry_id: "{{ immich_instance }}"
                         file:
-                          media_content_id: media-source://media_source/snapshots/{{ camera_entity_id.split('.')[1] }}_latest.jpg
+                          media_content_id: "media-source://media_source/snapshots/{{ snapshot_name }}"
                           media_content_type: image/jpeg
-                        album_id: !input immich_album_id
+                        album_id: "{{ immich_album_id }}"
                     - action: immich.upload_file
                       metadata: {}
                       data:
-                        config_entry_id: !input immich_instance
+                        config_entry_id: "{{ immich_instance }}"
                         file:
                           media_content_id: media-source://media_source/records/1.mp4
                           media_content_type: video/mp4
-                        album_id: !input immich_album_id
+                        album_id: "{{ immich_album_id }}"
 
   - choose:
       - conditions: 
