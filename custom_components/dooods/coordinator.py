@@ -20,6 +20,7 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.debounce import Debouncer
 from homeassistant.helpers.event import async_call_later, async_track_time_interval
+from homeassistant.helpers.translation import async_get_translations
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 
 from .api import (
@@ -67,6 +68,7 @@ from .frame_comparison import (
     source_frame_signature,
     source_frames_are_similar,
 )
+from .label_icons import label_translation_key
 from .motion import motion_sensor_is_usable
 from .preview import (
     PreviewUploadLimiter,
@@ -199,6 +201,8 @@ class DooodsCoordinator(DataUpdateCoordinator[dict[str, CameraScanResult]]):
         self._last_successful_frame_signatures: dict[str, bytes] = {}
         self._archive_retry_frame_signatures: dict[str, bytes] = {}
         self.emit_detection_events = bool(emit_detection_events)
+        self._label_translation_language: str | None = None
+        self._label_translations: dict[str, str] = {}
         self._pending_detection_events: list[
             tuple[str, CameraScanResult, CameraScanResult]
         ] = []
@@ -1426,6 +1430,9 @@ class DooodsCoordinator(DataUpdateCoordinator[dict[str, CameraScanResult]]):
             if not camera_ids:
                 return results
 
+            if getattr(self, "emit_detection_events", False):
+                await self._async_load_label_translations()
+
             for camera_entity_id in self.cameras:
                 if camera_entity_id in camera_ids:
                     previous_result = results.get(camera_entity_id)
@@ -1591,6 +1598,23 @@ class DooodsCoordinator(DataUpdateCoordinator[dict[str, CameraScanResult]]):
             return None
         return entity_id
 
+    async def _async_load_label_translations(self) -> None:
+        """Cache entity-name translations for the current Home Assistant language."""
+        language = self.hass.config.language or "en"
+        if self._label_translation_language == language:
+            return
+        try:
+            translations = await async_get_translations(
+                self.hass, language, "entity", integrations={DOMAIN}
+            )
+        except Exception:  # Translation failures must never interrupt detection.
+            _LOGGER.exception("Could not load detection label translations")
+            self._label_translation_language = None
+            self._label_translations = {}
+            return
+        self._label_translations = translations
+        self._label_translation_language = language
+
     def _fire_detection_event(
         self,
         camera_entity_id: str,
@@ -1606,6 +1630,21 @@ class DooodsCoordinator(DataUpdateCoordinator[dict[str, CameraScanResult]]):
             detections=scan_result.detections,
         )
         if event_data["detections"]:
+            translations = getattr(self, "_label_translations", {})
+
+            def display_label(label: str) -> str:
+                key = label_translation_key(label)
+                if key == "object":
+                    return label
+                return translations.get(
+                    f"component.{DOMAIN}.entity.binary_sensor.{key}.name", label
+                )
+
+            event_data["labels_translated"] = [
+                display_label(label) for label in event_data["labels"]
+            ]
+            for detection in event_data["detections"]:
+                detection["label_translated"] = display_label(detection["label"])
             event_data["image_entity_id"] = self._annotated_image_entity_id(
                 camera_entity_id, scan_result
             )
