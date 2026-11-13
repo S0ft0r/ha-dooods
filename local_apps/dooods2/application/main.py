@@ -100,6 +100,9 @@ def main():
         # off the API event loop and failures do not affect object detection.
         face_options = getattr(config, "face", None)
         face_enabled = getattr(face_options, "enabled", True) is not False
+        face_diagnostics_enabled = (
+            face_enabled and getattr(face_options, "diagnostics_enabled", True) is not False
+        )
         face_settings_store = None
         face_debug_store = None
         face_gallery_store = None
@@ -135,16 +138,18 @@ def main():
             else:
                 face_cameras_label = ", ".join(face_detection_cameras)
             logger.info("Face detection cameras: %s", face_cameras_label)
-            face_debug_store = None
-            try:
-                face_debug_store = FaceDebugStore(
-                    "/data/face_debug",
-                    min_face_width=min_face_width,
-                    min_face_height=min_face_height,
-                    max_matches=30,
-                )
-            except FaceDebugStoreError as err:
-                logger.error("Face-debug capture storage is unavailable: %s", err)
+            if face_diagnostics_enabled:
+                try:
+                    face_debug_store = FaceDebugStore(
+                        "/data/face_debug",
+                        min_face_width=min_face_width,
+                        min_face_height=min_face_height,
+                        max_matches=30,
+                    )
+                except FaceDebugStoreError as err:
+                    logger.error("Face-debug capture storage is unavailable: %s", err)
+            else:
+                logger.info("Face diagnostic capture and logging are disabled")
 
             # Галерея лиц хранится только в постоянном каталоге данных App.
             # Повреждённый файл отключает новую функцию, но не основной DOOODS API.
@@ -191,6 +196,7 @@ def main():
             face_debug_store=face_debug_store,
             face_settings_store=face_settings_store,
             face_enabled=face_enabled,
+            face_diagnostics_enabled=face_diagnostics_enabled,
         )
         api.run()
     elif args.action == 'mqtt':

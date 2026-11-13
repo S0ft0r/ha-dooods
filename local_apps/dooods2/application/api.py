@@ -68,7 +68,7 @@ _FACE_DISABLED_PAGE = """<!doctype html>
   <h2>Как включить</h2>
   <ol>
     <li>В Home Assistant откройте <strong>Настройки → Дополнения → DOOODS2 → Конфигурация</strong>.</li>
-    <li>В разделе <strong>«Лица — экспериментальные настройки»</strong> включите <strong>«Определение лиц»</strong> и сохраните настройки.</li>
+    <li>В разделе <strong>«Настройки распознавания лиц»</strong> включите <strong>«Определение лиц»</strong> и сохраните настройки.</li>
     <li>Перезапустите App DOOODS2, затем откройте веб-интерфейс снова.</li>
   </ol>
   <p class="muted">Пока функция отключена, API лиц, экспорт и удаление данных недоступны.</p>
@@ -90,6 +90,7 @@ class API():
         face_debug_store=None,
         face_settings_store=None,
         face_enabled=True,
+        face_diagnostics_enabled=True,
     ):
         self.config = config
         self.doods = doods
@@ -105,9 +106,12 @@ class API():
             self.profile_source_store = ProfileSourceStore(source_store_path)
         self.preview_store = preview_store or PreviewStore()
         self.face_enabled = bool(face_enabled)
+        self.face_diagnostics_enabled = bool(face_diagnostics_enabled and self.face_enabled)
         self.face_gallery_store = face_gallery_store if self.face_enabled else None
         self.face_analyzer = face_analyzer if self.face_enabled else None
-        self.face_debug_store = face_debug_store if self.face_enabled else None
+        self.face_debug_store = (
+            face_debug_store if self.face_diagnostics_enabled else None
+        )
         self.face_settings_store = face_settings_store if self.face_enabled else None
         self.auth_key = getattr(config, "auth_key", "") or ""
         self.logger = logging.getLogger("doods.api")
@@ -310,6 +314,50 @@ class API():
                         "X-Content-Type-Options": "nosniff",
                     },
                 )
+            if (
+                self.face_enabled
+                and not self.face_diagnostics_enabled
+                and path == "/faces.html"
+                and request.method in {"GET", "HEAD"}
+            ):
+                # Counts are private. Trust only authenticated Supervisor Ingress
+                # requests or the configured server API key, never browser input.
+                remote_host = request.client.host if request.client else None
+                via_ingress = (
+                    remote_host == "172.30.32.2"
+                    and bool(request.headers.get("x-remote-user-id"))
+                )
+                via_api_key = api_key_matches(
+                    self.auth_key, request.headers.get("doods-auth-key")
+                )
+                if not (via_ingress or via_api_key):
+                    return JSONResponse(
+                        status_code=status.HTTP_401_UNAUTHORIZED,
+                        content={"detail": "Authentication required."},
+                        headers={"Cache-Control": "no-store"},
+                    )
+                page = await asyncio.to_thread(self._face_summary_html)
+                return HTMLResponse(
+                    content=page,
+                    headers={
+                        "Cache-Control": "no-store, must-revalidate",
+                        "X-Content-Type-Options": "nosniff",
+                    },
+                )
+            if (
+                self.face_enabled
+                and not self.face_diagnostics_enabled
+                and (
+                    path in {"/faces/debug", "/faces/people", "/faces/backup", "/faces/restore"}
+                    or path.startswith("/faces/debug/")
+                    or path.startswith("/faces/people/")
+                )
+            ):
+                return JSONResponse(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    content={"detail": "Not found."},
+                    headers={"Cache-Control": "no-store"},
+                )
             if not self.face_enabled and (
                 path in {"/faces", "/faces.html"} or path.startswith("/faces/")
             ):
@@ -377,6 +425,8 @@ class API():
             return capabilities_payload(
                 profiles_enabled=profiles_enabled(),
                 preview_enabled=preview_enabled(),
+                # Kept for existing HA integrations: this flag also controls
+                # face camera settings, even when gallery routes are blocked.
                 face_gallery_enabled=face_gallery_enabled(),
                 localized_annotations_enabled=True,
                 motion_stream_enabled=bool(self.auth_key),
@@ -384,6 +434,7 @@ class API():
                     self.face_enabled and self.auth_key and self.face_analyzer is not None
                 ),
                 face_debug_enabled=face_debug_enabled(),
+                face_summary_enabled=bool(self.face_enabled and not self.face_diagnostics_enabled),
             )
 
         @self.api.get("/health")
@@ -1865,6 +1916,52 @@ class API():
         # Mount the UI directory - must be last
         self.api.mount("/", StaticFiles(directory="html", html=True), name="static")
         
+    def _face_summary_html(self) -> str:
+        """Render aggregate-only face summary without images, names or secrets."""
+        state = "Недоступно"
+        if self.face_analyzer is not None:
+            try:
+                status_value = self.face_analyzer.model_status().get("state")
+                state = {
+                    "ready": "Модели готовы",
+                    "loading": "Модели загружаются",
+                    "error": "Ошибка загрузки моделей",
+                }.get(status_value, "Неизвестно")
+            except Exception:
+                self.logger.warning("Face model status is unavailable")
+        people_count = "Недоступно"
+        sample_count = "Недоступно"
+        if self.face_gallery_store is not None:
+            try:
+                people = self.face_gallery_store.list_people()
+                people_count = str(len(people))
+                sample_count = str(sum(int(person["sample_count"]) for person in people))
+            except Exception:
+                self.logger.warning("Face gallery summary is unavailable")
+        return f"""<!doctype html>
+<html lang="ru"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Диагностика лиц отключена — DOOODS2</title>
+<style>
+:root {{ color-scheme: dark; font-family: system-ui, sans-serif; }}
+body {{ margin: 0; background: #111820; color: #eef4f8; }}
+main {{ max-width: 680px; margin: 8vh auto; padding: 24px; }}
+section {{ background: #1a242e; border: 1px solid #354554; border-radius: 12px; padding: 24px; }}
+h1 {{ margin-top: 0; font-size: 1.5rem; }}
+li {{ margin: .75rem 0; }} p, li {{ line-height: 1.5; }}
+</style></head><body><main><section>
+<h1>Диагностика лиц отключена</h1>
+<p>Распознавание лиц включено. Диагностические кадры, совпадения и журнал не записываются.</p>
+<p><strong>Состояние моделей:</strong> {state}<br>
+<strong>Зарегистрировано людей:</strong> {people_count}<br>
+<strong>Эталонных образцов:</strong> {sample_count}</p>
+<p>Сохранённые ранее данные не удалены. Управление эталонами и диагностические кадры доступны после включения диагностики.</p>
+<h2>Как включить диагностику</h2><ol>
+<li>Откройте в Home Assistant <strong>Настройки → Дополнения → DOOODS2 → Конфигурация</strong>.</li>
+<li>В разделе <strong>«Настройки распознавания лиц»</strong> включите <strong>«Диагностика лиц»</strong> и сохраните настройки.</li>
+<li>Перезапустите App DOOODS2 и снова откройте веб-интерфейс.</li>
+</ol></section></main></body></html>"""
+
     def run(self):
         log_config = uvicorn.config.LOGGING_CONFIG
         log_config["formatters"]["access"]["fmt"] = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
