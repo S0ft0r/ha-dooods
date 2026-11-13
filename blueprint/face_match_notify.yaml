@@ -179,7 +179,7 @@ action:
               target:
                 entity_id: "{{ camera_entity_id }}"
               data:
-                filename: "/config/www/{{ snapshot_name }}"
+                filename: "/config/www/snapshots/{{ snapshot_name }}"
             - parallel:
                 - sequence:
                   - repeat:
