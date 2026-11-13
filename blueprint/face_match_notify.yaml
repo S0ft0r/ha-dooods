@@ -145,13 +145,13 @@ trigger:
 
 action:
   - variables:
-      state: "{{ trigger.event.data.state }}"
-      person_name: "{{ trigger.event.data.person_name }}"
-      camera_entity_id: "{{ trigger.event.data.camera_entity_id }}"
-      similarity: "{{ trigger.event.data.similarity }}"
-      timestamp: "{{ trigger.event.data.timestamp }}"
-      labels: "{{ trigger.event.data.labels }}"
-      detections: "{{ trigger.event.data.detections }}"
+      state: "{{ trigger.event.data.get('state') or '' }}"
+      person_name: "{{ trigger.event.data.get('person_name') or '' }}"
+      camera_entity_id: "{{ trigger.event.data.get('camera_entity_id') or '' }}"
+      similarity: "{{ trigger.event.data.get('similarity') | float(0) }}"
+      timestamp: "{{ trigger.event.data.get('timestamp') or '' }}"
+      labels: "{{ trigger.event.data.get('labels') or [] }}"
+      detections: "{{ trigger.event.data.get('detections') or [] }}"
 
       mobile_app_list: |
         {{  integration_entities('mobile_app') 
@@ -170,7 +170,7 @@ action:
               target:
                 entity_id: image.server_dooods2_pered_kvartiroi_hd_stream_annotated_detections
               data:
-                filename: media-source://media_source/snapshots/{{ camera_entity_id }}_latest.jpg
+                filename: "config/www/{{ camera_entity_id.split('.')[1] }}_latest.jpg"
             - parallel:
                 - sequence:
                   - repeat:
@@ -192,7 +192,7 @@ action:
                               Время: {{ timestamp }}
                             data:
                               tag: detection_notification
-                              image: media-source://media_source/snapshots/{{ camera_entity_id }}_latest.jpg
+                              image: media-source://media_source/snapshots/{{ camera_entity_id.split('.')[1] }}_latest.jpg
                               clickAction: app://app.alextran.immich
                               actions:
                                 - action: URI
@@ -204,7 +204,7 @@ action:
                       data:
                         config_entry_id: !input immich_instance
                         file:
-                          media_content_id: media-source://media_source/snapshots/{{ camera_entity_id }}_latest.jpg
+                          media_content_id: media-source://media_source/snapshots/{{ camera_entity_id.split('.')[1] }}_latest.jpg
                           media_content_type: image/jpeg
                         album_id: !input immich_album_id
                     - action: immich.upload_file
