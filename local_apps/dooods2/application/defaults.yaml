@@ -1,13 +1,13 @@
 name: "DOOODS2"
 slug: "dooods2"
-version: "0.1.34.3-dev"
+version: "0.1.34.3"
 description: ""
 arch:
   - aarch64
   - amd64
 startup: services
 boot: auto
-stage: experimental
+stage: stable
 ingress: true
 ingress_port: 8080
 ingress_entry: /faces.html

@@ -27,7 +27,7 @@ configuration:
         name: Трассировка памяти
         description: Диагностика; в обычном режиме оставьте выключенной.
   face:
-    name: Лица — экспериментальные настройки
+    name: Настройки распознавания лиц
     description: Параметры alpha-обработки YuNet/SFace для RTSP-кадров-кандидатов.
     fields:
       enabled:

@@ -27,7 +27,7 @@ configuration:
         name: Memory tracing
         description: Diagnostic tracing; keep disabled for normal operation.
   face:
-    name: Face — experimental settings
+    name: Face recognition settings
     description: Alpha YuNet/SFace settings for RTSP motion-candidate frames.
     fields:
       enabled:
