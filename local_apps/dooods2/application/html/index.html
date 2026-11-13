@@ -242,7 +242,7 @@ xmlhttp.send();
   <script>
     fetch('./capabilities').then(response => response.ok ? response.json() : null)
       .then(data => {
-        if (data && data.features && data.features.includes('face_debug_dashboard')) {
+        if (data && data.features && (data.features.includes('face_debug_dashboard') || data.features.includes('face_summary'))) {
           document.getElementById('faces-link').hidden = false;
         }
       }).catch(() => {});

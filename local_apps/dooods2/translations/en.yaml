@@ -33,6 +33,9 @@ configuration:
       enabled:
         name: Face detection
         description: Enables face recognition, the Faces page and gallery API. Applied after restarting the app; data is retained.
+      diagnostics_enabled:
+        name: Face diagnostics
+        description: Save face frames and logs and show the diagnostics interface. Recognition continues when disabled; existing data is retained. Applied after restarting the app.
       yunet_score_threshold:
         name: YuNet confidence threshold
         description: Range 0.1–1.0; default 0.9. Lower values may detect weaker/smaller faces but can increase false detections. The change takes effect after restarting the App.

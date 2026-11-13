@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 API_VERSION = 1
-APP_VERSION = "0.1.34.3"
+APP_VERSION = "0.1.35"
 PROFILE_FEATURES: tuple[str, ...] = ("profiles", "polygon_zones")
 PREVIEW_FEATURES: tuple[str, ...] = ("camera_preview",)
 ANNOTATION_FEATURES: tuple[str, ...] = ("localized_annotations",)
@@ -22,6 +22,7 @@ def capabilities_payload(
     face_gallery_enabled: bool = False,
     face_pipeline_diagnostics_enabled: bool = False,
     face_debug_enabled: bool = False,
+    face_summary_enabled: bool = False,
 ) -> dict[str, object]:
     """Сформировать ответ с возможностями, реально доступными через API."""
     features = []
@@ -39,6 +40,8 @@ def capabilities_payload(
         features.extend(FACE_DIAGNOSTIC_FEATURES)
     if face_debug_enabled:
         features.extend(FACE_DEBUG_FEATURES)
+    if face_summary_enabled:
+        features.append("face_summary")
     return {
         "api_version": API_VERSION,
         "app_version": APP_VERSION,

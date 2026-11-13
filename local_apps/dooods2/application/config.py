@@ -70,6 +70,7 @@ class FaceConfig(BaseSettings):
     """Experimental YuNet/SFace settings for the RTSP face pipeline."""
 
     enabled: bool = True
+    diagnostics_enabled: bool = True
     yunet_score_threshold: Optional[float] = 0.9
     face_match_threshold: Optional[float] = 0.4
     face_match_min_gap: Optional[float] = 0.1
