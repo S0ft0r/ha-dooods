@@ -177,7 +177,7 @@ action:
             - action: image.snapshot
               metadata: {}
               target:
-                entity_id: "{{ camera_entity_id }}"
+                entity_id: "{{ image_entity_id }}"
               data:
                 filename: "/config/www/snapshots/{{ snapshot_name }}"
             - parallel:
