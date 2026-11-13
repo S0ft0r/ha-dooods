@@ -5,7 +5,7 @@ blueprint:
     Отправляет уведомление при подтверждённом (matched) или неоднозначном
     (ambiguous) совпадении с человеком из галереи. Замок открывается только
     при подтверждённом совпадении matched; при ambiguous замок не открывается.
-    Дополнительно можно отфильтровать события по имени человека или камере.
+#    Дополнительно можно отфильтровать события по имени человека или камере.
   domain: automation
   source_url: https://github.com/S0ft0r/ha-dooods/blob/main/blueprint/face_match_notify.yaml
   author: Softor
@@ -29,16 +29,16 @@ blueprint:
       icon: mdi:cube-scan
       collapsed: true
       input:
-        camera_entity:
-          name: Камера
-          description: >
-            Описание
-          default: []
-          selector: 
-            entity:
-              domain: camera
-#              integration: dooods
-              multiple: true
+#         camera_entity:
+#           name: Камера
+#           description: >
+#             Описание
+#           default: []
+#           selector: 
+#             entity:
+#               domain: camera
+# #              integration: dooods
+#               multiple: true
         immich_instance:
           name: Интеграция Immich (необязательно)
           description: Выберите настроенный экземпляр интеграции Immich в Home Assistant.
@@ -68,17 +68,17 @@ blueprint:
           default: ""
           selector:
             text:
-        camera_entity_id:
-          name: Камера (необязательно)
-          description: >
-            Оставьте пустым, чтобы реагировать на любую камеру. Укажите entity_id
-            камеры (например, camera.entry_1), чтобы реагировать только на совпадения
-            с этой камеры.
-          default: ""
-          selector:
-            entity:
-              domain: camera
-#              integration: dooods
+#         camera_entity_id:
+#           name: Камера (необязательно)
+#           description: >
+#             Оставьте пустым, чтобы реагировать на любую камеру. Укажите entity_id
+#             камеры (например, camera.entry_1), чтобы реагировать только на совпадения
+#             с этой камеры.
+#           default: ""
+#           selector:
+#             entity:
+#               domain: camera
+# #              integration: dooods
         lock_entity:
           name: Замок, который надо открыть (необязательно)
           description: >
@@ -120,9 +120,9 @@ blueprint:
               multiple: true
 
 variables:
-  camera_entity: !input camera_entity
+#  camera_entity: !input camera_entity
   expected_person_name: !input person_name
-  expected_camera: !input camera_entity_id
+#  expected_camera: !input camera_entity_id
   expected_similarity: !input similarity
   lock_entity: !input lock_entity
   notification_service: !input notification_service 
@@ -181,6 +181,7 @@ action:
                             title: >
                               {{ "DOOODS — движение на камере" }}
                             message: >
+                              Камера: {{ camera_entity_id }}
                               Объекты: {{ labels | join(', ') }}
                               Время: {{ timestamp }}
                             data:
@@ -216,8 +217,7 @@ action:
           - condition: template
             value_template: >
               {{ state in ["matched", "ambiguous"]
-                and (expected_person_name == "" or person_name == expected_person_name)
-                and (expected_camera == "" or camera_entity_id == expected_camera) }}
+                and (expected_person_name == "" or person_name == expected_person_name) }}
 
         sequence:
             - parallel:
