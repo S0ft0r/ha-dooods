@@ -170,7 +170,7 @@ action:
               target:
                 entity_id: image.server_dooods2_pered_kvartiroi_hd_stream_annotated_detections
               data:
-                filename: "config/www/{{ camera_entity_id.split('.')[1] }}_latest.jpg"
+                filename: "/config/www/{{ camera_entity_id.split('.')[1] }}_latest.jpg"
             - parallel:
                 - sequence:
                   - repeat:
