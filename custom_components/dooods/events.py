@@ -77,6 +77,11 @@ def face_match_event_data(
     }
 
 
+def annotated_image_unique_id(entry_id: str, camera_entity_id: str) -> str:
+    """Build the existing unique ID shared by the image and its event lookup."""
+    return f"{entry_id}_{camera_entity_id}_annotated_detections"
+
+
 def detection_event_data(
     *,
     entry_id: str,

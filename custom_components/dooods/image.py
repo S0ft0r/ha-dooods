@@ -14,6 +14,7 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from .camera_result import CameraScanResult
 from .coordinator import DooodsCoordinator
 from .device import camera_device_info
+from .events import annotated_image_unique_id
 
 
 async def async_setup_entry(
@@ -43,8 +44,8 @@ class DooodsAnnotatedImage(CoordinatorEntity[DooodsCoordinator], ImageEntity):
         super().__init__(coordinator)
         ImageEntity.__init__(self, coordinator.hass)
         self._camera_entity_id = camera_entity_id
-        self._attr_unique_id = (
-            f"{coordinator.entry_id}_{camera_entity_id}_annotated_detections"
+        self._attr_unique_id = annotated_image_unique_id(
+            coordinator.entry_id, camera_entity_id
         )
         self._attr_device_info = camera_device_info(
             coordinator.hass,

@@ -17,6 +17,7 @@ from homeassistant.components.camera import async_get_image
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.debounce import Debouncer
 from homeassistant.helpers.event import async_call_later, async_track_time_interval
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
@@ -55,6 +56,7 @@ from .const import (
     EVENT_FACE_MATCH,
 )
 from .events import (
+    annotated_image_unique_id,
     detection_event_data,
     face_match_event_cooldown_allows,
     face_match_event_data,
@@ -197,6 +199,9 @@ class DooodsCoordinator(DataUpdateCoordinator[dict[str, CameraScanResult]]):
         self._last_successful_frame_signatures: dict[str, bytes] = {}
         self._archive_retry_frame_signatures: dict[str, bytes] = {}
         self.emit_detection_events = bool(emit_detection_events)
+        self._pending_detection_events: list[
+            tuple[str, CameraScanResult, CameraScanResult]
+        ] = []
         self.emit_face_match_events = bool(emit_face_match_events)
         self.face_match_event_cooldown = max(0, face_match_event_cooldown)
         self._last_face_match_event_keys: dict[str, tuple[Any, ...]] = {}
@@ -1327,6 +1332,7 @@ class DooodsCoordinator(DataUpdateCoordinator[dict[str, CameraScanResult]]):
     async def async_shutdown(self) -> None:
         """Остановить таймеры и завершить начальный скан при выгрузке записи."""
         self._is_shutting_down = True
+        self._pending_detection_events.clear()
         for cancel_scan in self._cancel_periodic_scans.values():
             cancel_scan()
         self._cancel_periodic_scans.clear()
@@ -1367,6 +1373,8 @@ class DooodsCoordinator(DataUpdateCoordinator[dict[str, CameraScanResult]]):
 
     async def _async_update_data(self) -> dict[str, CameraScanResult]:
         """Сканировать только запрошенные камеры, сохраняя последние результаты для остальных."""
+        self._pending_detection_events.clear()
+        pending_events: list[tuple[str, CameraScanResult, CameraScanResult]] = []
         self._active_full_scan = self.data is None or self._force_full_scan
         try:
             if self._active_full_scan:
@@ -1437,7 +1445,6 @@ class DooodsCoordinator(DataUpdateCoordinator[dict[str, CameraScanResult]]):
                     if scan_result.error is None:
                         self._clear_camera_retry(camera_entity_id)
                         if scan_result.detections:
-                            self._fire_detection_event(camera_entity_id, scan_result)
                             self._start_motion_candidate_cooldown(camera_entity_id)
                         archive_candidate = (
                             self.camera_recognition_is_enabled(camera_entity_id)
@@ -1520,6 +1527,11 @@ class DooodsCoordinator(DataUpdateCoordinator[dict[str, CameraScanResult]]):
                         previous_result,
                         scan_result,
                     )
+                    if scan_result.error is None and scan_result.detections:
+                        pending_events.append(
+                            (camera_entity_id, scan_result, results[camera_entity_id])
+                        )
+            self._pending_detection_events = pending_events
             return results
         finally:
             self._active_full_scan = False
@@ -1536,6 +1548,49 @@ class DooodsCoordinator(DataUpdateCoordinator[dict[str, CameraScanResult]]):
             name=f"{DOMAIN}_coalesced_camera_scan",
         )
 
+    @callback
+    @override
+    def async_update_listeners(self) -> None:
+        """Publish scan events only after coordinator data and entity states update."""
+        pending, self._pending_detection_events = self._pending_detection_events, []
+        super().async_update_listeners()
+        if self._is_shutting_down or not self.last_update_success:
+            return
+        for camera_entity_id, scan_result, published_result in pending:
+            if (
+                self.data.get(camera_entity_id) is published_result
+                and self.camera_recognition_is_enabled(camera_entity_id)
+                and self.camera_object_detection_is_enabled(camera_entity_id)
+            ):
+                self._fire_detection_event(camera_entity_id, scan_result)
+
+    @callback
+    def _annotated_image_entity_id(
+        self, camera_entity_id: str, scan_result: CameraScanResult
+    ) -> str | None:
+        """Resolve the live image entity only if it published this scan's JPEG."""
+        if scan_result.annotated_image is None or scan_result.checked_at is None:
+            return None
+        registry = er.async_get(self.hass)
+        entity_id = registry.async_get_entity_id(
+            "image", DOMAIN, annotated_image_unique_id(self.entry_id, camera_entity_id)
+        )
+        if entity_id is None:
+            return None
+        entry = registry.async_get(entity_id)
+        if entry is None or entry.disabled_by is not None:
+            return None
+        state = self.hass.states.get(entity_id)
+        if state is None:
+            return None
+        try:
+            updated_at = datetime.fromisoformat(state.state)
+        except (TypeError, ValueError):
+            return None
+        if updated_at != scan_result.checked_at:
+            return None
+        return entity_id
+
     def _fire_detection_event(
         self,
         camera_entity_id: str,
@@ -1551,6 +1606,9 @@ class DooodsCoordinator(DataUpdateCoordinator[dict[str, CameraScanResult]]):
             detections=scan_result.detections,
         )
         if event_data["detections"]:
+            event_data["image_entity_id"] = self._annotated_image_entity_id(
+                camera_entity_id, scan_result
+            )
             self.hass.bus.async_fire(EVENT_DETECTION, event_data)
 
     @callback
