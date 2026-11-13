@@ -1,0 +1,142 @@
+name: Release DOOODS integration
+
+on:
+  workflow_dispatch:
+    inputs:
+      prerelease:
+        description: Publish as a prerelease
+        type: boolean
+        default: false
+        required: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-dooods-integration
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Validate and publish integration release
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out selected revision
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: .github/requirements-validator.txt
+
+      - name: Install validator dependency
+        run: python -m pip install -r .github/requirements-validator.txt
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Validate integration
+        run: |
+          set -euo pipefail
+          python .github/scripts/validate_components.py --component integration
+          python .github/scripts/validate_javascript.py --component integration
+
+      - name: Resolve and verify release version
+        id: version
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          PRERELEASE: ${{ inputs.prerelease }}
+        run: |
+          set -euo pipefail
+          if [[ "$REF_TYPE" != branch ]]; then
+            echo "Select a branch, not a tag, when starting this workflow." >&2
+            exit 1
+          fi
+          if git ls-files | grep -Eq '(^|/)TODO\.md$'; then
+            echo "Tracked TODO.md would be exposed in GitHub source archives; refusing to publish." >&2
+            exit 1
+          fi
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          import os
+          import re
+          from pathlib import Path
+
+          manifest = json.loads(Path('custom_components/dooods/manifest.json').read_text(encoding='utf-8'))
+          version = manifest.get('version')
+          if not isinstance(version, str) or not re.fullmatch(r'\d+\.\d+\.\d+(?:\.\d+)?(?:-[0-9A-Za-z][0-9A-Za-z.-]*)?', version):
+              raise SystemExit('Invalid integration version in manifest.json')
+          if '-' in version and os.environ['PRERELEASE'] != 'true':
+              raise SystemExit('A version with a suffix must be published as a prerelease')
+          print(f'version={version}')
+          print(f'tag=v{version}')
+          PY
+
+      - name: Refuse to reuse an existing tag
+        env:
+          RELEASE_TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          set -euo pipefail
+          set +e
+          git ls-remote --exit-code --refs origin "refs/tags/$RELEASE_TAG" > "$RUNNER_TEMP/existing-tag"
+          result=$?
+          set -e
+          if [[ "$result" == 0 ]]; then
+            echo "Tag $RELEASE_TAG already exists; update the integration version first." >&2
+            exit 1
+          elif [[ "$result" != 2 ]]; then
+            echo "Unable to check remote tags (exit $result); refusing to publish." >&2
+            exit 1
+          fi
+
+      - name: Build integration ZIP and checksum
+        env:
+          OUTPUT_DIR: ${{ runner.temp }}/dooods-release
+        run: |
+          set -euo pipefail
+          python .github/scripts/package_component_artifacts.py --component integration --output-dir "$OUTPUT_DIR"
+          cd "$OUTPUT_DIR/integration"
+          sha256sum dooods.zip > dooods.zip.sha256
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.version.outputs.tag }}
+          VERSION: ${{ steps.version.outputs.version }}
+          PRERELEASE: ${{ inputs.prerelease }}
+          OUTPUT_DIR: ${{ runner.temp }}/dooods-release
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/integration-notes.md" <<EOF
+          ## DOOODS integration $VERSION
+
+          The attached 030dooods.zip030 contains the contents of 030custom_components/dooods/030 at the ZIP root. For manual installation, extract it to 030custom_components/dooods/030 and restart Home Assistant. The DOOODS2 App is distributed separately.
+
+          The SHA-256 checksum is provided in 030dooods.zip.sha256030. GitHub's automatically generated source archives contain the complete repository at this tag, not just the integration.
+          EOF
+          args=(--target "$GITHUB_SHA" --title "DOOODS $VERSION" --notes-file "$RUNNER_TEMP/integration-notes.md")
+          if [[ "$PRERELEASE" == true ]]; then args+=(--prerelease --latest=false); fi
+          gh release create "$RELEASE_TAG" \
+            "$OUTPUT_DIR/integration/dooods.zip" \
+            "$OUTPUT_DIR/integration/dooods.zip.sha256" \
+            "${args[@]}"
+
+      - name: Summarize release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          set -euo pipefail
+          release_url=$(gh release view "$RELEASE_TAG" --json url --jq .url)
+          {
+            echo "## Integration release published"
+            echo
+            echo "- Release: $release_url"
+            echo "- Assets: dooods.zip and dooods.zip.sha256"
+            echo "- DOOODS2 App was not packaged or released."
+          } >> "$GITHUB_STEP_SUMMARY"
