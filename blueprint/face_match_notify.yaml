@@ -290,7 +290,7 @@ action:
                             message: |
                               {% if state == "ambiguous" %}⚠️ Неоднозначное совпадение лица{% else %}👤 Совпадение лица{% endif %}: {{ person_name }}
                               Сходство: {{ (similarity * 100) | int }}%
-                              Время: {{ as_timestamp(timestamp) | timestamp_custom('%H:%M', true) }
+                              Время: {{ as_timestamp(timestamp) | timestamp_custom('%H:%M', true) }}
                             data:
                               tag: face_match_notification
                 - if:
