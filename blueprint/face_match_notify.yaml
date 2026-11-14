@@ -189,7 +189,6 @@ action:
       # snapshot_name: "{{ camera_entity_id.split('.')[1] }}_latest.jpg"
       # record_name: "{{ camera_entity_id.split('.')[1] }}_latest.mp4"
 
-<<<<<<< HEAD
   # - choose:
   #     - conditions:
   #         - condition: trigger
@@ -261,79 +260,6 @@ action:
   #                                     media_content_id: media-source://media_source/records/{{ record_name }}
   #                                     media_content_type: video/mp4
   #                                   album_id: "{{ immich_album_id }}"
-=======
-  - choose:
-      - conditions:
-          - condition: trigger
-            id: dooods_detection_trigger
-        sequence:
-            - action: image.snapshot
-              metadata: {}
-              target:
-                entity_id: "{{ image_entity_id }}"
-              data:
-                filename: "/config/www/snapshots/{{ snapshot_name }}"
-            - parallel:
-                - sequence:
-                  - repeat:
-                      for_each: "{{ mobile_app_list }}"
-                      sequence:
-                        - action: "{{ repeat.item }}"
-                          metadata: {}
-                          data:
-                            message: clear_notification
-                            data:
-                              tag: detection_notification
-                        - action: "{{ repeat.item }}"
-                          data:
-                            title: >
-                              {{ "DOOODS — движение на камере" }}
-                            message: |
-                              Объекты: {{ labels | join(', ') }}
-                              Время: {{ as_timestamp(timestamp) | timestamp_custom('%H:%M', true) }}
-                            data:
-                              tag: detection_notification
-                              image: "media-source://media_source/snapshots/{{ snapshot_name }}"
-                              clickAction: app://app.alextran.immich
-                              actions:
-                                - action: URI
-                                  title: Просмотр камер
-                                  uri: homeassistant://navigate/lovelace/cctv
-                - sequence:
-                    - parallel:
-                        - sequence:
-                            - if:
-                                - condition: template
-                                  value_template: "{{ immich_instance is string and immich_instance | trim != '' }}"
-                              then:
-                                - action: immich.upload_file
-                                  metadata: {}
-                                  data:
-                                    config_entry_id: "{{ immich_instance }}"
-                                    file:
-                                      media_content_id: "media-source://media_source/snapshots/{{ snapshot_name }}"
-                                      media_content_type: image/jpeg
-                                    album_id: "{{ immich_album_id }}"
-                        - sequence:
-                            - data:
-                                duration: '{{ record_duration }}'
-                                filename: "/config/www/records/{{ record_name }}"
-                              target:
-                                entity_id: "{{ camera_entity_id }}"
-                              action: camera.record
-                            - if:
-                                - condition: template
-                                  value_template: "{{ immich_instance is string and immich_instance | trim != '' }}"
-                              then:
-                                - action: immich.upload_file
-                                  metadata: {}
-                                  data:
-                                    config_entry_id: "{{ immich_instance }}"
-                                    file:
-                                      media_content_id: media-source://media_source/records/{{ record_name }}
-                                      media_content_type: video/mp4
-                                    album_id: "{{ immich_album_id }}"
->>>>>>> 35ce3b5ae67a9ed375dc34bb41c95b8dfdaead34
 
   - choose:
       - conditions:
