@@ -188,6 +188,7 @@ action:
 
       snapshot_name: "{{ camera_entity_id.split('.')[1] }}_latest.jpg"
       record_name: "{{ camera_entity_id.split('.')[1] }}_latest.mp4"
+      camera_tag: "{{ camera_entity_id.split('.')[1] }}_notification"
 
   - choose:
       - conditions:
@@ -210,7 +211,7 @@ action:
                           data:
                             message: clear_notification
                             data:
-                              tag: detection_notification
+                              tag: "{{ camera_tag }}"
                         - action: "{{ repeat.item }}"
                           data:
                             title: >
@@ -219,7 +220,7 @@ action:
                               Объекты: {{ labels | join(', ') }}
                               Время: {{ as_timestamp(timestamp) | timestamp_custom('%H:%M', true) }}
                             data:
-                              tag: detection_notification
+                              tag: "{{ camera_tag }}"
                               image: "/local/snapshots/{{ snapshot_name }}"
                               clickAction: app://app.alextran.immich
                               actions:
