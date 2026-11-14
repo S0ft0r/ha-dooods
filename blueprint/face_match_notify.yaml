@@ -220,7 +220,7 @@ action:
                               Время: {{ as_timestamp(timestamp) | timestamp_custom('%H:%M', true) }}
                             data:
                               tag: detection_notification
-                              image: "/local/snapshots/{{ snapshot_name }}"
+                              image: "media-source://media_source/snapshots/{{ snapshot_name }}"
                               clickAction: app://app.alextran.immich
                               actions:
                                 - action: URI
@@ -229,14 +229,18 @@ action:
                 - sequence:
                     - parallel:
                         - sequence:
-                            - action: immich.upload_file
-                              metadata: {}
-                              data:
-                                config_entry_id: "{{ immich_instance }}"
-                                file:
-                                  media_content_id: "media-source://media_source/snapshots/{{ snapshot_name }}"
-                                  media_content_type: image/jpeg
-                                album_id: "{{ immich_album_id }}"
+                            - if:
+                                - condition: template
+                                  value_template: "{{ immich_instance is string and immich_instance | trim != '' }}"
+                              then:
+                                - action: immich.upload_file
+                                  metadata: {}
+                                  data:
+                                    config_entry_id: "{{ immich_instance }}"
+                                    file:
+                                      media_content_id: "media-source://media_source/snapshots/{{ snapshot_name }}"
+                                      media_content_type: image/jpeg
+                                    album_id: "{{ immich_album_id }}"
                         - sequence:
                             - data:
                                 duration: '{{ record_duration }}'
@@ -244,14 +248,18 @@ action:
                               target:
                                 entity_id: "{{ camera_entity_id }}"
                               action: camera.record
-                            - action: immich.upload_file
-                              metadata: {}
-                              data:
-                                config_entry_id: "{{ immich_instance }}"
-                                file:
-                                  media_content_id: media-source://media_source/records/{{ record_name }}
-                                  media_content_type: video/mp4
-                                album_id: "{{ immich_album_id }}"
+                            - if:
+                                - condition: template
+                                  value_template: "{{ immich_instance is string and immich_instance | trim != '' }}"
+                              then:
+                                - action: immich.upload_file
+                                  metadata: {}
+                                  data:
+                                    config_entry_id: "{{ immich_instance }}"
+                                    file:
+                                      media_content_id: media-source://media_source/records/{{ record_name }}
+                                      media_content_type: video/mp4
+                                    album_id: "{{ immich_album_id }}"
 
   - choose:
       - conditions:
@@ -280,18 +288,18 @@ action:
                               {{ "DOOODS — неоднозначное совпадение" if state == "ambiguous"
                                 else "DOOODS — совпадение лица" }}
                             message: |
-                              {% if state == "ambiguous" %}⚠️ Неоднозначное совпадение лица{% else %}👤 Совпадение лица: {{ person_name }}{% endif %}
-                              Сходство: {{ (similarity * 100) | int }}
-                              Время: {{ timestamp }}
+                              {% if state == "ambiguous" %}⚠️ Неоднозначное совпадение лица{% else %}👤 Совпадение лица{% endif %}: {{ person_name }}
+                              Сходство: {{ (similarity * 100) | int }}%
+                              Время: {{ as_timestamp(timestamp) | timestamp_custom('%H:%M', true) }
                             data:
                               tag: face_match_notification
                 - if:
                     - condition: template
                       value_template: >
-                        {{ (state == "matched" and lock_entity | string != "") and ((similarity | float(0.39) * 100) | int >= expected_similarity | int(40)) }}
+                        {{ (state == "matched" and lock_entity is string and lock_entity | trim != "") and ((similarity | float(0.39) * 100) | int >= expected_similarity | int(40)) }}
                   then:
                     - service: lock.unlock
                       target:
-                        entity_id: !input lock_entity
+                        entity_id: "{{ lock_entity }}"
                       data: {}
                       continue_on_error: true
