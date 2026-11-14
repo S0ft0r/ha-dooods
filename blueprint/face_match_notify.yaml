@@ -269,7 +269,7 @@ action:
             value_template: >
               {{ (state == "matched" or (state == "ambiguous" and notify_ambiguous))
                 and (expected_person_name == "" or person_name == expected_person_name) }}
-
+  
         sequence:
             - parallel:
                 - sequence:
