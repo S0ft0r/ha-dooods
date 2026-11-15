@@ -24,6 +24,7 @@ def face_match_event_key(
         return None
     return (
         checked_at,
+        match.get("face_index"),
         match.get("person_id"),
         match.get("person_name"),
         match.get("similarity"),
@@ -37,8 +38,10 @@ def face_match_event_cooldown_allows(
     previous_state: str | None,
     elapsed: float | None,
     cooldown: int,
+    similarity: float | None = None,
+    previous_similarity: float | None = None,
 ) -> bool:
-    """Allow repeats after cooldown and an immediate ambiguous-to-match upgrade."""
+    """Allow expiry, confirmed upgrades, and higher-confidence confirmed matches."""
     if (
         cooldown <= 0
         or previous_state is None
@@ -46,7 +49,13 @@ def face_match_event_cooldown_allows(
         or elapsed >= cooldown
     ):
         return True
-    return state == "matched" and previous_state != "matched"
+    if state != "matched":
+        return False
+    if previous_state != "matched":
+        return True
+    return similarity is not None and (
+        previous_similarity is None or similarity > previous_similarity
+    )
 
 
 def face_match_event_data(
@@ -75,6 +84,11 @@ def face_match_event_data(
         else None,
         "state": state,
     }
+
+
+def annotated_image_unique_id(entry_id: str, camera_entity_id: str) -> str:
+    """Build the existing unique ID shared by the image and its event lookup."""
+    return f"{entry_id}_{camera_entity_id}_annotated_detections"
 
 
 def detection_event_data(

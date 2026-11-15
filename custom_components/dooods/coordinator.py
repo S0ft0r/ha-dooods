@@ -17,8 +17,10 @@ from homeassistant.components.camera import async_get_image
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.debounce import Debouncer
 from homeassistant.helpers.event import async_call_later, async_track_time_interval
+from homeassistant.helpers.translation import async_get_translations
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 
 from .api import (
@@ -55,6 +57,7 @@ from .const import (
     EVENT_FACE_MATCH,
 )
 from .events import (
+    annotated_image_unique_id,
     detection_event_data,
     face_match_event_cooldown_allows,
     face_match_event_data,
@@ -65,6 +68,7 @@ from .frame_comparison import (
     source_frame_signature,
     source_frames_are_similar,
 )
+from .label_icons import label_translation_key
 from .motion import motion_sensor_is_usable
 from .preview import (
     PreviewUploadLimiter,
@@ -100,6 +104,7 @@ class DooodsCoordinator(DataUpdateCoordinator[dict[str, CameraScanResult]]):
         camera_scan_intervals: Mapping[str, int] | None,
         parent_device_id: str,
         parent_device_identifier: str,
+        object_detection_cameras: list[str] | None = None,
         camera_motion_recheck_intervals: Mapping[str, int] | None = None,
         preview_enabled: bool = False,
         annotation_localization_enabled: bool = False,
@@ -135,6 +140,15 @@ class DooodsCoordinator(DataUpdateCoordinator[dict[str, CameraScanResult]]):
         self.auth_key = auth_key
         self.detector_name = detector_name
         self.cameras = cameras
+        # None preserves the legacy constructor default; an explicit empty
+        # selection disables object detection on all cameras.
+        self.object_detection_cameras = (
+            frozenset(
+                camera for camera in object_detection_cameras if isinstance(camera, str)
+            )
+            if isinstance(object_detection_cameras, list)
+            else None
+        )
         self.labels = labels
         self.detector_labels = list(
             detector_labels if detector_labels is not None else labels
@@ -187,10 +201,16 @@ class DooodsCoordinator(DataUpdateCoordinator[dict[str, CameraScanResult]]):
         self._last_successful_frame_signatures: dict[str, bytes] = {}
         self._archive_retry_frame_signatures: dict[str, bytes] = {}
         self.emit_detection_events = bool(emit_detection_events)
+        self._label_translation_language: str | None = None
+        self._label_translations: dict[str, str] = {}
+        self._pending_detection_events: list[
+            tuple[str, CameraScanResult, CameraScanResult]
+        ] = []
         self.emit_face_match_events = bool(emit_face_match_events)
         self.face_match_event_cooldown = max(0, face_match_event_cooldown)
-        self._last_face_match_event_keys: dict[str, tuple[Any, ...]] = {}
-        self._last_face_match_events: dict[tuple[str, str], tuple[float, str]] = {}
+        self._last_face_match_event_keys: dict[str, tuple[str | None, set[tuple[Any, ...]]]] = {}
+        self._last_face_match_event_frames: dict[tuple[str, str], str] = {}
+        self._last_face_match_events: dict[tuple[str, str], tuple[float, str, float | None]] = {}
         self._archive_cleanup_unsubscribe: Callable[[], None] | None = None
         self._archive_cleanup_task: asyncio.Task[Any] | None = None
         self._profile_labels_unsubscribe: Callable[[], None] | None = None
@@ -298,6 +318,14 @@ class DooodsCoordinator(DataUpdateCoordinator[dict[str, CameraScanResult]]):
         return enabled if isinstance(enabled, bool) else True
 
     @callback
+    def camera_object_detection_is_enabled(self, camera_entity_id: str) -> bool:
+        """Check the object-only camera filter without affecting RTSP or faces."""
+        selected = getattr(self, "object_detection_cameras", None)
+        return camera_entity_id in self.cameras and (
+            selected is None or camera_entity_id in selected
+        )
+
+    @callback
     def camera_stream_processing_is_enabled(self, camera_entity_id: str) -> bool:
         """Return whether the direct source selector chose RTSP for this camera."""
         enabled = getattr(self, "camera_stream_enabled", {}).get(camera_entity_id)
@@ -401,8 +429,11 @@ class DooodsCoordinator(DataUpdateCoordinator[dict[str, CameraScanResult]]):
         diagnostics.update(normalized)
         diagnostics["updated_at"] = datetime.now(UTC).isoformat()
         self._notify_face_diagnostics_listeners(camera_entity_id)
-        match = normalized.get("match")
-        if match:
+        matches = normalized.get("matches")
+        if matches is None:
+            match = normalized.get("match")
+            matches = [match] if match else []
+        for match in matches:
             self._fire_face_match_event(
                 camera_entity_id,
                 normalized.get("last_processed_at"),
@@ -1057,6 +1088,7 @@ class DooodsCoordinator(DataUpdateCoordinator[dict[str, CameraScanResult]]):
             self._is_shutting_down
             or camera_entity_id not in self.cameras
             or not self.camera_recognition_is_enabled(camera_entity_id)
+            or not self.camera_object_detection_is_enabled(camera_entity_id)
             or not self.camera_uses_rtsp_motion_gate(camera_entity_id)
             or not isinstance(image, bytes)
             or not image
@@ -1271,6 +1303,7 @@ class DooodsCoordinator(DataUpdateCoordinator[dict[str, CameraScanResult]]):
             camera_entity_id
             for camera_entity_id in camera_ids
             if self.camera_recognition_is_enabled(camera_entity_id)
+            and self.camera_object_detection_is_enabled(camera_entity_id)
         }
         if not camera_ids:
             if full_scan:
@@ -1307,6 +1340,7 @@ class DooodsCoordinator(DataUpdateCoordinator[dict[str, CameraScanResult]]):
     async def async_shutdown(self) -> None:
         """Остановить таймеры и завершить начальный скан при выгрузке записи."""
         self._is_shutting_down = True
+        self._pending_detection_events.clear()
         for cancel_scan in self._cancel_periodic_scans.values():
             cancel_scan()
         self._cancel_periodic_scans.clear()
@@ -1347,6 +1381,8 @@ class DooodsCoordinator(DataUpdateCoordinator[dict[str, CameraScanResult]]):
 
     async def _async_update_data(self) -> dict[str, CameraScanResult]:
         """Сканировать только запрошенные камеры, сохраняя последние результаты для остальных."""
+        self._pending_detection_events.clear()
+        pending_events: list[tuple[str, CameraScanResult, CameraScanResult]] = []
         self._active_full_scan = self.data is None or self._force_full_scan
         try:
             if self._active_full_scan:
@@ -1379,11 +1415,15 @@ class DooodsCoordinator(DataUpdateCoordinator[dict[str, CameraScanResult]]):
                 camera_entity_id
                 for camera_entity_id in requested_camera_ids
                 if self.camera_recognition_is_enabled(camera_entity_id)
+                and self.camera_object_detection_is_enabled(camera_entity_id)
             }
             self._force_full_scan = False
             results = dict(self.data or {})
             for camera_entity_id in self.cameras:
-                if not self.camera_recognition_is_enabled(camera_entity_id):
+                if not self.camera_object_detection_is_enabled(camera_entity_id):
+                    # No stale object results while the independent face stream runs.
+                    results.pop(camera_entity_id, None)
+                elif not self.camera_recognition_is_enabled(camera_entity_id):
                     results[camera_entity_id] = CameraScanResult(
                         counts={},
                         confidences={},
@@ -1393,6 +1433,9 @@ class DooodsCoordinator(DataUpdateCoordinator[dict[str, CameraScanResult]]):
                     )
             if not camera_ids:
                 return results
+
+            if getattr(self, "emit_detection_events", False):
+                await self._async_load_label_translations()
 
             for camera_entity_id in self.cameras:
                 if camera_entity_id in camera_ids:
@@ -1413,7 +1456,6 @@ class DooodsCoordinator(DataUpdateCoordinator[dict[str, CameraScanResult]]):
                     if scan_result.error is None:
                         self._clear_camera_retry(camera_entity_id)
                         if scan_result.detections:
-                            self._fire_detection_event(camera_entity_id, scan_result)
                             self._start_motion_candidate_cooldown(camera_entity_id)
                         archive_candidate = (
                             self.camera_recognition_is_enabled(camera_entity_id)
@@ -1496,6 +1538,11 @@ class DooodsCoordinator(DataUpdateCoordinator[dict[str, CameraScanResult]]):
                         previous_result,
                         scan_result,
                     )
+                    if scan_result.error is None and scan_result.detections:
+                        pending_events.append(
+                            (camera_entity_id, scan_result, results[camera_entity_id])
+                        )
+            self._pending_detection_events = pending_events
             return results
         finally:
             self._active_full_scan = False
@@ -1512,6 +1559,66 @@ class DooodsCoordinator(DataUpdateCoordinator[dict[str, CameraScanResult]]):
             name=f"{DOMAIN}_coalesced_camera_scan",
         )
 
+    @callback
+    @override
+    def async_update_listeners(self) -> None:
+        """Publish scan events only after coordinator data and entity states update."""
+        pending, self._pending_detection_events = self._pending_detection_events, []
+        super().async_update_listeners()
+        if self._is_shutting_down or not self.last_update_success:
+            return
+        for camera_entity_id, scan_result, published_result in pending:
+            if (
+                self.data.get(camera_entity_id) is published_result
+                and self.camera_recognition_is_enabled(camera_entity_id)
+                and self.camera_object_detection_is_enabled(camera_entity_id)
+            ):
+                self._fire_detection_event(camera_entity_id, scan_result)
+
+    @callback
+    def _annotated_image_entity_id(
+        self, camera_entity_id: str, scan_result: CameraScanResult
+    ) -> str | None:
+        """Resolve the live image entity only if it published this scan's JPEG."""
+        if scan_result.annotated_image is None or scan_result.checked_at is None:
+            return None
+        registry = er.async_get(self.hass)
+        entity_id = registry.async_get_entity_id(
+            "image", DOMAIN, annotated_image_unique_id(self.entry_id, camera_entity_id)
+        )
+        if entity_id is None:
+            return None
+        entry = registry.async_get(entity_id)
+        if entry is None or entry.disabled_by is not None:
+            return None
+        state = self.hass.states.get(entity_id)
+        if state is None:
+            return None
+        try:
+            updated_at = datetime.fromisoformat(state.state)
+        except (TypeError, ValueError):
+            return None
+        if updated_at != scan_result.checked_at:
+            return None
+        return entity_id
+
+    async def _async_load_label_translations(self) -> None:
+        """Cache entity-name translations for the current Home Assistant language."""
+        language = self.hass.config.language or "en"
+        if self._label_translation_language == language:
+            return
+        try:
+            translations = await async_get_translations(
+                self.hass, language, "entity", integrations={DOMAIN}
+            )
+        except Exception:  # Translation failures must never interrupt detection.
+            _LOGGER.exception("Could not load detection label translations")
+            self._label_translation_language = None
+            self._label_translations = {}
+            return
+        self._label_translations = translations
+        self._label_translation_language = language
+
     def _fire_detection_event(
         self,
         camera_entity_id: str,
@@ -1527,6 +1634,24 @@ class DooodsCoordinator(DataUpdateCoordinator[dict[str, CameraScanResult]]):
             detections=scan_result.detections,
         )
         if event_data["detections"]:
+            translations = getattr(self, "_label_translations", {})
+
+            def display_label(label: str) -> str:
+                key = label_translation_key(label)
+                if key == "object":
+                    return label
+                return translations.get(
+                    f"component.{DOMAIN}.entity.binary_sensor.{key}.name", label
+                )
+
+            event_data["labels_translated"] = [
+                display_label(label) for label in event_data["labels"]
+            ]
+            for detection in event_data["detections"]:
+                detection["label_translated"] = display_label(detection["label"])
+            event_data["image_entity_id"] = self._annotated_image_entity_id(
+                camera_entity_id, scan_result
+            )
             self.hass.bus.async_fire(EVENT_DETECTION, event_data)
 
     @callback
@@ -1542,8 +1667,13 @@ class DooodsCoordinator(DataUpdateCoordinator[dict[str, CameraScanResult]]):
         event_key = face_match_event_key(checked_at=checked_at, match=match)
         if event_key is None:
             return
-        if self._last_face_match_event_keys.get(camera_entity_id) == event_key:
+        previous_frame = self._last_face_match_event_keys.get(camera_entity_id)
+        if previous_frame is None or previous_frame[0] != checked_at:
+            previous_frame = (checked_at, set())
+            self._last_face_match_event_keys[camera_entity_id] = previous_frame
+        if event_key in previous_frame[1]:
             return
+        previous_frame[1].add(event_key)
         state = str(match.get("state"))
         person_key = str(match.get("person_id") or match.get("person_name") or "")
         cooldown_key = (camera_entity_id, person_key)
@@ -1551,15 +1681,22 @@ class DooodsCoordinator(DataUpdateCoordinator[dict[str, CameraScanResult]]):
         now = time.monotonic()
         elapsed = now - previous_event[0] if previous_event is not None else None
         previous_state = previous_event[1] if previous_event is not None else None
-        if not face_match_event_cooldown_allows(
+        previous_similarity = previous_event[2] if previous_event is not None else None
+        similarity = match.get("similarity")
+        last_frames = getattr(self, "_last_face_match_event_frames", None)
+        if last_frames is None:
+            last_frames = self._last_face_match_event_frames = {}
+        same_frame = checked_at is not None and last_frames.get(cooldown_key) == checked_at
+        if state != "ambiguous" and not same_frame and not face_match_event_cooldown_allows(
             state=state,
             previous_state=previous_state,
             elapsed=elapsed,
             cooldown=self.face_match_event_cooldown,
+            similarity=similarity,
+            previous_similarity=previous_similarity,
         ):
             # Do not publish this suppressed frame later
             # from a repeated status snapshot.
-            self._last_face_match_event_keys[camera_entity_id] = event_key
             return
         event_data = face_match_event_data(
             entry_id=self.entry_id,
@@ -1570,9 +1707,13 @@ class DooodsCoordinator(DataUpdateCoordinator[dict[str, CameraScanResult]]):
             similarity=match.get("similarity"),
             state=state,
         )
+        face_index = match.get("face_index")
+        if isinstance(face_index, int) and not isinstance(face_index, bool):
+            event_data["face_index"] = face_index
         self.hass.bus.async_fire(EVENT_FACE_MATCH, event_data)
-        self._last_face_match_event_keys[camera_entity_id] = event_key
-        self._last_face_match_events[cooldown_key] = (now, state)
+        if checked_at is not None:
+            last_frames[cooldown_key] = checked_at
+        self._last_face_match_events[cooldown_key] = (now, state, similarity)
 
     async def _async_archive_camera_frame(
         self,
@@ -1612,6 +1753,8 @@ class DooodsCoordinator(DataUpdateCoordinator[dict[str, CameraScanResult]]):
     ) -> CameraScanResult:
         """Run YOLO on a motion-candidate JPEG or a regular HA camera snapshot."""
         try:
+            if not self.camera_object_detection_is_enabled(camera_entity_id):
+                return CameraScanResult({}, {}, (), None, None)
             if not self.camera_recognition_is_enabled(camera_entity_id):
                 return CameraScanResult({}, {}, (), None, None)
             if image_data is None:
