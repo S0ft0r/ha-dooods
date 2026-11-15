@@ -223,6 +223,11 @@
             <option value="false">Любое пересечение (covers=false)</option>
             <option value="true">Вся рамка внутри (covers=true)</option>
           </select>
+          <h3>Исключающие маски</h3>
+          <select id="mask-select"><option value="-1">Редактировать зону</option></select>
+          <input id="mask-name" type="text" maxlength="128" placeholder="Название маски" hidden>
+          <div class="actions"><button id="mask-add" type="button">Добавить маску</button><button id="mask-remove" type="button">Удалить маску</button></div>
+          <p class="tool-note">Объект исключается из зоны, только если его рамка целиком в одной маске.</p>
           <h3>Метки и пороги уверенности</h3>
           <div id="label-list" class="label-list"></div>
           <div class="actions"><button id="add-label-button" type="button">Добавить метку</button></div>
@@ -266,6 +271,7 @@
       profilePreviewSourceId: null,
       previewSelectionExplicit: false,
       selectedZone: -1,
+      selectedMask: -1,
       selectedVertex: -1,
       addingVertex: false,
       draggingVertex: -1,
@@ -582,6 +588,31 @@
       return state.profile.zones[state.selectedZone] || null;
     }
 
+    function currentMask() {
+      const zone = currentZone();
+      return zone && state.selectedMask >= 0 ? (zone.exclusion_masks || [])[state.selectedMask] || null : null;
+    }
+
+    function currentGeometry() { return currentMask() || currentZone(); }
+
+    function addMask() {
+      const zone = currentZone(); if (!zone) return;
+      if (!Array.isArray(zone.exclusion_masks)) zone.exclusion_masks = [];
+      if (zone.exclusion_masks.length >= 32) { setStatus("zone-status", "Не более 32 масок в зоне.", "error"); return; }
+      zone.exclusion_masks.push({id: generateInternalId("mask", zone.exclusion_masks.map((mask) => mask.id)),
+        name: `Маска ${zone.exclusion_masks.length + 1}`,
+        points: [{left:.3,top:.3},{left:.6,top:.3},{left:.6,top:.6},{left:.3,top:.6}]});
+      state.selectedMask = zone.exclusion_masks.length - 1; state.selectedVertex = -1;
+      setAddingVertex(false); setEditorDirty(true); renderZoneSettings();
+    }
+
+    function removeMask() {
+      const zone = currentZone(); if (!zone || !currentMask()) return;
+      zone.exclusion_masks.splice(state.selectedMask, 1);
+      state.selectedMask = -1; state.selectedVertex = -1;
+      setAddingVertex(false); setEditorDirty(true); renderZoneSettings();
+    }
+
     function generateInternalId(prefix, existingIds) {
       const used = new Set(existingIds);
       for (let attempt = 0; attempt < 10; attempt += 1) {
@@ -609,7 +640,7 @@
       $("move-zone-up-button").disabled = !hasZone || state.selectedZone <= 0;
       $("move-zone-down-button").disabled = !hasZone || state.selectedZone >= state.profile.zones.length - 1;
       $("add-vertex-button").disabled = !hasZone;
-      $("remove-vertex-button").disabled = !hasZone || state.selectedVertex < 0 || zone.points.length <= 3;
+      $("remove-vertex-button").disabled = !hasZone || state.selectedVertex < 0 || currentGeometry().points.length <= 3;
       $("add-label-button").disabled = !hasZone || !hasAvailableLabel;
       $("clear-profile-camera-button").disabled = !hasProfile || !state.profile.saved || !state.profilePreviewSourceId;
       $("zone-settings").classList.toggle("hidden", !hasZone);
@@ -636,14 +667,23 @@
         polygon.setAttribute("stroke-linejoin", "round");
         svg.appendChild(polygon);
 
+        (zone.exclusion_masks || []).forEach((mask, index) => {
+          const overlay = document.createElementNS("http://www.w3.org/2000/svg", "polygon");
+          overlay.setAttribute("points", mask.points.map((point) => `${point.left * state.imageWidth},${point.top * state.imageHeight}`).join(" "));
+          overlay.setAttribute("fill", "#e53935"); overlay.setAttribute("fill-opacity", ".25");
+          overlay.setAttribute("stroke", "#e53935"); overlay.setAttribute("stroke-dasharray", "8 5");
+          overlay.setAttribute("stroke-width", zoneIndex === state.selectedZone && index === state.selectedMask ? "4" : "2");
+          overlay.setAttribute("vector-effect", "non-scaling-stroke"); svg.appendChild(overlay);
+        });
         if (zoneIndex !== state.selectedZone) return;
+        const geometry = currentGeometry();
 
         if (state.addingVertex) {
-          zone.points.forEach((start, edgeIndex) => {
-            const end = zone.points[(edgeIndex + 1) % zone.points.length];
+          geometry.points.forEach((start, edgeIndex) => {
+            const end = geometry.points[(edgeIndex + 1) % geometry.points.length];
             const midpointX = ((start.left + end.left) / 2) * state.imageWidth;
             const midpointY = ((start.top + end.top) / 2) * state.imageHeight;
-            const nextVertexNumber = ((edgeIndex + 1) % zone.points.length) + 1;
+            const nextVertexNumber = ((edgeIndex + 1) % geometry.points.length) + 1;
             const description = `Вставить вершину между вершинами ${edgeIndex + 1} и ${nextVertexNumber}`;
             const handle = document.createElementNS("http://www.w3.org/2000/svg", "g");
             handle.setAttribute("class", "insert-handle");
@@ -678,7 +718,7 @@
           });
         }
 
-        zone.points.forEach((point, vertexIndex) => {
+        geometry.points.forEach((point, vertexIndex) => {
           const x = point.left * state.imageWidth;
           const y = point.top * state.imageHeight;
           const circle = document.createElementNS("http://www.w3.org/2000/svg", "circle");
@@ -717,7 +757,7 @@
     }
 
     function insertVertexBetween(edgeIndex) {
-      const zone = currentZone();
+      const zone = currentGeometry();
       if (!zone || !Number.isInteger(edgeIndex) || edgeIndex < 0 || edgeIndex >= zone.points.length) return;
 
       const nextIndex = (edgeIndex + 1) % zone.points.length;
@@ -860,6 +900,12 @@
       }
       $("zone-name").value = zone.name;
       $("covers-select").value = String(Boolean(zone.covers));
+      const select = $("mask-select"); select.replaceChildren(new Option("Редактировать зону", "-1"));
+      (zone.exclusion_masks || []).forEach((mask, index) => select.add(new Option(mask.name || "Маска", String(index))));
+      if (!currentMask()) state.selectedMask = -1;
+      select.value = String(state.selectedMask);
+      $("mask-name").hidden = !currentMask(); $("mask-name").value = currentMask() ? currentMask().name : "";
+      $("mask-remove").disabled = !currentMask();
       renderLabels();
       updateButtons();
       drawOverlay();
@@ -867,6 +913,7 @@
 
     function selectZone(index) {
       state.selectedZone = index;
+      state.selectedMask = -1;
       state.selectedVertex = -1;
       setAddingVertex(false);
       renderZoneList();
@@ -880,6 +927,7 @@
       state.profile.zones.splice(next, 0, zone);
       setEditorDirty(true);
       state.selectedZone = next;
+      state.selectedMask = -1;
       renderZoneList();
       renderZoneSettings();
     }
@@ -907,6 +955,7 @@
       state.profilePreviewSourceId = null;
       state.previewSelectionExplicit = false;
       state.selectedZone = profile && profile.zones.length ? 0 : -1;
+      state.selectedMask = -1;
       state.selectedVertex = -1;
       setAddingVertex(false);
       updateProfileInputs();
@@ -1117,6 +1166,7 @@
       state.profile.zones.splice(state.selectedZone, 1);
       setEditorDirty(true);
       state.selectedZone = state.profile.zones.length ? Math.min(state.selectedZone, state.profile.zones.length - 1) : -1;
+      state.selectedMask = -1;
       state.selectedVertex = -1;
       setAddingVertex(false);
       renderZoneList();
@@ -1183,7 +1233,7 @@
     });
 
     $("overlay").addEventListener("pointermove", (event) => {
-      const zone = currentZone();
+      const zone = currentGeometry();
       if (!zone || state.draggingVertex < 0) return;
       zone.points[state.draggingVertex] = pointerPosition(event);
       setEditorDirty(true);
@@ -1263,6 +1313,16 @@
     $("new-profile-button").addEventListener("click", createProfile);
     $("save-profile-button").addEventListener("click", saveProfile);
     $("delete-profile-button").addEventListener("click", deleteProfile);
+    $("mask-add").addEventListener("click", addMask);
+    $("mask-remove").addEventListener("click", removeMask);
+    $("mask-select").addEventListener("change", () => {
+      state.selectedMask = Number($("mask-select").value); state.selectedVertex = -1; state.draggingVertex = -1;
+      setAddingVertex(false); renderZoneSettings();
+    });
+    $("mask-name").addEventListener("input", () => {
+      const mask = currentMask(); if (!mask) return; mask.name = $("mask-name").value; setEditorDirty(true);
+      const option = $("mask-select").selectedOptions[0]; if (option) option.textContent = mask.name || "Маска";
+    });
     $("add-zone-button").addEventListener("click", addZone);
     $("remove-zone-button").addEventListener("click", removeZone);
     $("move-zone-up-button").addEventListener("click", () => moveZone(state.selectedZone, -1));
@@ -1279,7 +1339,7 @@
       );
     });
     $("remove-vertex-button").addEventListener("click", () => {
-      const zone = currentZone();
+      const zone = currentGeometry();
       if (!zone || state.selectedVertex < 0 || zone.points.length <= 3) return;
       zone.points.splice(state.selectedVertex, 1);
       setEditorDirty(true);

@@ -8,7 +8,7 @@ import re
 import tempfile
 import threading
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any
@@ -22,9 +22,11 @@ _SCHEMA_VERSION = 1
 _MAX_PROFILE_NAME_LENGTH = 128
 _MAX_ZONES_PER_PROFILE = 128
 _MAX_VERTICES_PER_ZONE = 256
+_MAX_MASKS_PER_ZONE = 32
 _ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 _PROFILE_FIELDS = {"id", "name", "zones"}
-_ZONE_FIELDS = {"id", "name", "points", "covers", "labels"}
+_ZONE_FIELDS = {"id", "name", "points", "covers", "labels", "exclusion_masks"}
+_MASK_FIELDS = {"id", "name", "points"}
 
 
 class ProfileValidationError(ValueError):
@@ -65,6 +67,22 @@ def _reject_unknown_fields(value: Mapping[str, Any], allowed: set[str], field: s
 
 
 @dataclass(frozen=True, slots=True)
+class ExclusionMask:
+    """Named polygon excluding fully contained detection boxes from one zone."""
+
+    id: str
+    name: str
+    polygon: Polygon
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "name": self.name,
+            "points": [{"left": x, "top": y} for x, y in self.polygon.points],
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class ProfileZone:
     """Сохраняемая зона профиля и её runtime-представление."""
 
@@ -73,6 +91,7 @@ class ProfileZone:
     polygon: Polygon
     covers: bool
     labels: Mapping[str, float]
+    exclusion_masks: tuple[ExclusionMask, ...] = ()
 
     def to_polygon_zone(self) -> PolygonZone:
         """Преобразовать зону хранения в объект геометрического фильтра."""
@@ -81,11 +100,12 @@ class ProfileZone:
             polygon=self.polygon,
             labels=self.labels,
             covers=self.covers,
+            exclusion_masks=tuple(mask.polygon for mask in self.exclusion_masks),
         )
 
     def as_dict(self) -> dict[str, Any]:
         """Сформировать JSON-совместимое представление зоны."""
-        return {
+        result = {
             "id": self.id,
             "name": self.name,
             "points": [
@@ -95,6 +115,9 @@ class ProfileZone:
             "covers": self.covers,
             "labels": dict(self.labels),
         }
+        if self.exclusion_masks:
+            result["exclusion_masks"] = [mask.as_dict() for mask in self.exclusion_masks]
+        return result
 
 
 @dataclass(frozen=True, slots=True)
@@ -166,6 +189,29 @@ def profile_from_dict(value: Any) -> DetectionProfile:
                 f"Некорректный полигон зоны {zone_id}: {err}"
             ) from err
 
+        raw_masks = raw_zone.get("exclusion_masks", [])
+        if not isinstance(raw_masks, list) or len(raw_masks) > _MAX_MASKS_PER_ZONE:
+            raise ProfileValidationError("Маски должны быть списком не более 32 полигонов")
+        masks: list[ExclusionMask] = []
+        seen_mask_ids: set[str] = set()
+        for mask_index, raw_mask in enumerate(raw_masks):
+            if not isinstance(raw_mask, Mapping):
+                raise ProfileValidationError("Маска должна быть объектом")
+            _reject_unknown_fields(raw_mask, _MASK_FIELDS, "маски")
+            mask_id = _validate_identifier(raw_mask.get("id"), "id маски")
+            if mask_id in seen_mask_ids:
+                raise ProfileValidationError(f"Идентификатор маски {mask_id} повторяется")
+            seen_mask_ids.add(mask_id)
+            mask_name = _validate_name(raw_mask.get("name"), "name маски")
+            mask_points = raw_mask.get("points")
+            if not isinstance(mask_points, list) or len(mask_points) > _MAX_VERTICES_PER_ZONE:
+                raise ProfileValidationError("Некорректное количество вершин маски")
+            try:
+                mask_polygon = Polygon.from_points(mask_points)
+            except ValueError as err:
+                raise ProfileValidationError(f"Некорректный полигон маски {mask_index}: {err}") from err
+            masks.append(ExclusionMask(mask_id, mask_name, mask_polygon))
+
         covers = raw_zone.get("covers", False)
         if not isinstance(covers, bool):
             raise ProfileValidationError(f"covers зоны {zone_id} должен быть boolean")
@@ -192,6 +238,7 @@ def profile_from_dict(value: Any) -> DetectionProfile:
                 polygon=polygon,
                 covers=covers,
                 labels=runtime_zone.labels,
+                exclusion_masks=tuple(masks),
             )
         )
 
@@ -310,6 +357,20 @@ class ProfileStore:
             )
 
         with self._lock:
+            previous = self._profiles.get(profile.id)
+            if previous is not None:
+                previous_zones = {zone.id: zone for zone in previous.zones}
+                incoming = {zone["id"]: zone for zone in value.get("zones", [])}
+                profile = replace(
+                    profile,
+                    zones=tuple(
+                        replace(zone, exclusion_masks=previous_zones[zone.id].exclusion_masks)
+                        if zone.id in previous_zones
+                        and "exclusion_masks" not in incoming[zone.id]
+                        else zone
+                        for zone in profile.zones
+                    ),
+                )
             updated_profiles = dict(self._profiles)
             updated_profiles[profile.id] = profile
             self._write_file(updated_profiles)

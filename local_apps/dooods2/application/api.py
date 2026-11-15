@@ -1276,6 +1276,8 @@ class API():
                     )
                     faces = capture.get("faces", []) or []
                     mapped = _map_rematch_faces(raw_results, capture)
+                    for result in mapped:
+                        result["sface_input_origin"] = "rematch_unavailable"
                     match_result = self.face_analyzer._best_match(mapped)
                     await asyncio.to_thread(
                         self.face_debug_store.update_capture_match,

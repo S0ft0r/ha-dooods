@@ -305,6 +305,7 @@ class FaceAnalyzer:
         match_results: list[dict[str, Any]] = []
         successful_faces = 0
         face_errors = 0
+        sface_images: dict[int, bytes] = {}
         state = "error"
         error_code: str | None = None
 
@@ -372,7 +373,8 @@ class FaceAnalyzer:
                         round(float(largest_face[3]) * height / analysis_height),
                     )
                     match_results, successful_faces, face_errors = self._analyze_faces(
-                        analysis_frame, rows, scale, started
+                        analysis_frame, rows, scale, started,
+                        debug_images=sface_images if self.debug_store is not None else None,
                     )
                     state = "face_detected"
                     embedding_ready = successful_faces > 0
@@ -438,6 +440,7 @@ class FaceAnalyzer:
                     yunet_score_threshold=self.yunet_score_threshold,
                     full_frame_jpeg=full_frame_jpeg,
                     face_crops_jpeg=face_crops_jpeg,
+                    sface_images_jpeg=sface_images,
                 )
             except Exception as err:
                 _LOGGER.warning(
@@ -537,7 +540,8 @@ class FaceAnalyzer:
         )
 
     def _analyze_faces(
-        self, frame: Any, rows: list[Any], scale: float, started_at: float
+        self, frame: Any, rows: list[Any], scale: float, started_at: float,
+        *, debug_images: dict[int, bytes] | None = None,
     ) -> tuple[list[dict[str, Any]], int, int]:
         """Analyze up to the configured number of largest faces independently.
 
@@ -556,8 +560,16 @@ class FaceAnalyzer:
             row = rows[index]
             try:
                 aligned = self._recognizer.alignCrop(frame, row)
-                feature = self._recognizer.feature(self._prepare_match_face(aligned))
+                prepared = self._prepare_match_face(aligned)
+                feature = self._recognizer.feature(prepared)
                 self._validate_feature(feature)
+                if debug_images is not None:
+                    try:
+                        ok, encoded = self._cv2.imencode(".jpg", prepared)
+                        if ok:
+                            debug_images[index] = encoded.tobytes()
+                    except Exception as err:
+                        _LOGGER.debug("SFace debug image unavailable (%s)", type(err).__name__)
                 if self.face_gallery_store is None:
                     successful += 1
                     continue
@@ -569,6 +581,10 @@ class FaceAnalyzer:
                         row=row, rows=rows, scale=scale, started_at=started_at
                     ))
                     result["face_index"] = index
+                    result["illumination_status"] = (
+                        "disabled" if not self.illumination_compensation
+                        else "applied" if prepared is not aligned else "not_applied"
+                    )
                     matches.append(result)
                 successful += 1
             except Exception as err:

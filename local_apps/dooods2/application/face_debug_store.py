@@ -232,6 +232,7 @@ class FaceDebugStore:
         yunet_score_threshold: float,
         full_frame_jpeg: bytes | None = None,
         face_crops_jpeg: list[bytes] | None = None,
+        sface_images_jpeg: dict[int, bytes] | None = None,
     ) -> None:
         """Queue one analyzed candidate; images are retained only for face events."""
         if not isinstance(diagnostics, dict):
@@ -335,9 +336,21 @@ class FaceDebugStore:
                 else:
                     payload["capture_status"] = "queued"
 
+        # Optional debug images never cause loss of the original capture.
+        sface_images: dict[int, bytes] = {}
+        total_bytes = sum(map(len, image_bytes))
+        for source_index, image in (sface_images_jpeg or {}).items():
+            index = index_map.get(source_index)
+            if (image_bytes and index is not None and isinstance(image, bytes)
+                and image.startswith(b"\xff\xd8\xff")
+                and len(image) <= self.max_image_bytes
+                and total_bytes + len(image) <= self.max_event_bytes):
+                sface_images[index] = image
+                total_bytes += len(image)
         task = {
             "payload": payload,
             "image_bytes": image_bytes,
+            "sface_images": sface_images,
         }
         thread = self._thread
         if thread is None or not thread.is_alive():
@@ -364,6 +377,7 @@ class FaceDebugStore:
     def _persist(self, task: dict[str, Any]) -> None:
         payload = dict(task["payload"])
         image_bytes: list[bytes] = task["image_bytes"]
+        sface_images: dict[int, bytes] = task.get("sface_images", {})
         capture_id: str | None = None
         metadata: dict[str, Any] | None = None
         capture_directory: Path | None = None
@@ -373,7 +387,7 @@ class FaceDebugStore:
             payload["capture_status"] = "saving"
             capture_directory = self.capture_directory / capture_id
             try:
-                metadata = self._write_capture(capture_id, payload, image_bytes)
+                metadata = self._write_capture(capture_id, payload, image_bytes, sface_images)
                 payload["capture_status"] = "saved"
             except Exception as err:
                 if capture_directory.exists():
@@ -406,6 +420,7 @@ class FaceDebugStore:
                         image_bytes[0],
                         metadata,
                         face_images=list(image_bytes[1:]),
+                        sface_images=sface_images,
                     )
                 except Exception as err:
                     _LOGGER.warning(
@@ -420,6 +435,7 @@ class FaceDebugStore:
         *,
         match_info: dict[str, Any] | None = None,
         face_images: list[bytes] | None = None,
+        sface_images: dict[int, bytes] | None = None,
     ) -> None:
         """Сохранить копию кадра-совпадения в отдельном приватном буфере.
 
@@ -439,6 +455,8 @@ class FaceDebugStore:
                     continue
                 self._write_private_file(destination / f"face-{index:02d}.jpg", image)
                 stored_faces += 1
+            for index, image in (sface_images or {}).items():
+                self._write_private_file(destination / f"sface-{index:02d}.jpg", image)
             meta = dict(metadata)
             if match_info:
                 meta["person_name"] = match_info.get("person_name")
@@ -543,12 +561,12 @@ class FaceDebugStore:
         capture_id = self._validate_capture_id(capture_id)
         if kind == "frame":
             filename = "frame.jpg"
-        elif kind == "face":
+        elif kind in {"face", "sface"}:
             if isinstance(face_index, bool) or not isinstance(face_index, int):
                 raise FaceDebugValidationError("Face index must be an integer")
             if not 0 <= face_index < _MAX_FACES_PER_EVENT:
                 raise FaceDebugValidationError("Face index is out of range")
-            filename = f"face-{face_index:02d}.jpg"
+            filename = f"{kind}-{face_index:02d}.jpg"
         else:
             raise FaceDebugValidationError("Image kind must be frame or face")
         path = self.match_directory / capture_id / filename
@@ -575,6 +593,7 @@ class FaceDebugStore:
         capture_id: str,
         payload: dict[str, Any],
         image_bytes: list[bytes],
+        sface_images: dict[int, bytes] | None = None,
     ) -> dict[str, Any]:
         self._validate_capture_id(capture_id)
         if len(image_bytes) != len(payload["faces"]) + 1:
@@ -586,6 +605,8 @@ class FaceDebugStore:
             self._write_private_file(temporary / "frame.jpg", image_bytes[0])
             for index, image in enumerate(image_bytes[1:]):
                 self._write_private_file(temporary / f"face-{index:02d}.jpg", image)
+            for index, image in (sface_images or {}).items():
+                self._write_private_file(temporary / f"sface-{index:02d}.jpg", image)
             metadata = {
                 "capture_id": capture_id,
                 "occurred_at": payload["occurred_at"],
@@ -846,18 +867,18 @@ class FaceDebugStore:
         capture_id = self._validate_capture_id(capture_id)
         if kind == "frame":
             filename = "frame.jpg"
-        elif kind == "face":
+        elif kind in {"face", "sface"}:
             if isinstance(face_index, bool) or not isinstance(face_index, int):
                 raise FaceDebugValidationError("Face index must be an integer")
             if not 0 <= face_index < _MAX_FACES_PER_EVENT:
                 raise FaceDebugValidationError("Face index is out of range")
-            filename = f"face-{face_index:02d}.jpg"
+            filename = f"{kind}-{face_index:02d}.jpg"
         else:
             raise FaceDebugValidationError("Image kind must be frame or face")
         metadata = self.get_capture(capture_id)
         if metadata is None:
             raise FaceDebugNotFoundError("Capture not found")
-        if kind == "face" and face_index >= len(metadata.get("faces", [])):
+        if kind in {"face", "sface"} and face_index >= len(metadata.get("faces", [])):
             raise FaceDebugNotFoundError("Face crop not found")
         path = self.capture_directory / capture_id / filename
         try:
