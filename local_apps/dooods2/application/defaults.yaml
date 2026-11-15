@@ -1,6 +1,6 @@
-name: "DOOODS2"
+name: "DOOODS2 (Dev)"
 slug: "dooods2"
-version: "0.1.35-dev"
+version: "0.1.36.4-dev"
 description: ""
 arch:
   - aarch64
@@ -11,7 +11,7 @@ stage: experimental
 ingress: true
 ingress_port: 8080
 ingress_entry: /faces.html
-panel_title: "faces"
+panel_title: "faces (Dev)"
 panel_icon: mdi:face-recognition
 watchdog: "http://[HOST]:8080/health"
 map:
@@ -30,6 +30,10 @@ options:
   face:
     enabled: true
     diagnostics_enabled: true
+    illumination_compensation: false
+    illumination_threshold: 60
+    illumination_gamma: 0.45
+    max_match_faces: 3
     yunet_score_threshold: 0.9
     face_match_threshold: 0.4
     face_match_min_gap: 0.1
@@ -81,6 +85,10 @@ schema:
   face:
     enabled: bool?
     diagnostics_enabled: bool?
+    illumination_compensation: bool?
+    illumination_threshold: int(0,255)?
+    illumination_gamma: float(0.3,0.9)?
+    max_match_faces: int(1,5)?
     yunet_score_threshold: float(0.1,1.0)?
     face_match_threshold: float(0.1,1.0)?
     face_match_min_gap: float(0.0,0.5)?

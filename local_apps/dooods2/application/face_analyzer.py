@@ -29,7 +29,7 @@ _DEFAULT_FACE_MATCH_THRESHOLD = 0.4
 # Минимальный отрыв лучшего человека от второго, чтобы не путать похожих.
 _DEFAULT_FACE_MATCH_MIN_GAP = 0.1
 # Сколько лиц на кадре проверять на совпадение (по убыванию площади).
-_MAX_MATCH_FACES = 5
+_DEFAULT_MAX_MATCH_FACES = 3
 _DEFAULT_YUNET_SCORE_THRESHOLD = 0.9
 _MIN_YUNET_SCORE_THRESHOLD = 0.1
 _MAX_YUNET_SCORE_THRESHOLD = 1.0
@@ -88,6 +88,10 @@ class FaceAnalyzer:
         face_detection_cameras: list[str] | None = None,
         face_gallery_store: Any = None,
         debug_store: Any = None,
+        illumination_compensation: bool = False,
+        illumination_threshold: int = 60,
+        illumination_gamma: float = 0.45,
+        max_match_faces: int = _DEFAULT_MAX_MATCH_FACES,
     ) -> None:
         """Initialize analyzer and validate the configurable alpha YuNet threshold."""
         self.model_directory = Path(model_directory)
@@ -112,6 +116,25 @@ class FaceAnalyzer:
         )
         self.face_gallery_store = face_gallery_store
         self.debug_store = debug_store
+        self.illumination_compensation = illumination_compensation is True
+        if (
+            isinstance(illumination_threshold, bool)
+            or not isinstance(illumination_threshold, int)
+            or not 0 <= illumination_threshold <= 255
+        ):
+            raise ValueError("Invalid face illumination threshold")
+        if (
+            isinstance(illumination_gamma, bool)
+            or not isinstance(illumination_gamma, (int, float))
+            or not math.isfinite(illumination_gamma)
+            or not 0.3 <= illumination_gamma <= 0.9
+        ):
+            raise ValueError("Invalid face illumination gamma")
+        self.illumination_threshold = illumination_threshold
+        self.illumination_gamma = float(illumination_gamma)
+        if isinstance(max_match_faces, bool) or not isinstance(max_match_faces, int) or not 1 <= max_match_faces <= 5:
+            raise ValueError("max_match_faces must be an integer from 1 to 5")
+        self.max_match_faces = max_match_faces
         self._state_lock = threading.RLock()
         self._initialize_lock = threading.Lock()
         self._inference_lock = threading.Lock()
@@ -121,6 +144,25 @@ class FaceAnalyzer:
         self._detector: Any = None
         self._recognizer: Any = None
         self._camera_diagnostics: OrderedDict[str, dict[str, Any]] = OrderedDict()
+
+    def _prepare_match_face(self, aligned_face: Any) -> Any:
+        """Optionally improve a dark aligned crop without altering enrollment."""
+        if not self.illumination_compensation:
+            return aligned_face
+        try:
+            try:
+                from .face_illumination import compensate_face_illumination
+            except ImportError:
+                from face_illumination import compensate_face_illumination
+            return compensate_face_illumination(
+                aligned_face,
+                threshold=self.illumination_threshold,
+                gamma=self.illumination_gamma,
+            )
+        except Exception as err:
+            # A bad crop or unavailable image processing must not stop matching.
+            _LOGGER.warning("Face illumination correction skipped (%s)", type(err).__name__)
+            return aligned_face
 
     def initialize(self) -> None:
         """Download pinned models if needed, verify hashes, and load OpenCV models."""
@@ -260,6 +302,9 @@ class FaceAnalyzer:
         embedding_ready: bool | None = None
         face_detections: list[dict[str, Any]] = []
         match_result: dict[str, Any] | None = None
+        match_results: list[dict[str, Any]] = []
+        successful_faces = 0
+        face_errors = 0
         state = "error"
         error_code: str | None = None
 
@@ -326,46 +371,12 @@ class FaceAnalyzer:
                         1,
                         round(float(largest_face[3]) * height / analysis_height),
                     )
-                    try:
-                        aligned_face = recognizer.alignCrop(
-                            analysis_frame,
-                            largest_face,
-                        )
-                        feature = recognizer.feature(aligned_face)
-                        self._validate_feature(feature)
-                    except _FaceInferenceError:
-                        raise
-                    except Exception as err:
-                        raise _FaceInferenceError("feature_failed") from err
+                    match_results, successful_faces, face_errors = self._analyze_faces(
+                        analysis_frame, rows, scale, started
+                    )
                     state = "face_detected"
-                    embedding_ready = True
-
-                    # Сопоставление с галереей людей
-                    if self.face_gallery_store is not None:
-                        try:
-                            feature_list = [
-                                float(value) for value in feature.flatten().tolist()
-                            ]
-                            aggregated = self._match_feature_against_gallery(
-                                feature_list
-                            )
-                            if aggregated is not None:
-                                largest_index = rows.index(largest_face)
-                                aggregated.update(
-                                    self._yunet_diagnostics(
-                                        row=largest_face,
-                                        rows=rows,
-                                        scale=scale,
-                                        started_at=started,
-                                    )
-                                )
-                                aggregated["face_index"] = largest_index
-                                match_result = aggregated
-                        except Exception as err:
-                            _LOGGER.debug(
-                                "Face gallery matching failed (%s)",
-                                type(err).__name__,
-                            )
+                    embedding_ready = successful_faces > 0
+                    match_result = self._best_match(match_results)
         except _FaceInferenceError as err:
             error_code = err.code
             state = "error"
@@ -390,6 +401,10 @@ class FaceAnalyzer:
             "largest_face_height_px": face_height,
             "embedding_ready": embedding_ready,
             "match": match_result,
+            "matches": match_results,
+            "faces_processed": successful_faces,
+            "faces_failed": face_errors,
+            "faces_limit": self.max_match_faces,
             "inference_ms": round(elapsed_ms, 2),
             "last_processed_at": datetime.now(UTC).isoformat(),
             "last_error": error_code if error_code in _ERROR_CODES else None,
@@ -508,110 +523,93 @@ class FaceAnalyzer:
         )
         return result
 
-    def match_frame(
-        self,
-        frame: Any,
-        source_id: str,
-    ) -> dict[str, Any] | None:
-        """Run face detection + SFace embedding + gallery matching on a frame.
+    @staticmethod
+    def _best_match(matches: list[dict[str, Any]]) -> dict[str, Any] | None:
+        """Preserve legacy single-result preference for matched, then similarity."""
+        if not matches:
+            return None
+        return max(
+            matches,
+            key=lambda match: (
+                match.get("state") == "matched",
+                float(match.get("similarity") or 0.0),
+            ),
+        )
 
-        Returns the match result dict (state, person_id, person_name, similarity)
-        or None when no match is possible. Does not write to the debug store.
+    def _analyze_faces(
+        self, frame: Any, rows: list[Any], scale: float, started_at: float
+    ) -> tuple[list[dict[str, Any]], int, int]:
+        """Analyze up to the configured number of largest faces independently.
+
+        The caller holds the inference lock. A failure for one face does not
+        interrupt other faces. Never include embeddings in the return value.
         """
+        matches: list[dict[str, Any]] = []
+        successful = 0
+        failed = 0
+        order = sorted(
+            range(len(rows)),
+            key=lambda index: float(rows[index][2]) * float(rows[index][3]),
+            reverse=True,
+        )[: self.max_match_faces]
+        for index in order:
+            row = rows[index]
+            try:
+                aligned = self._recognizer.alignCrop(frame, row)
+                feature = self._recognizer.feature(self._prepare_match_face(aligned))
+                self._validate_feature(feature)
+                if self.face_gallery_store is None:
+                    successful += 1
+                    continue
+                result = self._match_feature_against_gallery(
+                    [float(value) for value in feature.flatten().tolist()]
+                )
+                if result is not None:
+                    result.update(self._yunet_diagnostics(
+                        row=row, rows=rows, scale=scale, started_at=started_at
+                    ))
+                    result["face_index"] = index
+                    matches.append(result)
+                successful += 1
+            except Exception as err:
+                failed += 1
+                _LOGGER.debug("Face matching failed for one face (%s)", type(err).__name__)
+        return matches, successful, failed
+
+    def match_frame_all(self, frame: Any, source_id: str) -> list[dict[str, Any]]:
+        """Independently match detected faces, in descending face-size order."""
+        del source_id  # Matching is read-only; the caller owns capture metadata.
         with self._state_lock:
             if self._model_state != "ready" or self._cv2 is None:
-                return None
+                return []
             cv2 = self._cv2
             detector = self._detector
-            recognizer = self._recognizer
 
-        started_at = time.perf_counter()
+        started = time.perf_counter()
         height, width = self._frame_size(frame)
         if width <= 0 or height <= 0:
-            return None
-
+            return []
         scale = min(1.0, _MAX_ANALYSIS_SIDE / float(max(width, height)))
         if scale < 1.0:
             analysis_width = max(1, round(width * scale))
             analysis_height = max(1, round(height * scale))
-            analysis_frame = cv2.resize(
-                frame,
-                (analysis_width, analysis_height),
-                interpolation=cv2.INTER_AREA,
-            )
+            frame = cv2.resize(frame, (analysis_width, analysis_height), interpolation=cv2.INTER_AREA)
         else:
-            analysis_frame = frame
-            analysis_width = width
-            analysis_height = height
-
-        candidates: list[tuple[int, Any, list[float]]] = []
-        rows: list[Any] = []
+            analysis_width, analysis_height = width, height
         with self._inference_lock:
             try:
                 detector.setInputSize((analysis_width, analysis_height))
-                _result, detected_faces = detector.detect(analysis_frame)
-                rows = list(detected_faces) if detected_faces is not None else []
-                if not rows:
-                    return None
-                # Проверяем несколько лиц: эталон мог быть снят с лица, которое
-                # на новом кадре не самое крупное.
-                order = sorted(
-                    range(len(rows)),
-                    key=lambda index: float(rows[index][2]) * float(rows[index][3]),
-                    reverse=True,
-                )[:_MAX_MATCH_FACES]
-                for index in order:
-                    row = rows[index]
-                    try:
-                        aligned_face = recognizer.alignCrop(analysis_frame, row)
-                        feature = recognizer.feature(aligned_face)
-                        self._validate_feature(feature)
-                    except _FaceInferenceError:
-                        continue
-                    except Exception:
-                        continue
-                    candidates.append(
-                        (
-                            index,
-                            row,
-                            [float(value) for value in feature.flatten().tolist()],
-                        )
-                    )
-            except _FaceInferenceError:
-                return None
-            except Exception:
-                return None
+                _, detected = detector.detect(frame)
+                rows = list(detected) if detected is not None else []
+                matches, _, _ = self._analyze_faces(frame, rows, scale, started)
+                return matches
+            except Exception as err:
+                _LOGGER.debug("Face rematch failed (%s)", type(err).__name__)
+                return []
 
-        if not candidates or self.face_gallery_store is None:
-            return None
-
-        best_result: dict[str, Any] | None = None
-        best_score = -1.0
-        try:
-            for index, row, feature_list in candidates:
-                aggregated = self._match_feature_against_gallery(feature_list)
-                if aggregated is None:
-                    continue
-                # Сначала предпочитаем подтверждённое совпадение, затем больший
-                # коэффициент сходства.
-                score = float(aggregated.get("sface_best_similarity") or 0.0)
-                if aggregated.get("state") == "matched":
-                    score += 1.0
-                if score > best_score:
-                    best_score = score
-                    aggregated.update(
-                        self._yunet_diagnostics(
-                            row=row,
-                            rows=rows,
-                            scale=scale,
-                            started_at=started_at,
-                        )
-                    )
-                    aggregated["face_index"] = index
-                    best_result = aggregated
-        except Exception:
-            return None
-        return best_result
+    def match_frame(self, frame: Any, source_id: str) -> dict[str, Any] | None:
+        """Return the legacy single best result for older callers."""
+        return self._best_match(self.match_frame_all(frame, source_id))
 
     def _yunet_diagnostics(
         self,

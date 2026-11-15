@@ -239,16 +239,32 @@ class FaceDebugStore:
         state = diagnostics.get("state")
         if state not in _ALLOWED_STATES:
             return
-        faces = self._validate_face_detections(face_detections)
-        # Сколько лиц нашёл детектор — до фильтра по размеру. Нужно журналу:
-        # «Лиц: 2» при пустом буфере иначе выглядит как потерянный кадр.
-        detected_face_count = len(faces)
-        # Фильтруем слишком маленькие лица (люди далеко от камеры), чтобы не
-        # сохранять их в буфер и не предлагать для регистрации.
-        faces = [
-            f for f in faces
-            if f["bbox"]["width"] >= self.min_face_width and f["bbox"]["height"] >= self.min_face_height
+        all_faces = self._validate_face_detections(face_detections)
+        detected_face_count = len(all_faces)
+        selected_indices = [
+            index for index, face in enumerate(all_faces)
+            if face["bbox"]["width"] >= self.min_face_width
+            and face["bbox"]["height"] >= self.min_face_height
         ]
+        index_map = {old: new for new, old in enumerate(selected_indices)}
+        faces = []
+        for index in selected_indices:
+            face = dict(all_faces[index])
+            face["source_face_index"] = index
+            face["face_index"] = index_map[index]
+            faces.append(face)
+        if face_crops_jpeg and len(face_crops_jpeg) == len(all_faces):
+            face_crops_jpeg = [face_crops_jpeg[index] for index in selected_indices]
+
+        def storage_match(value: Any) -> dict[str, Any] | None:
+            if not isinstance(value, dict):
+                return None
+            result = dict(value)
+            source_index = result.get("face_index")
+            if isinstance(source_index, int) and not isinstance(source_index, bool):
+                result["detected_face_index"] = source_index
+                result["face_index"] = index_map.get(source_index)
+            return result
         timestamp = diagnostics.get("last_processed_at")
         if not isinstance(timestamp, str) or not timestamp:
             timestamp = datetime.now(timezone.utc).isoformat()
@@ -267,9 +283,12 @@ class FaceDebugStore:
         if not isinstance(error_code, str) or len(error_code) > 48:
             error_code = None
 
-        match_diagnostic = diagnostics.get("match")
-        if not isinstance(match_diagnostic, dict):
-            match_diagnostic = None
+        match_diagnostic = storage_match(diagnostics.get("match"))
+        raw_matches = diagnostics.get("matches")
+        matches = (
+            [result for item in raw_matches if (result := storage_match(item)) is not None]
+            if isinstance(raw_matches, list) else None
+        )
         payload: dict[str, Any] = {
             "occurred_at": timestamp,
             "source_id": self._safe_source_id(source_id),
@@ -281,6 +300,10 @@ class FaceDebugStore:
             "inference_ms": round(inference_ms, 2) if inference_ms is not None else None,
             "last_error": error_code,
             "match": match_diagnostic,
+            "matches": matches,
+            "faces_processed": diagnostics.get("faces_processed"),
+            "faces_failed": diagnostics.get("faces_failed"),
+            "faces_limit": diagnostics.get("faces_limit"),
             "capture_id": None,
             "capture_status": "not_applicable",
         }
@@ -572,6 +595,10 @@ class FaceDebugStore:
                 "yunet_score_threshold": payload["yunet_score_threshold"],
                 "inference_ms": payload["inference_ms"],
                 "match": payload.get("match"),
+                "matches": payload.get("matches"),
+                "faces_processed": payload.get("faces_processed"),
+                "faces_failed": payload.get("faces_failed"),
+                "faces_limit": payload.get("faces_limit"),
             }
             content = (json.dumps(metadata, ensure_ascii=False, separators=(",", ":")) + "\n").encode("utf-8")
             self._write_private_file(temporary / "metadata.json", content)
@@ -742,7 +769,8 @@ class FaceDebugStore:
     def update_capture_match(
         self,
         capture_id: str,
-        match: dict[str, Any],
+        match: dict[str, Any] | None,
+        matches: list[dict[str, Any]] | None = None,
     ) -> bool:
         """Обновить поле match в метаданных существующего кадра.
 
@@ -763,6 +791,8 @@ class FaceDebugStore:
                 return False
             meta = json.loads(row["metadata_json"])
             meta["match"] = match
+            if matches is not None:
+                meta["matches"] = matches
             content = json.dumps(meta, ensure_ascii=False, separators=(",", ":")).encode(
                 "utf-8"
             )
@@ -776,7 +806,7 @@ class FaceDebugStore:
                 _LOGGER.info(
                     "update_capture_match: capture %s updated with match state=%s",
                     capture_id,
-                    match.get("state"),
+                    match.get("state") if match else None,
                 )
                 return True
             except sqlite3.Error as err:

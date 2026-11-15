@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 API_VERSION = 1
-APP_VERSION = "0.1.35-dev"
-PROFILE_FEATURES: tuple[str, ...] = ("profiles", "polygon_zones")
+APP_VERSION = "0.1.36.4-dev"
+PROFILE_FEATURES: tuple[str, ...] = ("profiles", "polygon_zones", "zone_exclusion_masks")
 PREVIEW_FEATURES: tuple[str, ...] = ("camera_preview",)
 ANNOTATION_FEATURES: tuple[str, ...] = ("localized_annotations",)
 MOTION_STREAM_FEATURES: tuple[str, ...] = ("rtsp_motion_stream",)
 FACE_GALLERY_FEATURES: tuple[str, ...] = ("face_gallery",)
-FACE_DIAGNOSTIC_FEATURES: tuple[str, ...] = ("face_pipeline_diagnostics",)
+FACE_DIAGNOSTIC_FEATURES: tuple[str, ...] = ("face_pipeline_diagnostics", "face_multi_match")
 FACE_DEBUG_FEATURES: tuple[str, ...] = ("face_debug_dashboard",)
 
 

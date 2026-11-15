@@ -1,5 +1,5 @@
 from typing import List, Optional, Union
-from pydantic import BaseSettings, Extra
+from pydantic import BaseSettings, Extra, Field
 from odrpc import MqttDetectRequest
 
 class DoodsDetectorConfig(BaseSettings):
@@ -71,6 +71,10 @@ class FaceConfig(BaseSettings):
 
     enabled: bool = True
     diagnostics_enabled: bool = True
+    illumination_compensation: bool = False
+    illumination_threshold: int = Field(60, ge=0, le=255)
+    illumination_gamma: float = Field(0.45, ge=0.3, le=0.9)
+    max_match_faces: int = Field(3, ge=1, le=5)
     yunet_score_threshold: Optional[float] = 0.9
     face_match_threshold: Optional[float] = 0.4
     face_match_min_gap: Optional[float] = 0.1

@@ -44,6 +44,44 @@ from prometheus_fastapi_instrumentator import Instrumentator
 import tracemalloc
 from pathlib import Path
 
+def _map_rematch_faces(raw_results, capture):
+    """Map redetected boxes only when their overlap is unambiguous."""
+    # YuNet can return faces in a different order on re-detection.
+    # Map only an unambiguous spatial overlap; otherwise do not
+    # associate a saved crop with the new result.
+    faces = capture.get("faces", []) or []
+    candidates = []
+    for result_index, result in enumerate(raw_results):
+        box = result.get("yunet_bbox") or {}
+        for face in faces:
+            old = face.get("bbox") or {}
+            try:
+                left = max(float(box["x"]), float(old["x"]))
+                top = max(float(box["y"]), float(old["y"]))
+                right = min(float(box["x"])+float(box["width"]), float(old["x"])+float(old["width"]))
+                bottom = min(float(box["y"])+float(box["height"]), float(old["y"])+float(old["height"]))
+                intersection = max(0.0, right-left)*max(0.0, bottom-top)
+                union = float(box["width"])*float(box["height"]) + float(old["width"])*float(old["height"]) - intersection
+                iou = intersection/union if union > 0 else 0
+            except (KeyError, TypeError, ValueError):
+                continue
+            if iou >= 0.5:
+                candidates.append((iou, result_index, face.get("face_index")))
+    used_results, used_faces = set(), set()
+    mapped = [dict(result, detected_face_index=result.get("face_index"), face_index=None) for result in raw_results]
+    for _, result_index, face_index in sorted(candidates, key=lambda item: item[0], reverse=True):
+        # Competing overlaps are unsafe: show the full frame instead.
+        if (not isinstance(face_index, int)
+            or result_index in used_results or face_index in used_faces
+            or sum(item[1] == result_index for item in candidates) != 1
+            or sum(item[2] == face_index for item in candidates) != 1):
+            continue
+        mapped[result_index]["face_index"] = face_index
+        used_results.add(result_index)
+        used_faces.add(face_index)
+    return mapped
+
+
 _FACE_DISABLED_PAGE = """<!doctype html>
 <html lang="ru">
 <head>
@@ -1233,54 +1271,34 @@ class API():
                     if frame is None:
                         errors += 1
                         continue
-                    match_result = await asyncio.to_thread(
-                        self.face_analyzer.match_frame,
-                        frame,
-                        source_id,
+                    raw_results = await asyncio.to_thread(
+                        self.face_analyzer.match_frame_all, frame, source_id,
                     )
-                    if match_result and match_result.get("state") == "matched":
-                        face_images: list[bytes] = []
-                        for face in capture.get("faces", []) or []:
+                    faces = capture.get("faces", []) or []
+                    mapped = _map_rematch_faces(raw_results, capture)
+                    match_result = self.face_analyzer._best_match(mapped)
+                    await asyncio.to_thread(
+                        self.face_debug_store.update_capture_match,
+                        capture_id, match_result, mapped,
+                    )
+                    if any(result.get("state") == "matched" for result in mapped):
+                        face_images = []
+                        for face in faces:
                             index = face.get("face_index")
-                            if not isinstance(index, int):
-                                continue
                             try:
-                                face_images.append(
-                                    await asyncio.to_thread(
-                                        self.face_debug_store.get_capture_image,
-                                        capture_id,
-                                        kind="face",
-                                        face_index=index,
-                                    )
+                                image = await asyncio.to_thread(
+                                    self.face_debug_store.get_capture_image,
+                                    capture_id, kind="face", face_index=index,
                                 )
                             except Exception:
-                                continue
+                                image = b""
+                            face_images.append(image)
+                        capture["match"] = match_result
+                        capture["matches"] = mapped
                         await asyncio.to_thread(
                             self.face_debug_store._write_match_capture,
-                            capture_id,
-                            jpeg_bytes,
-                            capture,
-                            match_info=match_result,
-                            face_images=face_images,
+                            capture_id, jpeg_bytes, capture, face_images=face_images,
                         )
-                        try:
-                            updated = await asyncio.to_thread(
-                                self.face_debug_store.update_capture_match,
-                                capture_id,
-                                match_result,
-                            )
-                            if not updated:
-                                self.logger.warning(
-                                    "rematch: capture %s matched but metadata not updated",
-                                    capture_id,
-                                )
-                        except Exception as err:
-                            # Не прерываем rematch из-за ошибки обновления метаданных кадра
-                            self.logger.warning(
-                                "rematch: capture %s metadata update failed: %s",
-                                capture_id,
-                                err,
-                            )
                         new_matches += 1
                 except Exception:
                     errors += 1
