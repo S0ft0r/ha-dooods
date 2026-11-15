@@ -163,7 +163,7 @@ trigger:
   - platform: event
     event_type: dooods_detection
     id: dooods_detection_trigger
-    enabled: "{{ is_object_enabled }}"
+  #  enabled: "{{ is_object_enabled }}"
 
 mode: parallel
 max: 10
