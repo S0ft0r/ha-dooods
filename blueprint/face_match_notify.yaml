@@ -158,7 +158,7 @@ trigger:
   - platform: event
     event_type: dooods_face_match
     id: dooods_face_match_trigger
-    enabled: "{{ is_face_enabled }}"
+  #  enabled: "{{ is_face_enabled }}"
 
   # - platform: event
   #   event_type: dooods_detection
