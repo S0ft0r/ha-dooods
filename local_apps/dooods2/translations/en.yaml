@@ -36,6 +36,18 @@ configuration:
       diagnostics_enabled:
         name: Face diagnostics
         description: Save face frames and logs and show the diagnostics interface. Recognition continues when disabled; existing data is retained. Applied after restarting the app.
+      illumination_compensation:
+        name: Face backlight compensation
+        description: Brightens dark aligned faces before SFace matching. Does not affect YuNet face detection or enrolled references; accuracy may change. Disabled by default. Applied after restarting the app.
+      illumination_threshold:
+        name: Face brightness threshold
+        description: Faces with median L brightness below this threshold are corrected. Range 0–255; default 60. Zero disables correction. Applied after restarting the app.
+      illumination_gamma:
+        name: Face brightening gamma
+        description: Range 0.3–0.9; default 0.45. Lower values brighten more strongly. Applied after restarting the app.
+      max_match_faces:
+        name: Maximum faces per frame
+        description: Number of largest faces analyzed independently. Range 1–5, default 3. Applied after restarting the app.
       yunet_score_threshold:
         name: YuNet confidence threshold
         description: Range 0.1–1.0; default 0.9. Lower values may detect weaker/smaller faces but can increase false detections. The change takes effect after restarting the App.

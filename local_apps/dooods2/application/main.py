@@ -182,6 +182,12 @@ def main():
                 face_detection_cameras=face_detection_cameras,
                 face_gallery_store=face_gallery_store,
                 debug_store=face_debug_store,
+                illumination_compensation=getattr(
+                    face_options, "illumination_compensation", False
+                ) is True,
+                illumination_threshold=getattr(face_options, "illumination_threshold", 60),
+                illumination_gamma=getattr(face_options, "illumination_gamma", 0.45),
+                max_match_faces=getattr(face_options, "max_match_faces", 3),
             )
 
         else:

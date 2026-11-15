@@ -7,7 +7,7 @@
   <meta http-equiv="cache-control" content="no-store, must-revalidate">
   <meta http-equiv="pragma" content="no-cache">
   <meta http-equiv="expires" content="0">
-  <meta name="dooods-build" content="0.1.35">
+  <meta name="dooods-build" content="0.1.36">
   <title>Лица — диагностика и галерея</title>
   <style>
     :root {
@@ -473,6 +473,15 @@
           meta.append(dt, dd);
         }
         card.append(meta);
+        const faceResults = Array.isArray(capture.matches) ? capture.matches : (capture.match ? [capture.match] : []);
+        for (const result of faceResults) {
+          const detail = document.createElement("button");
+          detail.type = "button";
+          const number = Number.isInteger(result.face_index) ? `Лицо ${result.face_index + 1}` : "Лицо без сохранённого кропа";
+          detail.textContent = `${number}: ${MATCH_STATE_LABELS[result.state] || result.state || "—"} · ${result.person_name || "—"}`;
+          detail.addEventListener("click", event => { event.stopPropagation(); openMatchModal({ ...capture, match: result }); });
+          card.append(detail);
+        }
         const matchState = capture.match && capture.match.state;
         if (matchState === "matched") card.classList.add("matched");
         else if (matchState === "ambiguous") card.classList.add("ambiguous");
@@ -660,8 +669,8 @@
       const source = match || {};
       const faces = Array.isArray(capture.faces) ? capture.faces : [];
       const detected = faces.length ? faces : (source.yunet_bbox ? [{ bbox: source.yunet_bbox, score: source.yunet_score }] : []);
-      const face = detected[0] || {};
-      const box = face.bbox || {};
+      const face = detected.find(item => item.face_index === source.face_index) || {};
+      const box = source.yunet_bbox || face.bbox || {};
 
       const yunetItems = [
         ["Порог score", formatNumber(source.yunet_score_threshold ?? capture.yunet_score_threshold, 3)],
@@ -738,11 +747,12 @@
       title.textContent = match && match.person_name ? `Лицо персоны «${match.person_name}»` : "Совпадение лица";
 
       const faces = Array.isArray(capture.faces) ? capture.faces : [];
-      const matchedFaceIndex = match && Number.isInteger(match.face_index) ? match.face_index : 0;
+      const matchedFaceIndex = match && Number.isInteger(match.face_index)
+        ? match.face_index : (match && !("face_index" in match) ? 0 : null);
       // Кадр может прийти и с вкладки «Кадры», которой нет в буфере совпадений,
       // поэтому перебираем оба хранилища: сначала кроп, затем полный кадр.
       const imageCandidates = [];
-      if (faces.length) {
+      if (faces.length && matchedFaceIndex !== null) {
         imageCandidates.push(`faces/debug/matches/${capture.capture_id}/image?kind=face&face_index=${matchedFaceIndex}`);
         imageCandidates.push(`faces/debug/captures/${capture.capture_id}/image?kind=face&face_index=${matchedFaceIndex}`);
       }
@@ -767,7 +777,7 @@
           card.className = "face-card";
           const label = document.createElement("div");
           label.className = "label";
-          label.textContent = "Найденное лицо";
+          label.textContent = "Исходный кроп";
           card.append(label);
           if (faceUrl) {
             const img = document.createElement("img");
@@ -784,13 +794,51 @@
           note.className = "note";
           note.textContent = faceUrl && !faceFromCrop
             ? "кроп недоступен, показан полный кадр"
-            : (faces.length
+            : (faces.length && matchedFaceIndex !== null
               ? `лицо №${matchedFaceIndex + 1} из ${faces.length}`
               : "кадр без обнаруженных лиц");
           card.append(note);
           return card;
         })(),
       ]);
+
+      if (match) {
+        const card = document.createElement("div");
+        card.className = "face-card";
+        const label = document.createElement("div");
+        label.className = "label";
+        label.textContent = "Вход SFace (выровненное лицо)";
+        card.append(label);
+        let loaded = false;
+        if (matchedFaceIndex !== null && match.sface_input_origin !== "rematch_unavailable") {
+          for (const source of ["matches", "captures"]) {
+            try {
+              const url = await apiImage(`faces/debug/${source}/${capture.capture_id}/image?kind=sface&face_index=${matchedFaceIndex}`);
+              modalUrls.push(url);
+              const img = document.createElement("img");
+              img.src = url;
+              img.alt = "Выровненное лицо, использованное для SFace";
+              card.append(img);
+              loaded = true;
+              break;
+            } catch (_) { /* Old captures may have no saved SFace input. */ }
+          }
+        }
+        const note = document.createElement("div");
+        note.className = "note";
+        const labels = {
+          applied: "Компенсация применена",
+          disabled: "Компенсация выключена",
+          not_applied: "Компенсация не применена: порог не достигнут или произошла ошибка обработки",
+        };
+        note.textContent = loaded
+          ? `${labels[match.illumination_status] || "Состояние компенсации неизвестно"}; сохранена JPEG-копия входа.`
+          : (match.sface_input_origin === "rematch_unavailable"
+            ? "После повторного сравнения изображение входа не сохранено."
+            : "Изображение входа недоступно для этой записи.");
+        card.append(note);
+        pair.append(card);
+      }
 
       if (match && match.person_id) {
         const card = document.createElement("div");
@@ -1159,7 +1207,10 @@
         const result = await apiRequest("faces/debug/matches");
         const matches = Array.isArray(result) ? result : [];
         $("match-empty").hidden = matches.length !== 0;
-        for (const m of matches) {
+        for (const capture of matches) {
+          const results = Array.isArray(capture.matches) ? capture.matches.filter(item => item.state === "matched") : (capture.match ? [capture.match] : []);
+          for (const result of (results.length ? results : [capture.match || {}])) {
+          const m = { ...capture, ...result, match: result };
           const card = document.createElement("article");
           card.className = "capture";
           card.dataset.captureId = m.capture_id;
@@ -1191,6 +1242,7 @@
           card.append(meta);
           card.addEventListener("click", () => openMatchModal(m));
           grid.append(card);
+          }
         }
       } catch (error) {
         $("match-empty").textContent = `Не удалось загрузить совпадения: ${error.message}`;

@@ -373,6 +373,7 @@ class PolygonZone:
     polygon: Polygon
     labels: Mapping[str, float]
     covers: bool = False
+    exclusion_masks: tuple[Polygon, ...] = ()
 
     def __post_init__(self) -> None:
         """Проверить идентификатор зоны, режим покрытия и пороги меток."""
@@ -380,6 +381,10 @@ class PolygonZone:
             raise ValueError("У зоны должен быть непустой идентификатор")
         if not isinstance(self.covers, bool):
             raise ValueError("covers должен быть логическим значением")
+        if not isinstance(self.exclusion_masks, tuple) or not all(
+            isinstance(mask, Polygon) for mask in self.exclusion_masks
+        ):
+            raise ValueError("Маски исключения должны быть полигонами")
         if not isinstance(self.labels, Mapping):
             raise ValueError("labels зоны должны быть словарём порогов")
 
@@ -427,6 +432,8 @@ def filter_detections_by_zones(
 
         for zone in zones:
             if not box_matches_polygon(box, zone.polygon, covers=zone.covers):
+                continue
+            if any(box_inside_polygon(box, mask) for mask in zone.exclusion_masks):
                 continue
             if not _passes_thresholds(label, confidence, zone.labels):
                 continue
