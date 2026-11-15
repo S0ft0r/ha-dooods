@@ -53,8 +53,15 @@ def _normalize_match_result(payload: Any) -> dict[str, Any] | None:
         or not 0.0 <= similarity <= 1.0
     ):
         return None
+    face_index = payload.get("face_index")
+    if face_index is not None and (
+        isinstance(face_index, bool) or not isinstance(face_index, int)
+        or not 0 <= face_index < 10_000
+    ):
+        return None
     return {
         "state": match_state,
+        "face_index": face_index,
         "person_id": person_id.strip() if isinstance(person_id, str) else None,
         "person_name": person_name.strip() if isinstance(person_name, str) else None,
         "similarity": round(float(similarity), 4)
@@ -143,6 +150,13 @@ def normalize_face_diagnostics(payload: Any) -> dict[str, Any] | None:
         error = None
 
     normalized_match = _normalize_match_result(match)
+    raw_matches = payload.get("matches")
+    normalized_matches = None
+    if isinstance(raw_matches, list) and len(raw_matches) <= 5:
+        normalized_matches = [
+            result for item in raw_matches
+            if (result := _normalize_match_result(item)) is not None
+        ]
 
     return {
         "state": state,
@@ -152,6 +166,7 @@ def normalize_face_diagnostics(payload: Any) -> dict[str, Any] | None:
         "largest_face_height_px": height,
         "embedding_ready": embedding_ready,
         "match": normalized_match,
+        "matches": normalized_matches,
         "inference_ms": float(inference_ms) if inference_ms is not None else None,
         "last_processed_at": normalized_timestamp,
         "last_error": error,

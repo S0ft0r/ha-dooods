@@ -24,6 +24,7 @@ def face_match_event_key(
         return None
     return (
         checked_at,
+        match.get("face_index"),
         match.get("person_id"),
         match.get("person_name"),
         match.get("similarity"),

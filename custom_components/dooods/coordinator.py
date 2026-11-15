@@ -208,7 +208,8 @@ class DooodsCoordinator(DataUpdateCoordinator[dict[str, CameraScanResult]]):
         ] = []
         self.emit_face_match_events = bool(emit_face_match_events)
         self.face_match_event_cooldown = max(0, face_match_event_cooldown)
-        self._last_face_match_event_keys: dict[str, tuple[Any, ...]] = {}
+        self._last_face_match_event_keys: dict[str, tuple[str | None, set[tuple[Any, ...]]]] = {}
+        self._last_face_match_event_frames: dict[tuple[str, str], str] = {}
         self._last_face_match_events: dict[tuple[str, str], tuple[float, str, float | None]] = {}
         self._archive_cleanup_unsubscribe: Callable[[], None] | None = None
         self._archive_cleanup_task: asyncio.Task[Any] | None = None
@@ -428,8 +429,11 @@ class DooodsCoordinator(DataUpdateCoordinator[dict[str, CameraScanResult]]):
         diagnostics.update(normalized)
         diagnostics["updated_at"] = datetime.now(UTC).isoformat()
         self._notify_face_diagnostics_listeners(camera_entity_id)
-        match = normalized.get("match")
-        if match:
+        matches = normalized.get("matches")
+        if matches is None:
+            match = normalized.get("match")
+            matches = [match] if match else []
+        for match in matches:
             self._fire_face_match_event(
                 camera_entity_id,
                 normalized.get("last_processed_at"),
@@ -1663,8 +1667,13 @@ class DooodsCoordinator(DataUpdateCoordinator[dict[str, CameraScanResult]]):
         event_key = face_match_event_key(checked_at=checked_at, match=match)
         if event_key is None:
             return
-        if self._last_face_match_event_keys.get(camera_entity_id) == event_key:
+        previous_frame = self._last_face_match_event_keys.get(camera_entity_id)
+        if previous_frame is None or previous_frame[0] != checked_at:
+            previous_frame = (checked_at, set())
+            self._last_face_match_event_keys[camera_entity_id] = previous_frame
+        if event_key in previous_frame[1]:
             return
+        previous_frame[1].add(event_key)
         state = str(match.get("state"))
         person_key = str(match.get("person_id") or match.get("person_name") or "")
         cooldown_key = (camera_entity_id, person_key)
@@ -1674,7 +1683,11 @@ class DooodsCoordinator(DataUpdateCoordinator[dict[str, CameraScanResult]]):
         previous_state = previous_event[1] if previous_event is not None else None
         previous_similarity = previous_event[2] if previous_event is not None else None
         similarity = match.get("similarity")
-        if not face_match_event_cooldown_allows(
+        last_frames = getattr(self, "_last_face_match_event_frames", None)
+        if last_frames is None:
+            last_frames = self._last_face_match_event_frames = {}
+        same_frame = checked_at is not None and last_frames.get(cooldown_key) == checked_at
+        if state != "ambiguous" and not same_frame and not face_match_event_cooldown_allows(
             state=state,
             previous_state=previous_state,
             elapsed=elapsed,
@@ -1684,7 +1697,6 @@ class DooodsCoordinator(DataUpdateCoordinator[dict[str, CameraScanResult]]):
         ):
             # Do not publish this suppressed frame later
             # from a repeated status snapshot.
-            self._last_face_match_event_keys[camera_entity_id] = event_key
             return
         event_data = face_match_event_data(
             entry_id=self.entry_id,
@@ -1695,8 +1707,12 @@ class DooodsCoordinator(DataUpdateCoordinator[dict[str, CameraScanResult]]):
             similarity=match.get("similarity"),
             state=state,
         )
+        face_index = match.get("face_index")
+        if isinstance(face_index, int) and not isinstance(face_index, bool):
+            event_data["face_index"] = face_index
         self.hass.bus.async_fire(EVENT_FACE_MATCH, event_data)
-        self._last_face_match_event_keys[camera_entity_id] = event_key
+        if checked_at is not None:
+            last_frames[cooldown_key] = checked_at
         self._last_face_match_events[cooldown_key] = (now, state, similarity)
 
     async def _async_archive_camera_frame(
