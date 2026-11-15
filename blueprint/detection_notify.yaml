@@ -230,14 +230,19 @@ action:
                 - sequence:
                     - parallel:
                         - sequence:
-                            - action: immich.upload_file
-                              metadata: {}
-                              data:
-                                config_entry_id: "{{ immich_instance }}"
-                                file:
-                                  media_content_id: "media-source://media_source/snapshots/{{ snapshot_name }}"
-                                  media_content_type: image/jpeg
-                                album_id: "{{ immich_album_id }}"
+                            - if:
+                                - condition: template
+                                  value_template: "{{ (immich_instance | default('', true) | string | trim) != '' }}"
+                              then:
+                                - action: immich.upload_file
+                                  continue_on_error: true
+                                  metadata: {}
+                                  data:
+                                    config_entry_id: "{{ immich_instance }}"
+                                    file:
+                                      media_content_id: "media-source://media_source/snapshots/{{ snapshot_name }}"
+                                      media_content_type: image/jpeg
+                                    album_id: "{{ immich_album_id }}"
                         - sequence:
                             - data:
                                 duration: '{{ record_duration }}'
@@ -245,14 +250,19 @@ action:
                               target:
                                 entity_id: "{{ camera_entity_id }}"
                               action: camera.record
-                            - action: immich.upload_file
-                              metadata: {}
-                              data:
-                                config_entry_id: "{{ immich_instance }}"
-                                file:
-                                  media_content_id: media-source://media_source/records/{{ record_name }}
-                                  media_content_type: video/mp4
-                                album_id: "{{ immich_album_id }}"
+                            - if:
+                                - condition: template
+                                  value_template: "{{ (immich_instance | default('', true) | string | trim) != '' }}"
+                              then:
+                                - action: immich.upload_file
+                                  continue_on_error: true
+                                  metadata: {}
+                                  data:
+                                    config_entry_id: "{{ immich_instance }}"
+                                    file:
+                                      media_content_id: media-source://media_source/records/{{ record_name }}
+                                      media_content_type: video/mp4
+                                    album_id: "{{ immich_album_id }}"
 
   # - choose:
   #     - conditions:
