@@ -116,7 +116,6 @@ class DooodsProfileManager extends HTMLElement {
         select, input[type="text"], input[type="number"] { width:100%; min-height:40px; border:1px solid var(--divider-color,#d8e0e4); border-radius:8px; padding:8px 10px; background:var(--card-background-color,#fff); color:var(--primary-text-color,#202b32); }
         .editor-grid { display:grid; grid-template-columns:minmax(180px,230px) minmax(0,1fr) minmax(320px,390px); gap:18px; align-items:start; }
         .tab-view { position:relative; grid-column:2/4; min-width:0; }
-        .editor-grid.settings-layout { display:block; }
         .tab-switch { position:absolute; top:0; left:18px; z-index:5; display:flex; gap:7px; transform:translateY(-50%); }
         .tab-switch-button { display:grid; place-items:center; width:40px; min-width:40px; height:40px; min-height:40px; padding:8px; border-radius:50%; color:var(--secondary-text-color,#64727b); background:var(--card-background-color,#fff); box-shadow:0 2px 8px rgba(24,43,54,.08); }
         .tab-switch-button svg { display:block; width:20px; height:20px; }
@@ -210,8 +209,8 @@ class DooodsProfileManager extends HTMLElement {
           </div>
           <button id="refresh-button" class="refresh" type="button">Обновить список</button>
         </header>
-        <div id="editor-grid" class="editor-grid">
-          <section id="camera-list-card" class="card camera-list-card" aria-label="Выбор камеры">
+        <div class="editor-grid">
+          <section class="card camera-list-card" aria-label="Выбор камеры">
             <h2>Камеры</h2>
             <div id="camera-list" class="camera-list" role="group" aria-label="Выбрать камеру">
               <p class="empty">Загрузка камер…</p>
@@ -259,7 +258,11 @@ class DooodsProfileManager extends HTMLElement {
                   </div>
                   <p class="hint">Перетаскивайте вершины; добавляйте вершину на выбранное ребро; удалить можно выбранную вершину. «По умолчанию» сбрасывает геометрию, не меняя остальные настройки зоны.</p>
                 </section>
-                <aside id="profile-sidebar" class="profile-sidebar">
+                <aside class="profile-sidebar">
+                  <section class="card settings-card" aria-label="Источник камеры">
+                    <h2>Источник камеры</h2>
+                    <p id="replace-camera-selected" class="empty">Выберите камеру.</p>
+                  </section>
                   <section class="card zone-card">
                     <h2>Зоны профиля</h2>
                     <div id="zone-list" class="zone-list"><p class="empty">Загрузка профиля…</p></div>
@@ -600,13 +603,6 @@ class DooodsProfileManager extends HTMLElement {
     const selectedTab = tab === "settings" ? "settings" : "archive";
     this._activeTab = selectedTab;
     const archiveActive = selectedTab === "archive";
-    const grid = this.shadowRoot.getElementById("editor-grid");
-    const cameraCard = this.shadowRoot.getElementById("camera-list-card");
-    const tabView = this.shadowRoot.querySelector(".tab-view");
-    const sidebar = this.shadowRoot.getElementById("profile-sidebar");
-    grid.classList.toggle("settings-layout", !archiveActive);
-    if (archiveActive) grid.insertBefore(cameraCard, tabView);
-    else sidebar.prepend(cameraCard);
     this.shadowRoot.getElementById("archive-pane").hidden = !archiveActive;
     this.shadowRoot.getElementById("settings-pane").hidden = archiveActive;
     this.shadowRoot.querySelectorAll(".tab-switch-button").forEach((button) => {
@@ -1016,7 +1012,11 @@ class DooodsProfileManager extends HTMLElement {
   _renderCameraOptions() {
     const list = this.shadowRoot.getElementById("camera-list");
     list.replaceChildren();
-    this.shadowRoot.getElementById("replace-camera-button").disabled = !this._selectedOption();
+    const selectedCamera = this._selectedOption()?.camera;
+    this.shadowRoot.getElementById("replace-camera-button").disabled = !selectedCamera;
+    this.shadowRoot.getElementById("replace-camera-selected").textContent = selectedCamera
+      ? this._cameraDisplayName(selectedCamera)
+      : "Выберите камеру.";
     if (!this._cameraOptions.length) {
       const empty = document.createElement("p");
       empty.className = "empty";
