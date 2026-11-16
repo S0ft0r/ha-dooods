@@ -111,13 +111,12 @@ def resolve_motion_sensor(
     if configured_entity_id == MOTION_SENSOR_NONE:
         return None
 
+    # An explicit selection remains authoritative after source replacement,
+    # even when that sensor belongs to another device or is unavailable.
+    if configured_entity_id.startswith("binary_sensor."):
+        return configured_entity_id
     candidates = camera_motion_sensors(hass, camera_entity_id)
-    candidate_ids = {candidate["entity_id"] for candidate in candidates}
-    if candidates:
-        if configured_entity_id in candidate_ids:
-            return configured_entity_id
-        return candidates[0]["entity_id"]
-    return configured_entity_id or None
+    return candidates[0]["entity_id"] if candidates else None
 
 
 def resolve_motion_sensors(

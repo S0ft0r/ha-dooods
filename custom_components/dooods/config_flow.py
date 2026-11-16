@@ -367,6 +367,8 @@ def _options_for_form(options: Mapping[str, Any]) -> dict[str, Any]:
     # Supervisor валидирует options самого App, а не записи интеграции.
     return {
         CONF_SOURCE: cameras,
+        "camera_archive_sources": dict(options.get("camera_archive_sources", {}))
+        if isinstance(options.get("camera_archive_sources"), Mapping) else {},
         SELECTION_VERSION_KEY: SELECTION_VERSION,
         CONF_FACE_DETECTION_CAMERAS: face_cameras,
         CONF_OBJECT_DETECTION_CAMERAS: object_cameras,
@@ -439,6 +441,8 @@ def _normalize_options(options: Mapping[str, Any]) -> dict[str, Any]:
     )
     return {
         CONF_SOURCE: cameras,
+        "camera_archive_sources": dict(options.get("camera_archive_sources", {}))
+        if isinstance(options.get("camera_archive_sources"), Mapping) else {},
         SELECTION_VERSION_KEY: SELECTION_VERSION,
         CONF_FACE_DETECTION_CAMERAS: face_cameras,
         CONF_OBJECT_DETECTION_CAMERAS: object_cameras,

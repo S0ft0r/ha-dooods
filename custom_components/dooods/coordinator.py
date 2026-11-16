@@ -38,6 +38,7 @@ from .archive import (
     has_accepted_annotated_frame,
     normalize_archive_directory,
 )
+from .camera_replacement import archive_source
 from .camera_motion_recheck_intervals import (
     camera_motion_recheck_interval,
     normalize_camera_motion_recheck_intervals,
@@ -1730,7 +1731,7 @@ class DooodsCoordinator(DataUpdateCoordinator[dict[str, CameraScanResult]]):
                 self.hass,
                 self.archive_directory,
                 self.entry_id,
-                camera_entity_id,
+                archive_source(self._config_entry.options, camera_entity_id),
                 image,
                 checked_at,
                 detections=tuple(detections),

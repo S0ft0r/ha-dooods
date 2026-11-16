@@ -15,6 +15,8 @@ class DooodsProfileManager extends HTMLElement {
     this._availableLabels = [];
     this._labelTranslationsLoaded = false;
     this._selectedZone = -1;
+    this._selectedMask = -1;
+    this._masksSupported = false;
     this._selectedVertex = -1;
     this._draggingVertex = -1;
     this._addingVertex = false;
@@ -101,9 +103,20 @@ class DooodsProfileManager extends HTMLElement {
         .camera-choice { width:100%; min-width:0; min-height:42px; padding:9px 10px; text-align:left; white-space:normal; overflow-wrap:anywhere; }
         .camera-choice[aria-pressed="true"] { border-color:var(--primary-color,#03a9a4); background:color-mix(in srgb,var(--primary-color,#03a9a4) 9%,var(--card-background-color,#fff)); }
         .camera-choice:focus-visible { outline:2px solid var(--primary-color,#03a9a4); outline-offset:2px; }
+        .camera-replace-button { width:100%; margin-top:12px; font-size:13px; }
+        .replace-dialog { width:min(520px,calc(100vw - 32px)); max-height:calc(100dvh - 32px); overflow:auto; padding:0; border:1px solid var(--divider-color,#d8e0e4); border-radius:14px; color:var(--primary-text-color,#202b32); background:var(--card-background-color,#fff); box-shadow:0 18px 55px rgba(0,0,0,.28); }
+        .replace-dialog::backdrop { background:rgba(0,0,0,.55); }
+        .replace-dialog-content { padding:22px; }
+        .replace-dialog h2 { margin:0 0 8px; }
+        .replace-dialog p { color:var(--secondary-text-color,#64727b); font-size:13px; line-height:1.5; }
+        .replace-dialog .field { margin-top:16px; }
+        .replace-current { overflow-wrap:anywhere; border-radius:8px; padding:10px; background:var(--secondary-background-color,#f3f6f7); font-size:14px; }
+        .replace-note { border-left:3px solid var(--primary-color,#03a9a4); padding-left:10px; }
+        .replace-actions { display:flex; justify-content:flex-end; gap:8px; margin-top:18px; }
         select, input[type="text"], input[type="number"] { width:100%; min-height:40px; border:1px solid var(--divider-color,#d8e0e4); border-radius:8px; padding:8px 10px; background:var(--card-background-color,#fff); color:var(--primary-text-color,#202b32); }
         .editor-grid { display:grid; grid-template-columns:minmax(180px,230px) minmax(0,1fr) minmax(320px,390px); gap:18px; align-items:start; }
         .tab-view { position:relative; grid-column:2/4; min-width:0; }
+        .editor-grid.settings-layout { display:block; }
         .tab-switch { position:absolute; top:0; left:18px; z-index:5; display:flex; gap:7px; transform:translateY(-50%); }
         .tab-switch-button { display:grid; place-items:center; width:40px; min-width:40px; height:40px; min-height:40px; padding:8px; border-radius:50%; color:var(--secondary-text-color,#64727b); background:var(--card-background-color,#fff); box-shadow:0 2px 8px rgba(24,43,54,.08); }
         .tab-switch-button svg { display:block; width:20px; height:20px; }
@@ -197,12 +210,13 @@ class DooodsProfileManager extends HTMLElement {
           </div>
           <button id="refresh-button" class="refresh" type="button">Обновить список</button>
         </header>
-        <div class="editor-grid">
-          <section class="card camera-list-card" aria-label="Выбор камеры">
+        <div id="editor-grid" class="editor-grid">
+          <section id="camera-list-card" class="card camera-list-card" aria-label="Выбор камеры">
             <h2>Камеры</h2>
             <div id="camera-list" class="camera-list" role="group" aria-label="Выбрать камеру">
               <p class="empty">Загрузка камер…</p>
             </div>
+            <button id="replace-camera-button" class="camera-replace-button" type="button" disabled>Заменить источник камеры</button>
           </section>
           <section class="tab-view" aria-label="Архив и настройка камеры">
             <nav class="tab-switch" role="tablist" aria-label="Раздел камеры">
@@ -245,7 +259,7 @@ class DooodsProfileManager extends HTMLElement {
                   </div>
                   <p class="hint">Перетаскивайте вершины; добавляйте вершину на выбранное ребро; удалить можно выбранную вершину. «По умолчанию» сбрасывает геометрию, не меняя остальные настройки зоны.</p>
                 </section>
-                <aside class="profile-sidebar">
+                <aside id="profile-sidebar" class="profile-sidebar">
                   <section class="card zone-card">
                     <h2>Зоны профиля</h2>
                     <div id="zone-list" class="zone-list"><p class="empty">Загрузка профиля…</p></div>
@@ -266,6 +280,13 @@ class DooodsProfileManager extends HTMLElement {
                         <option value="false">Нет, достаточно пересечения</option>
                         <option value="true">Да, объект должен помещаться целиком</option>
                       </select>
+                    </div>
+                    <div id="mask-settings" class="field" hidden>
+                      <label for="mask-select">Исключающие маски зоны</label>
+                      <select id="mask-select"><option value="-1">Редактировать зону</option></select>
+                      <input id="mask-name" type="text" maxlength="128" placeholder="Название маски" hidden>
+                      <div class="zone-actions"><button id="mask-add" type="button">Добавить маску</button><button id="mask-remove" type="button" class="danger">Удалить маску</button></div>
+                      <p class="hint">Объект исключается из этой зоны, только если его рамка целиком внутри одной маски.</p>
                     </div>
                     <div class="field">
                       <div class="labels-header">
@@ -296,6 +317,26 @@ class DooodsProfileManager extends HTMLElement {
             </div>
           </section>
         </div>
+        <dialog id="replace-camera-dialog" class="replace-dialog" aria-labelledby="replace-camera-title" aria-describedby="replace-camera-description">
+          <div class="replace-dialog-content">
+            <h2 id="replace-camera-title">Заменить источник камеры</h2>
+            <p id="replace-camera-description">Выберите новый источник для текущей камеры. Профиль, зоны и архив предполагается сохранить.</p>
+            <div class="field">
+              <span class="field-title">Текущая камера</span>
+              <div id="replace-camera-current" class="replace-current"></div>
+            </div>
+            <div class="field">
+              <label for="replace-camera-new">Новый источник</label>
+              <select id="replace-camera-new"></select>
+            </div>
+            <p class="replace-note">Профиль и архив сохранятся. Сущности и автоматизации, ссылающиеся на старую камеру, могут потребовать обновления. Сделайте резервную копию перед заменой.</p>
+            <p id="replace-camera-status" role="status" aria-live="polite"></p>
+            <div class="replace-actions">
+              <button id="replace-camera-cancel" type="button">Закрыть</button>
+              <button id="replace-camera-confirm" class="primary" type="button" disabled>Заменить</button>
+            </div>
+          </div>
+        </dialog>
       </main>`;
 
     this._stage = this.shadowRoot.getElementById("stage");
@@ -346,6 +387,16 @@ class DooodsProfileManager extends HTMLElement {
         this._closeArchiveModal();
       }
     });
+    const replaceDialog = this.shadowRoot.getElementById("replace-camera-dialog");
+    this.shadowRoot.getElementById("replace-camera-button").addEventListener("click", () => this._openReplaceCameraDialog());
+    this.shadowRoot.getElementById("replace-camera-cancel").addEventListener("click", () => replaceDialog.close());
+    replaceDialog.addEventListener("cancel", (event) => {
+      if (this.shadowRoot.getElementById("replace-camera-cancel").disabled) event.preventDefault();
+    });
+    this.shadowRoot.getElementById("replace-camera-new").addEventListener("change", (event) => {
+      this.shadowRoot.getElementById("replace-camera-confirm").disabled = !event.target.value;
+    });
+    this.shadowRoot.getElementById("replace-camera-confirm").addEventListener("click", () => this._replaceCamera());
     const cameraList = this.shadowRoot.getElementById("camera-list");
     cameraList.addEventListener("click", (event) => {
       const button = event.target instanceof Element
@@ -353,6 +404,19 @@ class DooodsProfileManager extends HTMLElement {
         : null;
       if (!button || !cameraList.contains(button)) return;
       this._selectCamera(button.dataset.cameraIndex);
+    });
+    this.shadowRoot.getElementById("mask-add").addEventListener("click", () => this._addMask());
+    this.shadowRoot.getElementById("mask-remove").addEventListener("click", () => this._removeMask());
+    this.shadowRoot.getElementById("mask-select").addEventListener("change", (event) => {
+      this._selectedMask = Number(event.target.value);
+      this._selectedVertex = -1; this._addingVertex = false; this._draggingVertex = -1;
+      this._renderZoneSettings();
+    });
+    this.shadowRoot.getElementById("mask-name").addEventListener("input", (event) => {
+      const mask = this._currentMask(); if (!mask) return;
+      mask.name = event.target.value; this._markDirty();
+      const option = this.shadowRoot.getElementById("mask-select").selectedOptions[0];
+      if (option) option.textContent = mask.name || "Маска";
     });
     this.shadowRoot.getElementById("add-zone-button").addEventListener("click", () => this._addZone());
     this.shadowRoot.getElementById("remove-zone-button").addEventListener("click", () => this._removeZone());
@@ -536,6 +600,13 @@ class DooodsProfileManager extends HTMLElement {
     const selectedTab = tab === "settings" ? "settings" : "archive";
     this._activeTab = selectedTab;
     const archiveActive = selectedTab === "archive";
+    const grid = this.shadowRoot.getElementById("editor-grid");
+    const cameraCard = this.shadowRoot.getElementById("camera-list-card");
+    const tabView = this.shadowRoot.querySelector(".tab-view");
+    const sidebar = this.shadowRoot.getElementById("profile-sidebar");
+    grid.classList.toggle("settings-layout", !archiveActive);
+    if (archiveActive) grid.insertBefore(cameraCard, tabView);
+    else sidebar.prepend(cameraCard);
     this.shadowRoot.getElementById("archive-pane").hidden = !archiveActive;
     this.shadowRoot.getElementById("settings-pane").hidden = archiveActive;
     this.shadowRoot.querySelectorAll(".tab-switch-button").forEach((button) => {
@@ -945,6 +1016,7 @@ class DooodsProfileManager extends HTMLElement {
   _renderCameraOptions() {
     const list = this.shadowRoot.getElementById("camera-list");
     list.replaceChildren();
+    this.shadowRoot.getElementById("replace-camera-button").disabled = !this._selectedOption();
     if (!this._cameraOptions.length) {
       const empty = document.createElement("p");
       empty.className = "empty";
@@ -965,6 +1037,71 @@ class DooodsProfileManager extends HTMLElement {
       button.setAttribute("aria-pressed", String(index === selectedIndex));
       list.appendChild(button);
     });
+  }
+
+  _openReplaceCameraDialog() {
+    const selected = this._selectedOption();
+    if (!selected) return;
+    const current = selected.camera;
+    this.shadowRoot.getElementById("replace-camera-current").textContent =
+      `${this._cameraDisplayName(current)} · ${current.entity_id}`;
+    const select = this.shadowRoot.getElementById("replace-camera-new");
+    select.replaceChildren();
+    const placeholder = document.createElement("option");
+    placeholder.value = "";
+    placeholder.textContent = "Выберите камеру";
+    select.appendChild(placeholder);
+    const states = this._hass?.states || {};
+    Object.keys(states).filter((id) => id.startsWith("camera.") && id !== current.entity_id)
+      .sort((a, b) => a.localeCompare(b))
+      .forEach((id) => {
+        const option = document.createElement("option");
+        option.value = id;
+        const name = states[id]?.attributes?.friendly_name;
+        option.textContent = name && name !== id ? `${name} · ${id}` : id;
+        select.appendChild(option);
+      });
+    this.shadowRoot.getElementById("replace-camera-status").textContent = "";
+    this.shadowRoot.getElementById("replace-camera-confirm").disabled = true;
+    this.shadowRoot.getElementById("replace-camera-dialog").showModal();
+  }
+
+  async _replaceCamera() {
+    const selected = this._selectedOption();
+    const target = this.shadowRoot.getElementById("replace-camera-new").value;
+    if (!selected || !target || !this._hass) return;
+    if (this._dirty) {
+      this.shadowRoot.getElementById("replace-camera-status").textContent =
+        "Сначала сохраните или отмените изменения зон.";
+      return;
+    }
+    if (!window.confirm(`Заменить ${selected.camera.entity_id} на ${target}? Интеграция будет перезагружена.`)) return;
+    const button = this.shadowRoot.getElementById("replace-camera-confirm");
+    const cancel = this.shadowRoot.getElementById("replace-camera-cancel");
+    const select = this.shadowRoot.getElementById("replace-camera-new");
+    const status = this.shadowRoot.getElementById("replace-camera-status");
+    button.disabled = true; cancel.disabled = true; select.disabled = true;
+    status.textContent = "Проверка и замена камеры…";
+    try {
+      await this._hass.callWS({
+        type: "dooods/profile_manager/replace_camera",
+        entry_id: selected.entryId,
+        old_camera: selected.camera.entity_id,
+        new_camera: target,
+      });
+      this._selectedKey = `${selected.entryId}\u0000${target}`;
+      this.shadowRoot.getElementById("replace-camera-dialog").close();
+      await this._refresh();
+      if (this._selectedOption()?.camera?.entity_id === target) {
+        this._setStatus("Источник камеры заменён. Проверьте автоматизации и настройки движения.", "success");
+      } else {
+        this._setStatus("Замена сохранена, но панель не удалось обновить. Проверьте интеграцию и обновите страницу.", "error");
+      }
+    } catch (error) {
+      status.textContent = `Не удалось заменить камеру: ${this._errorMessage(error)}`;
+    } finally {
+      button.disabled = !select.value; cancel.disabled = false; select.disabled = false;
+    }
   }
 
   async _ensureLabelTranslations() {
@@ -1088,6 +1225,8 @@ class DooodsProfileManager extends HTMLElement {
       if (!payload || !Array.isArray(payload.zones) || payload.zones.length < 1) {
         throw new Error("В профиле камеры нет зон. Сохранение без зоны запрещено.");
       }
+      this._masksSupported = payload.exclusion_masks_supported === true;
+      this._selectedMask = -1;
       this._profile = {
         zones: payload.zones.map((zone) => this._normalizeZone(zone)),
       };
@@ -1120,6 +1259,10 @@ class DooodsProfileManager extends HTMLElement {
       points: points.map((point) => ({ left: Number(point.left), top: Number(point.top) })),
       covers: Boolean(zone.covers),
       labels,
+      ...(Array.isArray(zone.exclusion_masks) ? { exclusion_masks: zone.exclusion_masks.map((mask) => ({
+        id: mask.id, name: mask.name,
+        points: mask.points.map((point) => ({left: Number(point.left), top: Number(point.top)})),
+      })) } : {}),
     };
   }
 
@@ -1145,6 +1288,30 @@ class DooodsProfileManager extends HTMLElement {
   _currentZone() {
     if (!this._profile || this._selectedZone < 0) return null;
     return this._profile.zones[this._selectedZone] || null;
+  }
+
+  _currentMask() {
+    const zone = this._currentZone();
+    return zone && this._selectedMask >= 0 ? (zone.exclusion_masks || [])[this._selectedMask] || null : null;
+  }
+
+  _currentGeometry() { return this._currentMask() || this._currentZone(); }
+
+  _addMask() {
+    const zone = this._currentZone(); if (!zone || !this._masksSupported || !this._frameReady) return;
+    if (!Array.isArray(zone.exclusion_masks)) zone.exclusion_masks = [];
+    if (zone.exclusion_masks.length >= 32) { this._setStatus("Не более 32 масок в зоне.", "error"); return; }
+    zone.exclusion_masks.push({id: this._newId("mask"), name: `Маска ${zone.exclusion_masks.length + 1}`,
+      points: [{left: .3, top: .3}, {left: .6, top: .3}, {left: .6, top: .6}, {left: .3, top: .6}]});
+    this._selectedMask = zone.exclusion_masks.length - 1;
+    this._selectedVertex = -1; this._addingVertex = false; this._markDirty(); this._renderZoneSettings();
+  }
+
+  _removeMask() {
+    const zone = this._currentZone(); if (!zone || !this._currentMask()) return;
+    zone.exclusion_masks.splice(this._selectedMask, 1);
+    this._selectedMask = -1; this._selectedVertex = -1; this._addingVertex = false;
+    this._markDirty(); this._renderZoneSettings();
   }
 
   _renderZoneList(emptyMessage = "Сначала выберите камеру.") {
@@ -1201,6 +1368,16 @@ class DooodsProfileManager extends HTMLElement {
     if (!zone) return;
     this.shadowRoot.getElementById("zone-name").value = zone.name;
     this.shadowRoot.getElementById("covers-select").value = String(Boolean(zone.covers));
+    const settings = this.shadowRoot.getElementById("mask-settings"); settings.hidden = !this._masksSupported;
+    const select = this.shadowRoot.getElementById("mask-select");
+    select.replaceChildren(new Option("Редактировать зону", "-1"));
+    (zone.exclusion_masks || []).forEach((mask, index) => select.add(new Option(mask.name || "Маска", String(index))));
+    if (!this._currentMask()) this._selectedMask = -1;
+    select.value = String(this._selectedMask);
+    const name = this.shadowRoot.getElementById("mask-name"); name.hidden = !this._currentMask();
+    name.value = this._currentMask() ? this._currentMask().name : "";
+    this.shadowRoot.getElementById("mask-remove").disabled = !this._currentMask();
+    this.shadowRoot.getElementById("mask-add").disabled = !this._frameReady;
     this._renderLabels();
     this._updateButtons();
     this._drawOverlay();
@@ -1313,6 +1490,7 @@ class DooodsProfileManager extends HTMLElement {
   _selectZone(index) {
     if (!this._profile || index < 0 || index >= this._profile.zones.length) return;
     this._selectedZone = index;
+    this._selectedMask = -1;
     this._selectedVertex = -1;
     this._addingVertex = false;
     this._renderZoneList();
@@ -1326,6 +1504,7 @@ class DooodsProfileManager extends HTMLElement {
     const [zone] = this._profile.zones.splice(index, 1);
     this._profile.zones.splice(next, 0, zone);
     this._selectedZone = next;
+    this._selectedMask = -1;
     this._selectedVertex = -1;
     this._markDirty();
     this._renderZoneList();
@@ -1363,6 +1542,7 @@ class DooodsProfileManager extends HTMLElement {
       labels,
     });
     this._selectedZone = this._profile.zones.length - 1;
+    this._selectedMask = -1;
     this._selectedVertex = -1;
     this._markDirty();
     this._renderZoneList();
@@ -1373,6 +1553,7 @@ class DooodsProfileManager extends HTMLElement {
     if (!this._profile || !this._frameReady || this._profile.zones.length <= 1 || this._selectedZone < 0) return;
     this._profile.zones.splice(this._selectedZone, 1);
     this._selectedZone = Math.min(this._selectedZone, this._profile.zones.length - 1);
+    this._selectedMask = -1;
     this._selectedVertex = -1;
     this._addingVertex = false;
     this._markDirty();
@@ -1402,7 +1583,7 @@ class DooodsProfileManager extends HTMLElement {
   }
 
   _insertVertex(edgeIndex) {
-    const zone = this._currentZone();
+    const zone = this._currentGeometry();
     if (!zone || edgeIndex < 0 || edgeIndex >= zone.points.length) return;
     const nextIndex = (edgeIndex + 1) % zone.points.length;
     const start = zone.points[edgeIndex];
@@ -1419,7 +1600,7 @@ class DooodsProfileManager extends HTMLElement {
   }
 
   _removeVertex() {
-    const zone = this._currentZone();
+    const zone = this._currentGeometry();
     if (!zone || zone.points.length <= 3 || this._selectedVertex < 0) return;
     zone.points.splice(this._selectedVertex, 1);
     this._selectedVertex = -1;
@@ -1436,7 +1617,7 @@ class DooodsProfileManager extends HTMLElement {
   }
 
   _onPointerDown(event) {
-    const zone = this._currentZone();
+    const zone = this._currentGeometry();
     if (!zone || !this._frameReady) return;
     const insertion = event.target.closest("[data-insert-edge]");
     if (this._addingVertex && insertion) {
@@ -1454,7 +1635,7 @@ class DooodsProfileManager extends HTMLElement {
   }
 
   _onPointerMove(event) {
-    const zone = this._currentZone();
+    const zone = this._currentGeometry();
     if (!zone || !this._frameReady || this._draggingVertex < 0) return;
     zone.points[this._draggingVertex] = this._pointFromEvent(event);
     this._markDirty();
@@ -1504,11 +1685,20 @@ class DooodsProfileManager extends HTMLElement {
       polygon.setAttribute("vector-effect", "non-scaling-stroke");
       polygon.setAttribute("stroke-linejoin", "round");
       svg.appendChild(polygon);
+      (zone.exclusion_masks || []).forEach((mask, maskIndex) => {
+        const overlay = document.createElementNS("http://www.w3.org/2000/svg", "polygon");
+        overlay.setAttribute("points", mask.points.map((p) => `${p.left * this._frameWidth},${p.top * this._frameHeight}`).join(" "));
+        overlay.setAttribute("fill", "#e53935"); overlay.setAttribute("fill-opacity", "0.25");
+        overlay.setAttribute("stroke", "#e53935"); overlay.setAttribute("stroke-dasharray", "8 5");
+        overlay.setAttribute("stroke-width", zoneIndex === this._selectedZone && maskIndex === this._selectedMask ? "4" : "2");
+        overlay.setAttribute("vector-effect", "non-scaling-stroke"); svg.appendChild(overlay);
+      });
       if (zoneIndex !== this._selectedZone) return;
+      const geometry = this._currentGeometry();
 
       if (this._addingVertex) {
-        zone.points.forEach((start, edgeIndex) => {
-          const end = zone.points[(edgeIndex + 1) % zone.points.length];
+        geometry.points.forEach((start, edgeIndex) => {
+          const end = geometry.points[(edgeIndex + 1) % geometry.points.length];
           const x = ((start.left + end.left) / 2) * this._frameWidth;
           const y = ((start.top + end.top) / 2) * this._frameHeight;
           const group = document.createElementNS("http://www.w3.org/2000/svg", "g");
@@ -1517,7 +1707,7 @@ class DooodsProfileManager extends HTMLElement {
           group.setAttribute("transform", `translate(${x} ${y})`);
           group.setAttribute("role", "button");
           group.setAttribute("tabindex", "0");
-          group.setAttribute("aria-label", `Добавить вершину между ${edgeIndex + 1} и ${(edgeIndex + 1) % zone.points.length + 1}`);
+          group.setAttribute("aria-label", `Добавить вершину между ${edgeIndex + 1} и ${(edgeIndex + 1) % geometry.points.length + 1}`);
           const circle = document.createElementNS("http://www.w3.org/2000/svg", "circle");
           circle.setAttribute("r", String(12 * this._frameWidth / this._overlay.clientWidth));
           group.appendChild(circle);
@@ -1532,7 +1722,7 @@ class DooodsProfileManager extends HTMLElement {
           svg.appendChild(group);
         });
       }
-      zone.points.forEach((point, vertexIndex) => {
+      geometry.points.forEach((point, vertexIndex) => {
         const circle = document.createElementNS("http://www.w3.org/2000/svg", "circle");
         circle.setAttribute("cx", String(point.left * this._frameWidth));
         circle.setAttribute("cy", String(point.top * this._frameHeight));
@@ -1557,7 +1747,7 @@ class DooodsProfileManager extends HTMLElement {
     this.shadowRoot.getElementById("add-zone-button").disabled = !hasProfile || !this._frameReady;
     this.shadowRoot.getElementById("remove-zone-button").disabled = !hasProfile || !this._frameReady || this._profile.zones.length <= 1;
     this.shadowRoot.getElementById("add-vertex-button").disabled = !zone || !this._frameReady;
-    this.shadowRoot.getElementById("remove-vertex-button").disabled = !zone || !this._frameReady || this._selectedVertex < 0 || zone.points.length <= 3;
+    this.shadowRoot.getElementById("remove-vertex-button").disabled = !zone || !this._frameReady || this._selectedVertex < 0 || this._currentGeometry().points.length <= 3;
     const zoneLabels = zone ? zone.labels || {} : {};
     const hasUnusedLabel = this._availableLabels.some((label) => !Object.prototype.hasOwnProperty.call(zoneLabels, label));
     this.shadowRoot.getElementById("add-label-button").disabled = !zone || !hasUnusedLabel;
@@ -1566,7 +1756,8 @@ class DooodsProfileManager extends HTMLElement {
     this.shadowRoot.getElementById("dirty-note").textContent = this._dirty ? "Есть несохранённые изменения" : "";
     this.shadowRoot.getElementById("zone-name").disabled = !zone;
     this.shadowRoot.getElementById("covers-select").disabled = !zone;
-    this.shadowRoot.getElementById("reset-zone-geometry-button").disabled = !zone || !this._frameReady;
+    this.shadowRoot.getElementById("reset-zone-geometry-button").disabled = !zone || !this._frameReady || Boolean(this._currentMask());
+    this.shadowRoot.getElementById("mask-add").disabled = !zone || !this._frameReady || !this._masksSupported;
   }
 
   async _saveZones() {

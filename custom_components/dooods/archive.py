@@ -342,6 +342,23 @@ def _managed_archive_roots_are_safe(
     )
 
 
+async def async_archive_namespace_exists(
+    hass: Any, directory: str, entry_id: str, camera_entity_id: str
+) -> bool:
+    """Check a target namespace off the event loop; reject symlinked roots."""
+    archive_directory = _resolve_archive_directory(hass, directory)
+
+    def check() -> bool:
+        _, namespace_root, entry_root, camera_root = _archive_camera_directory(
+            archive_directory, entry_id, camera_entity_id
+        )
+        if not _managed_archive_roots_are_safe(namespace_root, entry_root, camera_root):
+            raise OSError("Unsafe archive path")
+        return camera_root.exists()
+
+    return await hass.async_add_executor_job(check)
+
+
 def list_archived_frames_sync(
     directory: str | Path,
     entry_id: str,

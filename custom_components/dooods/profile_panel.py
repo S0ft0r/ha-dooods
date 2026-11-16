@@ -32,10 +32,12 @@ from .api import (
     async_put_profile,
 )
 from .archive import (
+    async_archive_namespace_exists,
     async_list_archived_frames,
     async_read_archived_frame,
     normalize_archive_directory,
 )
+from .camera_replacement import archive_source, replacement_options
 from .const import (
     CONF_AUTH_KEY,
     CONF_CAMERA_PROFILES,
@@ -351,7 +353,7 @@ async def async_get_camera_profile_editor_data(
     if not profile_id:
         raise HomeAssistantError("Для камеры ещё не создан профиль.")
 
-    _, available_profiles = await _async_profile_api(hass, entry)
+    features, available_profiles = await _async_profile_api(hass, entry)
     if not any(profile.get("id") == profile_id for profile in available_profiles):
         raise HomeAssistantError("Профиль камеры не найден на сервере DOOODS2.")
     base_url = entry.data[CONF_URL]
@@ -388,6 +390,7 @@ async def async_get_camera_profile_editor_data(
     return {
         "zones": profile["zones"],
         "available_labels": available_labels,
+        "exclusion_masks_supported": "zone_exclusion_masks" in features,
     }
 
 
@@ -424,7 +427,7 @@ async def async_get_camera_archive_data(
             hass,
             archive_directory,
             entry_id,
-            camera_entity_id,
+            archive_source(options, camera_entity_id),
             cursor=cursor,
             limit=limit,
             label=label,
@@ -453,7 +456,7 @@ async def async_get_camera_archive_image(
         hass,
         archive_directory,
         entry_id,
-        camera_entity_id,
+        archive_source(options, camera_entity_id),
         frame_id,
     )
 
@@ -651,6 +654,86 @@ async def async_register_profile_camera_archive_view(hass: HomeAssistant) -> Non
     hass.data[_ARCHIVE_VIEW_REGISTERED_KEY] = True
 
 
+async def async_replace_camera_source(
+    hass: HomeAssistant, *, entry_id: str, old_camera: str, new_camera: str
+) -> None:
+    """Replace a selected camera without moving files or overwriting data."""
+    lock = hass.data.setdefault(f"_{DOMAIN}_camera_replacement_lock", asyncio.Lock())
+    async with lock:
+        entry = _entry_for_id(hass, entry_id)
+        before = deepcopy(dict(entry.options))
+        try:
+            updated = replacement_options(before, old_camera, new_camera)
+        except ValueError as err:
+            raise HomeAssistantError(str(err)) from err
+        if hass.states.get(new_camera) is None:
+            raise HomeAssistantError("Новая камера недоступна в Home Assistant.")
+        # Refuse a target with an existing profile or archive, including data
+        # from an earlier removal. Never automatically merge or overwrite.
+        _, profiles = await _async_profile_api(hass, entry)
+        profiles_map = before.get(CONF_CAMERA_PROFILES)
+        current_profile = profiles_map.get(old_camera) if isinstance(profiles_map, Mapping) else None
+        if not isinstance(current_profile, str) or not any(
+            p.get("id") == current_profile for p in profiles
+        ):
+            raise HomeAssistantError("Исходный профиль недоступен; замена остановлена.")
+        target_profile = camera_profile_id(new_camera)
+        if target_profile != current_profile and any(
+            p.get("id") == target_profile for p in profiles
+        ):
+            raise HomeAssistantError("Для новой камеры уже существует профиль; замена остановлена.")
+        directory = normalize_archive_directory(before.get(CONF_FILE_OUT))
+        previous_archive = archive_source(before, old_camera)
+        if directory and new_camera != previous_archive:
+            try:
+                exists = await async_archive_namespace_exists(
+                    hass, directory, entry_id, new_camera
+                )
+            except OSError as err:
+                raise HomeAssistantError("Не удалось безопасно проверить архив новой камеры.") from err
+            if exists:
+                raise HomeAssistantError("Для новой камеры уже существует архив; замена остановлена.")
+        if dict(entry.options) != before:
+            raise HomeAssistantError("Настройки изменились во время проверки; повторите замену.")
+        hass.config_entries.async_update_entry(entry, options=updated)
+        try:
+            loaded = await hass.config_entries.async_reload(entry_id)
+            if not loaded:
+                raise HomeAssistantError("Перезагрузка интеграции не выполнена.")
+        except Exception as err:
+            # No files or profile contents were changed. Best-effort restore of
+            # options; a failed HA reload may still need user intervention.
+            hass.config_entries.async_update_entry(entry, options=before)
+            try:
+                await hass.config_entries.async_reload(entry_id)
+            except Exception:
+                pass
+            raise HomeAssistantError(
+                "Не удалось перезагрузить интеграцию; прежние настройки восстановлены. Проверьте состояние интеграции."
+            ) from err
+
+
+@websocket_api.websocket_command(
+    {
+        probatio.Required("type"): f"{DOMAIN}/profile_manager/replace_camera",
+        probatio.Required("entry_id"): str,
+        probatio.Required("old_camera"): str,
+        probatio.Required("new_camera"): str,
+    }
+)
+@websocket_api.require_admin
+@websocket_api.async_response
+async def websocket_replace_camera_source(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """Allow administrators to replace a camera with explicit confirmation."""
+    await async_replace_camera_source(
+        hass, entry_id=msg["entry_id"], old_camera=msg["old_camera"],
+        new_camera=msg["new_camera"],
+    )
+    connection.send_result(msg["id"], {"camera_entity_id": msg["new_camera"]})
+
+
 @websocket_api.websocket_command(
     {probatio.Required("type"): f"{DOMAIN}/profile_manager/data"}
 )
@@ -746,6 +829,7 @@ def async_register_profile_panel_commands(hass: HomeAssistant) -> None:
     """Однократно зарегистрировать защищённые WebSocket-команды встроенной панели."""
     if hass.data.get(_COMMANDS_REGISTERED_KEY):
         return
+    websocket_api.async_register_command(hass, websocket_replace_camera_source)
     websocket_api.async_register_command(hass, websocket_profile_manager_data)
     websocket_api.async_register_command(hass, websocket_profile_editor_data)
     websocket_api.async_register_command(hass, websocket_profile_archive_data)
