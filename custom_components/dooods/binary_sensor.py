@@ -6,11 +6,12 @@ import asyncio
 import logging
 from typing import Any, override
 
-from homeassistant.components.binary_sensor import BinarySensorEntity
+from homeassistant.components.binary_sensor import BinarySensorDeviceClass, BinarySensorEntity
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant, callback
+from homeassistant.core import Event, HomeAssistant, callback
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
+from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .camera_result import CameraScanResult
@@ -34,6 +35,9 @@ async def async_setup_entry(
 ) -> None:
     """Создать и обновлять сенсоры по текущим меткам назначенных профилей."""
     coordinator: DooodsCoordinator = entry.runtime_data
+    async_add_entities(
+        [DooodsMotionBinarySensor(coordinator, camera) for camera in coordinator.cameras]
+    )
     manager = _DooodsLabelEntityManager(coordinator, async_add_entities)
     manager.async_sync_entities()
     entry.async_on_unload(
@@ -282,3 +286,93 @@ class DooodsLabelBinarySensor(CoordinatorEntity[DooodsCoordinator], BinarySensor
         if self.coordinator.data is None:
             return None
         return self.coordinator.data.get(self._camera_entity_id)
+
+
+class DooodsMotionBinarySensor(CoordinatorEntity[DooodsCoordinator], BinarySensorEntity):
+    """Mirror the selected motion source without running an object scan."""
+
+    _attr_has_entity_name = True
+    _attr_translation_key = "motion"
+    _attr_device_class = BinarySensorDeviceClass.MOTION
+
+    def __init__(self, coordinator: DooodsCoordinator, camera_entity_id: str) -> None:
+        """Associate one stable motion entity with each camera device."""
+        super().__init__(coordinator)
+        self._camera_entity_id = camera_entity_id
+        # Different prefix prevents the dynamic label-entity cleanup from
+        # mistaking this entity for a no-longer-configured object label.
+        self._attr_unique_id = f"motion_{coordinator.entry_id}_{camera_entity_id}"
+        self._attr_device_info = camera_device_info(
+            coordinator.hass, coordinator, camera_entity_id
+        )
+
+    @property
+    def _external_sensor(self) -> str | None:
+        value = self.coordinator.motion_sensors.get(self._camera_entity_id)
+        return value if isinstance(value, str) and value.startswith("binary_sensor.") else None
+
+    @property
+    def _rtsp_selected(self) -> bool:
+        return self.coordinator.camera_stream_processing_is_enabled(self._camera_entity_id)
+
+    @property
+    def _motion_value(self) -> bool | None:
+        if self._rtsp_selected:
+            if not self.coordinator.camera_uses_rtsp_motion_gate(self._camera_entity_id):
+                return None
+            diagnostics = self.coordinator.motion_gate_diagnostics_for_camera(self._camera_entity_id)
+            if diagnostics.get("connection_state") != "connected":
+                return None
+            active = diagnostics.get("gate_active")
+            return active if isinstance(active, bool) else None
+        sensor = self._external_sensor
+        state = self.hass.states.get(sensor) if sensor else None
+        value = state.state if state is not None else None
+        if value == "on":
+            return True
+        if value == "off":
+            return False
+        return None
+
+    @property
+    @override
+    def available(self) -> bool:
+        """Unknown and unavailable sources are not reported as no motion."""
+        return self._motion_value is not None
+
+    @property
+    @override
+    def is_on(self) -> bool | None:
+        return self._motion_value
+
+    @property
+    @override
+    def extra_state_attributes(self) -> dict[str, Any]:
+        return {
+            "camera_entity_id": self._camera_entity_id,
+            "motion_source": "rtsp" if self._rtsp_selected else (
+                "ha_motion" if self._external_sensor else "none"
+            ),
+        }
+
+    async def async_added_to_hass(self) -> None:
+        """Subscribe to both RTSP transitions and the selected HA sensor."""
+        await super().async_added_to_hass()
+        self.async_on_remove(
+            self.coordinator.async_add_motion_gate_listener(self._handle_gate_update)
+        )
+        sensor = self._external_sensor
+        if sensor:
+            self.async_on_remove(
+                async_track_state_change_event(self.hass, [sensor], self._handle_sensor_update)
+            )
+
+    @callback
+    def _handle_gate_update(self, camera_entity_id: str) -> None:
+        if camera_entity_id == self._camera_entity_id:
+            self.async_write_ha_state()
+
+    @callback
+    def _handle_sensor_update(self, _event: Event) -> None:
+        if not self._rtsp_selected:
+            self.async_write_ha_state()

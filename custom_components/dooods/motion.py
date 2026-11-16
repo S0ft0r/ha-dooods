@@ -7,7 +7,7 @@ from typing import Any
 
 from homeassistant.helpers import entity_registry as er
 
-from .const import MOTION_SENSOR_NONE
+from .const import DOMAIN, MOTION_SENSOR_NONE
 
 _MOTION_NAME_MARKERS = ("motion", "movement", "движ")
 
@@ -28,6 +28,10 @@ def camera_motion_sensors(
         entity_id = getattr(entry, "entity_id", "")
         if (
             getattr(entry, "device_id", None) != device_id
+            or (
+                getattr(entry, "platform", None) == DOMAIN
+                and str(getattr(entry, "unique_id", "")).startswith("motion_")
+            )
             or not entity_id.startswith("binary_sensor.")
             or getattr(entry, "disabled_by", None) is not None
         ):
@@ -68,6 +72,10 @@ def all_binary_sensors(hass: Any) -> list[dict[str, str]]:
         entity_id = getattr(entry, "entity_id", "")
         if (
             not entity_id.startswith("binary_sensor.")
+            or (
+                getattr(entry, "platform", None) == DOMAIN
+                and str(getattr(entry, "unique_id", "")).startswith("motion_")
+            )
             or getattr(entry, "disabled_by", None) is not None
         ):
             continue

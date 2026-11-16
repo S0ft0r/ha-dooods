@@ -473,6 +473,9 @@
       },
       "object": {
         "name": "Detected object"
+      },
+      "motion": {
+        "name": "Motion"
       }
     },
     "select": {
