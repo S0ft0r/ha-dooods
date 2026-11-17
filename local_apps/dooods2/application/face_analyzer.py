@@ -345,9 +345,26 @@ class FaceAnalyzer:
                         if raw_score is not None and math.isfinite(raw_score)
                         else None
                     )
+                    # YuNet landmarks are in analysis-frame coordinates. Keep
+                    # them only in private diagnostic capture metadata.
+                    landmarks = None
+                    if self.debug_store is not None and len(face) >= 15:
+                        try:
+                            points = [
+                                {
+                                    "x": round(float(face[4 + 2 * i]) * width / analysis_width),
+                                    "y": round(float(face[5 + 2 * i]) * height / analysis_height),
+                                }
+                                for i in range(5)
+                            ]
+                            if all(-100_000 <= p[axis] <= 100_000 for p in points for axis in ("x", "y")):
+                                landmarks = points
+                        except (ValueError, OverflowError, TypeError):
+                            pass
                     face_detections.append(
                         {
                             "face_index": face_index,
+                            "landmarks": landmarks,
                             "bbox": {
                                 "x": max(0, x),
                                 "y": max(0, y),

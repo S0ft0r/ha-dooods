@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 API_VERSION = 1
-APP_VERSION = "0.1.36.1"
+APP_VERSION = "0.1.36.2"
 PROFILE_FEATURES: tuple[str, ...] = ("profiles", "polygon_zones", "zone_exclusion_masks")
 PREVIEW_FEATURES: tuple[str, ...] = ("camera_preview",)
 ANNOTATION_FEATURES: tuple[str, ...] = ("localized_annotations",)

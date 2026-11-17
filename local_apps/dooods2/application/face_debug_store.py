@@ -173,11 +173,34 @@ class FaceDebugStore:
                 score = float(raw_score)
                 if not 0.0 <= score <= 1.0:
                     raise FaceDebugValidationError("Face score is out of range")
+            safe_landmarks = None
+            landmarks = face.get("landmarks")
+            if landmarks is not None:
+                if not isinstance(landmarks, list) or len(landmarks) != 5:
+                    raise FaceDebugValidationError("Expected five face landmarks")
+                safe_landmarks = []
+                for point in landmarks:
+                    if not isinstance(point, dict):
+                        raise FaceDebugValidationError("Face landmark must be an object")
+                    safe_point = {}
+                    for axis in ("x", "y"):
+                        value = point.get(axis)
+                        if isinstance(value, bool) or not isinstance(value, int) or not -100_000 <= value <= 100_000:
+                            raise FaceDebugValidationError("Invalid face landmark coordinate")
+                        safe_point[axis] = value
+                    safe_landmarks.append(safe_point)
+            # Match the exact crop origin used when encoding the diagnostic JPEG.
+            origin = {
+                "x": max(0, safe_bbox["x"] - max(8, round(safe_bbox["width"] * 0.18))),
+                "y": max(0, safe_bbox["y"] - max(8, round(safe_bbox["height"] * 0.18))),
+            }
             safe_faces.append(
                 {
                     "face_index": index,
                     "bbox": safe_bbox,
                     "score": round(score, 6) if score is not None else None,
+                    "landmarks": safe_landmarks,
+                    "crop_origin": origin,
                 }
             )
         return safe_faces

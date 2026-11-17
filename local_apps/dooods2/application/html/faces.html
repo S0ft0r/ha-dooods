@@ -7,7 +7,7 @@
   <meta http-equiv="cache-control" content="no-store, must-revalidate">
   <meta http-equiv="pragma" content="no-cache">
   <meta http-equiv="expires" content="0">
-  <meta name="dooods-build" content="0.1.36.1">
+  <meta name="dooods-build" content="0.1.36.2">
   <title>Лица — диагностика и галерея</title>
   <style>
     :root {
@@ -803,6 +803,69 @@
       ]);
 
       if (match) {
+        const marked = document.createElement("div");
+        marked.className = "face-card";
+        const markedLabel = document.createElement("div");
+        markedLabel.className = "label";
+        markedLabel.textContent = "Рамка и ориентиры YuNet";
+        marked.append(markedLabel);
+        const markedNote = document.createElement("div");
+        markedNote.className = "note";
+        const faceMeta = matchedFaceIndex !== null ? faces[matchedFaceIndex] : null;
+        if (faceFromCrop && faceUrl && faceMeta && Array.isArray(faceMeta.landmarks) && faceMeta.landmarks.length === 5 && faceMeta.crop_origin && match.sface_input_origin !== "rematch_unavailable") {
+          try {
+            const base = new Image();
+            base.src = faceUrl;
+            await base.decode();
+            const canvas = document.createElement("canvas");
+            canvas.width = base.naturalWidth;
+            canvas.height = base.naturalHeight;
+            const ctx = canvas.getContext("2d");
+            ctx.drawImage(base, 0, 0);
+            const origin = faceMeta.crop_origin;
+            const box = faceMeta.bbox;
+            const unit = Math.max(2, Math.round(Math.min(canvas.width, canvas.height) / 110));
+            ctx.lineWidth = unit;
+            ctx.strokeStyle = "#00ff80";
+            ctx.strokeRect(box.x - origin.x, box.y - origin.y, box.width, box.height);
+            ctx.font = `bold ${Math.max(12, unit * 6)}px sans-serif`;
+            faceMeta.landmarks.forEach((point, index) => {
+              const x = point.x - origin.x;
+              const y = point.y - origin.y;
+              ctx.beginPath();
+              ctx.arc(x, y, unit * 2, 0, Math.PI * 2);
+              ctx.fillStyle = "#ffdb00";
+              ctx.fill();
+              ctx.strokeStyle = "#000000";
+              ctx.lineWidth = Math.max(1, unit / 2);
+              ctx.stroke();
+              ctx.lineWidth = Math.max(2, unit);
+              ctx.strokeText(String(index + 1), x + unit * 3, y - unit * 2);
+              ctx.fillStyle = "#ffffff";
+              ctx.fillText(String(index + 1), x + unit * 3, y - unit * 2);
+            });
+            const blob = await new Promise(resolve => canvas.toBlob(resolve, "image/png"));
+            if (!blob) throw new Error("Could not create overlay");
+            const url = URL.createObjectURL(blob);
+            modalUrls.push(url);
+            const img = document.createElement("img");
+            img.src = url;
+            img.alt = "Исходный кроп с рамкой и пятью ориентирами YuNet";
+            marked.append(img);
+            const download = document.createElement("a");
+            download.href = url;
+            download.download = `yunet-landmarks-${matchedFaceIndex + 1}.png`;
+            download.textContent = "Скачать разметку";
+            marked.append(download);
+            markedNote.textContent = "Порядок YuNet: 1–2 глаза, 3 нос, 4–5 уголки рта. Зелёная рамка — обнаружение.";
+          } catch (_) {
+            markedNote.textContent = "Не удалось построить разметку.";
+          }
+        } else {
+          markedNote.textContent = "Ориентиры недоступны для этой записи или повторного сравнения.";
+        }
+        marked.append(markedNote);
+        pair.append(marked);
         const before = document.createElement("div");
         before.className = "face-card";
         const beforeLabel = document.createElement("div");
