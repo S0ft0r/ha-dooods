@@ -7,7 +7,7 @@
   <meta http-equiv="cache-control" content="no-store, must-revalidate">
   <meta http-equiv="pragma" content="no-cache">
   <meta http-equiv="expires" content="0">
-  <meta name="dooods-build" content="0.1.36">
+  <meta name="dooods-build" content="0.1.36.1">
   <title>Лица — диагностика и галерея</title>
   <style>
     :root {
@@ -89,8 +89,8 @@
     .modal-head h3 { margin: 0; font-size: 1rem; flex: 1; }
     .modal-pill { font-size: .78rem; border: 1px solid currentColor; border-radius: 999px; padding: .12rem .55rem; color: inherit; }
     .modal-meta { display: flex; gap: .8rem; padding: .65rem 1rem; border-bottom: 1px solid var(--line); font-size: .86rem; color: var(--muted); flex-wrap: wrap; }
-    .modal-pair { display: flex; gap: 1rem; padding: 1rem; }
-    .face-card { flex: 1; display: flex; flex-direction: column; gap: .4rem; align-items: center; }
+    .modal-pair { display: flex; flex-wrap: wrap; gap: 1rem; padding: 1rem; }
+    .face-card { flex: 1 1 180px; min-width: 0; display: flex; flex-direction: column; gap: .4rem; align-items: center; }
     .face-card img { width: 100%; height: 260px; object-fit: contain; background: #0b1015; border-radius: 8px; border: 1px solid var(--line); display: block; }
     .face-card .label { color: var(--muted); font-size: .8rem; text-transform: uppercase; letter-spacing: .04em; }
     .face-card .note { color: var(--muted); font-size: .82rem; text-align: center; }
@@ -803,6 +803,37 @@
       ]);
 
       if (match) {
+        const before = document.createElement("div");
+        before.className = "face-card";
+        const beforeLabel = document.createElement("div");
+        beforeLabel.className = "label";
+        beforeLabel.textContent = "До компенсации (выровненное лицо)";
+        before.append(beforeLabel);
+        let beforeLoaded = false;
+        if (matchedFaceIndex !== null && match.sface_input_origin !== "rematch_unavailable") {
+          for (const source of ["matches", "captures"]) {
+            try {
+              const url = await apiImage(`faces/debug/${source}/${capture.capture_id}/image?kind=aligned&face_index=${matchedFaceIndex}`);
+              modalUrls.push(url);
+              const img = document.createElement("img");
+              img.src = url;
+              img.alt = "Выровненное лицо до компенсации";
+              before.append(img);
+              const download = document.createElement("a");
+              download.href = url;
+              download.download = `face-before-${matchedFaceIndex + 1}.jpg`;
+              download.textContent = "Скачать до компенсации";
+              before.append(download);
+              beforeLoaded = true;
+              break;
+            } catch (_) { /* Older captures do not contain this image. */ }
+          }
+        }
+        const beforeNote = document.createElement("div");
+        beforeNote.className = "note";
+        beforeNote.textContent = beforeLoaded ? "JPEG-копия до компенсации." : "Недоступно для этой записи или повторного сравнения.";
+        before.append(beforeNote);
+        pair.append(before);
         const card = document.createElement("div");
         card.className = "face-card";
         const label = document.createElement("div");
@@ -819,6 +850,11 @@
               img.src = url;
               img.alt = "Выровненное лицо, использованное для SFace";
               card.append(img);
+              const download = document.createElement("a");
+              download.href = url;
+              download.download = `face-sface-input-${matchedFaceIndex + 1}.jpg`;
+              download.textContent = "Скачать вход SFace";
+              card.append(download);
               loaded = true;
               break;
             } catch (_) { /* Old captures may have no saved SFace input. */ }

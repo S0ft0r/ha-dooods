@@ -306,6 +306,7 @@ class FaceAnalyzer:
         successful_faces = 0
         face_errors = 0
         sface_images: dict[int, bytes] = {}
+        aligned_images: dict[int, bytes] = {}
         state = "error"
         error_code: str | None = None
 
@@ -375,6 +376,7 @@ class FaceAnalyzer:
                     match_results, successful_faces, face_errors = self._analyze_faces(
                         analysis_frame, rows, scale, started,
                         debug_images=sface_images if self.debug_store is not None else None,
+                        aligned_images=aligned_images if self.debug_store is not None else None,
                     )
                     state = "face_detected"
                     embedding_ready = successful_faces > 0
@@ -441,6 +443,7 @@ class FaceAnalyzer:
                     full_frame_jpeg=full_frame_jpeg,
                     face_crops_jpeg=face_crops_jpeg,
                     sface_images_jpeg=sface_images,
+                    aligned_images_jpeg=aligned_images,
                 )
             except Exception as err:
                 _LOGGER.warning(
@@ -542,6 +545,7 @@ class FaceAnalyzer:
     def _analyze_faces(
         self, frame: Any, rows: list[Any], scale: float, started_at: float,
         *, debug_images: dict[int, bytes] | None = None,
+        aligned_images: dict[int, bytes] | None = None,
     ) -> tuple[list[dict[str, Any]], int, int]:
         """Analyze up to the configured number of largest faces independently.
 
@@ -560,6 +564,13 @@ class FaceAnalyzer:
             row = rows[index]
             try:
                 aligned = self._recognizer.alignCrop(frame, row)
+                if aligned_images is not None:
+                    try:
+                        ok, encoded = self._cv2.imencode(".jpg", aligned)
+                        if ok:
+                            aligned_images[index] = encoded.tobytes()
+                    except Exception as err:
+                        _LOGGER.debug("Aligned debug image unavailable (%s)", type(err).__name__)
                 prepared = self._prepare_match_face(aligned)
                 feature = self._recognizer.feature(prepared)
                 self._validate_feature(feature)
