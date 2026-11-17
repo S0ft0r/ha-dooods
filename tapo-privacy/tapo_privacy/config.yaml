@@ -1,0 +1,28 @@
+name: Tapo Privacy
+version: "1.0.0"
+slug: tapo_privacy
+description: Приватный режим камер Tapo через локальный API
+url: https://github.com/JurajNyiri/pytapo
+arch:
+  - aarch64
+  - amd64
+  - armv7
+  - armhf
+  - i386
+init: false
+startup: application
+boot: auto
+host_network: true
+options:
+  cameras: []
+  timeout: 10
+  token: ""
+schema:
+  cameras:
+    - name: str
+      host: str
+      user: str?
+      password: password
+      cloud_password: password?
+  timeout: int(3,120)
+  token: password?
