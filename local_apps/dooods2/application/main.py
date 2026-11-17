@@ -185,6 +185,7 @@ def main():
                 illumination_compensation=getattr(
                     face_options, "illumination_compensation", False
                 ) is True,
+                illumination_mode=getattr(face_options, "illumination_mode", "legacy"),
                 illumination_threshold=getattr(face_options, "illumination_threshold", 60),
                 illumination_gamma=getattr(face_options, "illumination_gamma", 0.45),
                 max_match_faces=getattr(face_options, "max_match_faces", 3),

@@ -89,6 +89,7 @@ class FaceAnalyzer:
         face_gallery_store: Any = None,
         debug_store: Any = None,
         illumination_compensation: bool = False,
+        illumination_mode: str = "legacy",
         illumination_threshold: int = 60,
         illumination_gamma: float = 0.45,
         max_match_faces: int = _DEFAULT_MAX_MATCH_FACES,
@@ -116,7 +117,13 @@ class FaceAnalyzer:
         )
         self.face_gallery_store = face_gallery_store
         self.debug_store = debug_store
-        self.illumination_compensation = illumination_compensation is True
+        if illumination_mode not in {"legacy", "off", "gamma", "clahe", "gamma_clahe"}:
+            raise ValueError("Invalid face illumination mode")
+        self.illumination_mode = illumination_mode
+        self.illumination_compensation = (
+            illumination_compensation is True if illumination_mode == "legacy"
+            else illumination_mode != "off"
+        )
         if (
             isinstance(illumination_threshold, bool)
             or not isinstance(illumination_threshold, int)
@@ -158,6 +165,7 @@ class FaceAnalyzer:
                 aligned_face,
                 threshold=self.illumination_threshold,
                 gamma=self.illumination_gamma,
+                mode="gamma" if self.illumination_mode == "legacy" else self.illumination_mode,
             )
         except Exception as err:
             # A bad crop or unavailable image processing must not stop matching.

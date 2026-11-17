@@ -46,6 +46,7 @@ def compensate_face_illumination(
     *,
     threshold: int = DEFAULT_DARK_MEDIAN_LIGHTNESS,
     gamma: float = DEFAULT_GAMMA,
+    mode: str = "gamma",
 ) -> np.ndarray:
     """Brighten a dark uint8 BGR crop; leave source and bright crops untouched.
 
@@ -60,12 +61,19 @@ def compensate_face_illumination(
         raise ValueError("Face crop is too small")
 
     threshold, gamma = validate_parameters(threshold, gamma)
+    if mode not in {"gamma", "clahe", "gamma_clahe"}:
+        raise ValueError("Invalid illumination mode")
     lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
     lightness, a_channel, b_channel = cv2.split(lab)
     if float(np.median(lightness)) >= threshold:
         return image
-    smoothed = cv2.bilateralFilter(lightness, 7, 25, 25)
-    corrected = cv2.LUT(smoothed, _gamma_lut(gamma))
+    if mode == "gamma":
+        smoothed = cv2.bilateralFilter(lightness, 7, 25, 25)
+        corrected = cv2.LUT(smoothed, _gamma_lut(gamma))
+    else:
+        # Experimental local contrast: same bounded parameters as the preview.
+        source = cv2.LUT(lightness, _gamma_lut(gamma)) if mode == "gamma_clahe" else lightness
+        corrected = cv2.createCLAHE(clipLimit=1.5, tileGridSize=(4, 4)).apply(source)
     return cv2.cvtColor(
         cv2.merge((corrected, a_channel, b_channel)), cv2.COLOR_LAB2BGR
     )

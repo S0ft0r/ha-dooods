@@ -1,6 +1,6 @@
 name: "DOOODS2"
 slug: "dooods2"
-version: "0.1.36.2"
+version: "0.1.36.3"
 description: ""
 arch:
   - aarch64
@@ -31,6 +31,7 @@ options:
     enabled: true
     diagnostics_enabled: true
     illumination_compensation: false
+    illumination_mode: legacy
     illumination_threshold: 60
     illumination_gamma: 0.45
     max_match_faces: 3
@@ -86,6 +87,7 @@ schema:
     enabled: bool?
     diagnostics_enabled: bool?
     illumination_compensation: bool?
+    illumination_mode: list(legacy|off|gamma|clahe|gamma_clahe)?
     illumination_threshold: int(0,255)?
     illumination_gamma: float(0.3,0.9)?
     max_match_faces: int(1,5)?
