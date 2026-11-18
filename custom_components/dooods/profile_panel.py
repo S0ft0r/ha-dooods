@@ -58,7 +58,7 @@ from .profiles import (
 _PROFILE_FEATURES = {"profiles", "polygon_zones"}
 _PANEL_PATH = PROFILE_MANAGER_PANEL_PATH
 _PANEL_ELEMENT = "dooods-profile-manager"
-_PANEL_TITLE = "DOOODS"
+_PANEL_TITLE = "Камеры"
 _PANEL_ICON = "mdi:cctv"
 _STATIC_URL = "/dooods_profile_panel"
 _STATIC_DIR = Path(__file__).parent / "frontend"
@@ -333,6 +333,27 @@ async def async_get_profile_panel_data(hass: HomeAssistant) -> dict[str, Any]:
     return {"entries": result}
 
 
+async def async_get_archive_camera_list(hass: HomeAssistant) -> dict[str, Any]:
+    """Return only the camera information needed to browse the archive."""
+    return {
+        "entries": [
+            {
+                "entry_id": entry.entry_id,
+                "title": entry.title or entry.entry_id,
+                "cameras": [
+                    {
+                        "entity_id": camera_id,
+                        "name": _camera_name(hass, camera_id),
+                        "archive_labels": _archive_labels_for_camera(entry, camera_id),
+                    }
+                    for camera_id in _cameras_for_entry(entry)
+                ],
+            }
+            for entry in hass.config_entries.async_entries(DOMAIN)
+        ]
+    }
+
+
 async def async_get_camera_profile_editor_data(
     hass: HomeAssistant,
     *,
@@ -598,9 +619,9 @@ class DooodsCameraArchiveImageView(HomeAssistantView):
         self.hass = hass
 
     async def get(self, request: web.Request) -> web.Response:
-        """Выдать JPEG только администратору и только из выбранной камеры."""
+        """Выдать JPEG авторизованному пользователю из выбранной камеры."""
         user = request.get(KEY_HASS_USER)
-        if user is None or not getattr(user, "is_admin", False):
+        if user is None:
             raise web.HTTPForbidden()
         entry_id = request.query.get("entry_id", "")
         camera_entity_id = request.query.get("camera_entity_id", "")
@@ -735,6 +756,17 @@ async def websocket_replace_camera_source(
 
 
 @websocket_api.websocket_command(
+    {probatio.Required("type"): f"{DOMAIN}/profile_manager/archive_cameras"}
+)
+@websocket_api.async_response
+async def websocket_archive_cameras(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """List archive cameras for authenticated Home Assistant users."""
+    connection.send_result(msg["id"], await async_get_archive_camera_list(hass))
+
+
+@websocket_api.websocket_command(
     {probatio.Required("type"): f"{DOMAIN}/profile_manager/data"}
 )
 @websocket_api.require_admin
@@ -781,14 +813,13 @@ async def websocket_profile_editor_data(
         probatio.Optional("label", default=""): str,
     }
 )
-@websocket_api.require_admin
 @websocket_api.async_response
 async def websocket_profile_archive_data(
     hass: HomeAssistant,
     connection: websocket_api.ActiveConnection,
     msg: dict[str, Any],
 ) -> None:
-    """Вернуть одну страницу метаданных локального архива для администраторов."""
+    """Вернуть страницу метаданных локального архива авторизованному пользователю."""
     result = await async_get_camera_archive_data(
         hass,
         entry_id=msg["entry_id"],
@@ -830,6 +861,7 @@ def async_register_profile_panel_commands(hass: HomeAssistant) -> None:
     if hass.data.get(_COMMANDS_REGISTERED_KEY):
         return
     websocket_api.async_register_command(hass, websocket_replace_camera_source)
+    websocket_api.async_register_command(hass, websocket_archive_cameras)
     websocket_api.async_register_command(hass, websocket_profile_manager_data)
     websocket_api.async_register_command(hass, websocket_profile_editor_data)
     websocket_api.async_register_command(hass, websocket_profile_archive_data)
@@ -863,7 +895,7 @@ async def async_register_profile_panel(hass: HomeAssistant) -> None:
             sidebar_icon=_PANEL_ICON,
             module_url=f"{_STATIC_URL}/profile-manager.js",
             embed_iframe=False,
-            require_admin=True,
+            require_admin=False,
         )
 
 

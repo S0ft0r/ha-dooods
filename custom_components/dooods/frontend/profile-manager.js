@@ -66,6 +66,13 @@ class DooodsProfileManager extends HTMLElement {
 
   set hass(hass) {
     this._hass = hass;
+    const isAdmin = hass?.user?.is_admin === true;
+    this.shadowRoot.getElementById("settings-tab-button").hidden = !isAdmin;
+    this.shadowRoot.getElementById("replace-camera-button").hidden = !isAdmin;
+    this.shadowRoot.querySelector(".intro").textContent = isAdmin
+      ? "Выберите камеру, затем редактируйте профиль ниже."
+      : "Выберите камеру для просмотра архива.";
+    if (!isAdmin && this._activeTab === "settings") this._setTab("archive");
     if (hass && !this._loaded) {
       this._loaded = true;
       this._refresh();
@@ -77,6 +84,7 @@ class DooodsProfileManager extends HTMLElement {
       <style>
         :host { display:block; min-height:100%; color:var(--primary-text-color,#202b32); font-family:inherit; }
         * { box-sizing:border-box; }
+        [hidden] { display:none !important; }
         main { max-width:1680px; margin:0 auto; padding:24px clamp(16px,3vw,40px) 40px; }
         header { display:flex; align-items:flex-start; justify-content:space-between; gap:20px; margin-bottom:22px; }
         h1 { margin:0 0 7px; font-size:clamp(22px,3vw,30px); line-height:1.2; font-weight:700; }
@@ -259,10 +267,6 @@ class DooodsProfileManager extends HTMLElement {
                   <p class="hint">Перетаскивайте вершины; добавляйте вершину на выбранное ребро; удалить можно выбранную вершину. «По умолчанию» сбрасывает геометрию, не меняя остальные настройки зоны.</p>
                 </section>
                 <aside class="profile-sidebar">
-                  <section class="card settings-card" aria-label="Источник камеры">
-                    <h2>Источник камеры</h2>
-                    <p id="replace-camera-selected" class="empty">Выберите камеру.</p>
-                  </section>
                   <section class="card zone-card">
                     <h2>Зоны профиля</h2>
                     <div id="zone-list" class="zone-list"><p class="empty">Загрузка профиля…</p></div>
@@ -600,7 +604,7 @@ class DooodsProfileManager extends HTMLElement {
   }
 
   _setTab(tab) {
-    const selectedTab = tab === "settings" ? "settings" : "archive";
+    const selectedTab = tab === "settings" && this._hass?.user?.is_admin === true ? "settings" : "archive";
     this._activeTab = selectedTab;
     const archiveActive = selectedTab === "archive";
     this.shadowRoot.getElementById("archive-pane").hidden = !archiveActive;
@@ -1014,9 +1018,6 @@ class DooodsProfileManager extends HTMLElement {
     list.replaceChildren();
     const selectedCamera = this._selectedOption()?.camera;
     this.shadowRoot.getElementById("replace-camera-button").disabled = !selectedCamera;
-    this.shadowRoot.getElementById("replace-camera-selected").textContent = selectedCamera
-      ? this._cameraDisplayName(selectedCamera)
-      : "Выберите камеру.";
     if (!this._cameraOptions.length) {
       const empty = document.createElement("p");
       empty.className = "empty";
@@ -1123,7 +1124,10 @@ class DooodsProfileManager extends HTMLElement {
     try {
       await this._ensureLabelTranslations();
       const previousKey = this._selectedKey;
-      this._data = await this._hass.callWS({ type: "dooods/profile_manager/data" });
+      this._data = await this._hass.callWS({
+        type: this._hass.user?.is_admin === true
+          ? "dooods/profile_manager/data" : "dooods/profile_manager/archive_cameras",
+      });
       this._cameraOptions = this._cameraOptionsFor(this._data);
       const selected = this._cameraOptions.find((option) => option.key === previousKey)
         || this._cameraOptions.find((option) => option.camera.profile_ready)
@@ -1196,6 +1200,10 @@ class DooodsProfileManager extends HTMLElement {
     this._archiveHasNewFrames = false;
     this._renderArchiveNewFramesIndicator();
     this._loadArchive(true);
+    if (this._hass?.user?.is_admin !== true) {
+      this._setStatus("");
+      return;
+    }
     this._loadCameraFrame();
     if (option.profilesError) {
       const messages = {
