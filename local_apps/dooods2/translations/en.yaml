@@ -21,6 +21,9 @@ configuration:
       profiles_file:
         name: Profiles file
         description: Persistent JSON file inside the app data directory.
+      rtsp_artifact_diagnostics:
+        name: RTSP artifact diagnostics
+        description: Experimental analysis of sampled RTSP frames. Suspicions are summarized in logs; frames are not dropped. False positives are possible. Restart the app after changing this option.
       metrics:
         name: Prometheus metrics
       trace:

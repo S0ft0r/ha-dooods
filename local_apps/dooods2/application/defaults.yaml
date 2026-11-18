@@ -1,6 +1,6 @@
 name: "DOOODS2"
 slug: "dooods2"
-version: "0.1.36.6"
+version: "0.1.37"
 description: ""
 arch:
   - aarch64
@@ -25,6 +25,7 @@ options:
     port: 8080
     auth_key: ""
     profiles_file: /data/profiles.json
+    rtsp_artifact_diagnostics: false
     metrics: false
     trace: false
   face:
@@ -81,6 +82,7 @@ schema:
     port: int?
     auth_key: password?
     profiles_file: str?
+    rtsp_artifact_diagnostics: bool?
     metrics: bool?
     trace: bool?
   face:

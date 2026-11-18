@@ -1848,6 +1848,7 @@ class API():
                 stop_event,
                 publish,
                 face_analyzer=self.face_analyzer,
+                artifact_diagnostics=getattr(self.config, "rtsp_artifact_diagnostics", False),
             )
 
             def run_worker() -> None:

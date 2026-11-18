@@ -60,6 +60,7 @@ class ServerConfig(BaseSettings):
     port: Optional[int] = 8080
     auth_key: Optional[str] = ''
     profiles_file: Optional[str] = "/data/profiles.json"
+    rtsp_artifact_diagnostics: bool = False
     metrics: Optional[bool] = True
     trace: Optional[bool] = False
     class Config:

@@ -21,6 +21,9 @@ configuration:
       profiles_file:
         name: Файл профилей
         description: Постоянный JSON-файл в каталоге данных приложения.
+      rtsp_artifact_diagnostics:
+        name: Диагностика артефактов RTSP
+        description: Экспериментальный анализ выбранных кадров RTSP. Подозрения суммируются в журнале, кадры не отклоняются. Возможны ложные срабатывания. После изменения перезапустите App.
       metrics:
         name: Метрики Prometheus
       trace:
