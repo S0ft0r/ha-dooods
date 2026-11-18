@@ -7,7 +7,7 @@
   <meta http-equiv="cache-control" content="no-store, must-revalidate">
   <meta http-equiv="pragma" content="no-cache">
   <meta http-equiv="expires" content="0">
-  <meta name="dooods-build" content="0.1.36.5">
+  <meta name="dooods-build" content="0.1.36.6">
   <title>Лица — диагностика и галерея</title>
   <style>
     :root {
@@ -61,6 +61,8 @@
     [hidden] { display: none !important; }
     .capture-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(270px, 1fr)); gap: .8rem; }
     .capture { background: var(--panel-2); border: 1px solid var(--line); border-radius: 10px; padding: .7rem; min-width: 0; }
+    .candidate-card { cursor:pointer; }
+    .candidate-card:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
     .capture.selected { border-color: var(--accent); box-shadow: 0 0 0 2px #55a9ed33; }
     .capture.matched { border-color: var(--good); box-shadow: 0 0 0 2px #65d49a4d; }
     .capture.ambiguous { border-color: var(--warn); box-shadow: 0 0 0 2px #ffd1664d; }
@@ -249,7 +251,7 @@
                   <input class="grow" id="new-person-name" type="text" maxlength="128" placeholder="Имя нового человека">
                   <button id="create-person" type="button">Создать</button>
                 </div>
-                <p id="selection-meta" class="muted small">Сначала выберите кроп слева или в разделе «Кадры».</p>
+                <p id="selection-meta" class="muted small">Сначала выберите кроп слева.</p>
                 <label class="confirm"><input id="confirm-enrollment" type="checkbox"><span>Я проверил(а) выбранный кроп и подтверждаю добавление образца этому человеку.</span></label>
                 <button id="enroll-button" class="primary" type="button" disabled>Добавить подтверждённый образец</button>
               </div>
@@ -448,78 +450,31 @@
       $("capture-empty").hidden = state.captures.length !== 0;
       for (const capture of state.captures) {
         const card = document.createElement("article");
-        card.className = "capture";
+        card.className = "capture candidate-card";
         card.dataset.captureId = capture.capture_id;
-        if (state.selected && state.selected.captureId === capture.capture_id) card.classList.add("selected");
+        card.setAttribute("role", "button");
+        card.setAttribute("tabindex", "0");
+        const time = formatTime(capture.occurred_at);
+        card.setAttribute("aria-label", `Открыть диагностику кадра от ${time}`);
         const heading = document.createElement("h3");
-        heading.textContent = `Кадр · ${formatTime(capture.occurred_at)}`;
-        card.append(heading);
+        heading.textContent = time;
         const full = document.createElement("img");
         full.alt = "Полный кадр с найденным лицом";
         full.loading = "lazy";
-        card.append(full);
+        card.append(heading, full);
+        card.addEventListener("click", () => openMatchModal(capture));
+        card.addEventListener("keydown", event => {
+          if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            openMatchModal(capture);
+          }
+        });
+        grid.append(card);
         try {
           full.src = await apiImage(`faces/debug/captures/${capture.capture_id}/image?kind=frame`);
         } catch (error) {
           full.alt = `Кадр недоступен: ${error.message}`;
         }
-        const meta = document.createElement("dl");
-        meta.className = "meta";
-        const values = [
-          ["Камера", capture.source_id],
-          ["Лиц", capture.faces_detected],
-          ["Порог", capture.yunet_score_threshold],
-          ["YuNet + SFace", capture.inference_ms === null ? null : `${capture.inference_ms} ms`],
-        ];
-        for (const [label, value] of values) {
-          const dt = document.createElement("dt"); dt.textContent = label;
-          const dd = document.createElement("dd"); dd.textContent = value === null || value === undefined ? "—" : String(value);
-          meta.append(dt, dd);
-        }
-        card.append(meta);
-        const faceResults = Array.isArray(capture.matches) ? capture.matches : (capture.match ? [capture.match] : []);
-        for (const result of faceResults) {
-          const detail = document.createElement("button");
-          detail.type = "button";
-          const number = Number.isInteger(result.face_index) ? `Лицо ${result.face_index + 1}` : "Лицо без сохранённого кропа";
-          detail.textContent = `${number}: ${MATCH_STATE_LABELS[result.state] || result.state || "—"} · ${result.person_name || "—"}`;
-          detail.addEventListener("click", event => { event.stopPropagation(); openMatchModal({ ...capture, match: result }); });
-          card.append(detail);
-        }
-        const matchState = capture.match && capture.match.state;
-        if (matchState === "matched") card.classList.add("matched");
-        else if (matchState === "ambiguous") card.classList.add("ambiguous");
-        card.addEventListener("click", () => openMatchModal(capture));
-        const crops = document.createElement("div");
-        crops.className = "crop-row";
-        for (const face of (capture.faces || [])) {
-          const crop = document.createElement("button");
-          crop.type = "button";
-          crop.className = "crop";
-          crop.setAttribute("aria-label", `Выбрать кроп лица ${face.face_index + 1}`);
-          if (state.selected && state.selected.captureId === capture.capture_id && state.selected.faceIndex === face.face_index) crop.classList.add("selected");
-          const image = document.createElement("img");
-          image.alt = `Кроп лица ${face.face_index + 1}`;
-          image.loading = "lazy";
-          crop.append(image);
-          const info = document.createElement("span");
-          info.className = "small";
-          const box = face.bbox || {};
-          info.textContent = `${box.width || "?"}×${box.height || "?"} px · score ${face.score ?? "—"}`;
-          crop.append(info);
-          crop.addEventListener("click", (event) => {
-            event.stopPropagation();
-            selectFace(capture, face, image.src);
-          });
-          crops.append(crop);
-          try {
-            image.src = await apiImage(`faces/debug/captures/${capture.capture_id}/image?kind=face&face_index=${face.face_index}`);
-          } catch (error) {
-            image.alt = `Кроп недоступен: ${error.message}`;
-          }
-        }
-        card.append(crops);
-        grid.append(card);
       }
     }
 
@@ -947,12 +902,12 @@
       $("confirm-enrollment").checked = false;
       updateEnrollButton();
       setStatus("enroll-status", "Проверьте лицо и выберите человека перед добавлением.");
-      document.querySelectorAll(".capture").forEach((card) => {
+      document.querySelectorAll("#enroll-captures-grid .capture").forEach((card) => {
         card.classList.toggle("selected", card.dataset.captureId === capture.capture_id);
       });
       document.querySelectorAll(".crop").forEach((button) => button.classList.remove("selected"));
       if (cropImageUrl) {
-        const buttons = [...document.querySelectorAll(".capture")]
+        const buttons = [...document.querySelectorAll("#enroll-captures-grid .capture")]
           .find((card) => card.dataset.captureId === capture.capture_id)
           ?.querySelectorAll(".crop");
         buttons?.[face.face_index]?.classList.add("selected");
