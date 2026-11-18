@@ -319,7 +319,7 @@
     function getIngressContext() {
       const pathParts = window.location.pathname.split("/").filter(Boolean);
       const appIndex = pathParts.findIndex(
-        (part, index) => part === "app" && pathParts[index + 1] === "local_dooods2",
+        (part, index) => part === "app" && /^(?:local|[a-z0-9]+)_dooods2-dev$/.test(pathParts[index + 1] || ""),
       );
       if (appIndex >= 0) {
         const appRootPath = `/${pathParts.slice(0, appIndex + 2).join("/")}/`;

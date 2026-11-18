@@ -245,7 +245,7 @@
     function getIngressContext() {
       const pathParts = window.location.pathname.split("/").filter(Boolean);
       const appIndex = pathParts.findIndex(
-        (part, index) => part === "app" && pathParts[index + 1] === "local_dooods2",
+        (part, index) => part === "app" && /^(?:local|[a-z0-9]+)_dooods2-dev$/.test(pathParts[index + 1] || ""),
       );
       if (appIndex >= 0) {
         const appRootPath = `/${pathParts.slice(0, appIndex + 2).join("/")}/`;
@@ -302,7 +302,7 @@
     function handoffFromLocation() {
       const parts = window.location.pathname.split("/").filter(Boolean);
       const appIndex = parts.findIndex(
-        (part, index) => part === "app" && parts[index + 1] === "local_dooods2",
+        (part, index) => part === "app" && /^(?:local|[a-z0-9]+)_dooods2-dev$/.test(parts[index + 1] || ""),
       );
       if (appIndex < 0) return null;
       return parseEditorHandoffRoute({ path: parts.slice(appIndex + 2).join("/") });
