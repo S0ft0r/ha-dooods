@@ -1,6 +1,6 @@
 name: "DOOODS2"
 slug: "dooods2"
-version: "0.1.36.3"
+version: "0.1.36.5"
 description: ""
 arch:
   - aarch64
@@ -11,7 +11,7 @@ stage: stable
 ingress: true
 ingress_port: 8080
 ingress_entry: /faces.html
-panel_title: "faces"
+panel_title: "Лица"
 panel_icon: mdi:face-recognition
 watchdog: "http://[HOST]:8080/health"
 map:
