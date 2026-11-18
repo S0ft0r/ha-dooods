@@ -5,6 +5,8 @@ import base64
 import logging
 import asyncio
 import math
+import os
+import secrets
 import threading
 from urllib.parse import urlsplit
 from fastapi import (
@@ -22,7 +24,14 @@ from streamer import Streamer
 from motion_gate import MotionGate
 from motion_stream import MotionStreamWorker
 from capabilities import capabilities_payload
-from auth import api_key_matches, is_authenticated_ingress_request
+from auth import (
+    api_key_matches,
+    check_supervisor_version,
+    csrf_token,
+    csrf_token_matches,
+    ingress_user_id,
+    is_authenticated_ingress_request,
+)
 from profiles import ProfileStoreError, ProfileValidationError
 from preview import PreviewStore, PreviewTooLargeError, PreviewValidationError
 from profile_sources import ProfileSourceStore, ProfileSourceStoreError, ProfileSourceValidationError
@@ -38,7 +47,6 @@ from face_debug_store import (
     FaceDebugStoreError,
     FaceDebugValidationError,
 )
-from concurrent.futures import ThreadPoolExecutor
 from prometheus_fastapi_instrumentator import Instrumentator
 
 import tracemalloc
@@ -160,6 +168,57 @@ class API():
             )
         self._preview_cleanup_task = None
         self._face_model_task = None
+        self._csrf_secret = secrets.token_bytes(32)
+        self._ingress_checks = asyncio.Semaphore(4)
+        self._http_detection_slots = asyncio.Semaphore(2)
+
+        async def run_http_detection(detect_request):
+            # Admission is bounded. Once started, cancellation does not release
+            # the slot until the underlying synchronous work actually finishes.
+            try:
+                async with asyncio.timeout(5.0):
+                    await self._http_detection_slots.acquire()
+            except TimeoutError as err:
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail="Detector busy; retry later.",
+                ) from err
+            try:
+                task = asyncio.create_task(asyncio.to_thread(self.doods.detect, detect_request))
+            except BaseException:
+                self._http_detection_slots.release()
+                raise
+            def detection_finished(completed):
+                self._http_detection_slots.release()
+                # A disconnected client no longer awaits the task. Retrieve its
+                # exception without logging potentially sensitive request data.
+                if not completed.cancelled():
+                    completed.exception()
+
+            task.add_done_callback(detection_finished)
+            return await asyncio.shield(task)
+
+        async def supervisor_is_supported():
+            """Check every Ingress request; an unavailable Supervisor fails closed."""
+            token = os.environ.get("SUPERVISOR_TOKEN", "")
+            if not token:
+                return False
+            try:
+                async with asyncio.timeout(5.0):
+                    await self._ingress_checks.acquire()
+                    try:
+                        task = asyncio.create_task(
+                            asyncio.to_thread(check_supervisor_version, token)
+                        )
+                    except BaseException:
+                        self._ingress_checks.release()
+                        raise
+                    # A timed-out thread keeps running. Hold the slot until it
+                    # actually finishes, rather than allowing unbounded work.
+                    task.add_done_callback(lambda _: self._ingress_checks.release())
+                    return await asyncio.shield(task)
+            except (TimeoutError, OSError):
+                return False
 
         async def cleanup_preview_frames():
             """Периодически освобождать память по истечении TTL кадров."""
@@ -329,22 +388,25 @@ class API():
 
         @self.api.middleware("http")
         async def enforce_api_key(request: Request, call_next):
-            # Supervisor Ingress can forward consecutive slashes (//faces.html).
-            # StaticFiles accepts these, so normalize them for all access checks.
-            # Do not rewrite the ASGI scope or alter how routes handle the request.
-            path = "/" + "/".join(
-                part for part in request.scope.get("path", "").split("/") if part
-            )
+            # Scope is decoded by ASGI. Reject traversal rather than letting
+            # StaticFiles normalize it to a different, potentially private path.
+            raw_path = request.scope.get("path", "")
+            if any(part in {".", ".."} for part in raw_path.split("/")):
+                return JSONResponse(status_code=400, content={"detail": "Invalid path."})
+            path = "/" + "/".join(part for part in raw_path.split("/") if part)
             root_path = "/" + "/".join(
                 part for part in request.scope.get("root_path", "").split("/") if part
             )
-            if root_path != "/" and (
-                path == root_path or path.startswith(root_path + "/")
-            ):
+            if root_path != "/" and (path == root_path or path.startswith(root_path + "/")):
                 path = path[len(root_path):] or "/"
-            if not self.face_enabled and path == "/faces.html" and request.method in {
-                "GET", "HEAD"
-            }:
+            is_face_api = path == "/faces" or path.startswith("/faces/")
+            is_face_page = path == "/faces.html"
+            is_editor_api = (
+                path in {"/detectors", "/profiles", "/preview", "/ingress/csrf"}
+                or path.startswith("/profiles/")
+                or path.startswith("/preview/")
+            )
+            if not self.face_enabled and is_face_page and request.method in {"GET", "HEAD"}:
                 return HTMLResponse(
                     content=_FACE_DISABLED_PAGE,
                     headers={
@@ -352,74 +414,72 @@ class API():
                         "X-Content-Type-Options": "nosniff",
                     },
                 )
-            if (
-                self.face_enabled
-                and not self.face_diagnostics_enabled
-                and path == "/faces.html"
-                and request.method in {"GET", "HEAD"}
-            ):
-                # Counts are private. Trust only authenticated Supervisor Ingress
-                # requests or the configured server API key, never browser input.
-                remote_host = request.client.host if request.client else None
-                via_ingress = (
-                    remote_host == "172.30.32.2"
-                    and bool(request.headers.get("x-remote-user-id"))
+            if not self.face_enabled and (is_face_api or is_face_page):
+                return JSONResponse(status_code=404, content={"detail": "Not found."})
+
+            key_ok = api_key_matches(self.auth_key, request.headers.get("doods-auth-key"))
+            remote_host = request.client.host if request.client else None
+            identity = ingress_user_id(remote_host, request.headers)
+            ingress_ok = False
+            if (is_face_api or is_face_page or is_editor_api) and not key_ok and self.auth_key and identity:
+                supervisor_ok = await supervisor_is_supported()
+                ingress_ok = is_authenticated_ingress_request(
+                    remote_host, request.headers, supervisor_verified=supervisor_ok,
                 )
-                via_api_key = api_key_matches(
-                    self.auth_key, request.headers.get("doods-auth-key")
-                )
-                if not (via_ingress or via_api_key):
+            if is_face_api or is_face_page or is_editor_api:
+                if not (key_ok or ingress_ok):
+                    # Show an actionable but non-sensitive page to authenticated
+                    # Ingress users while the Supervisor check is unavailable.
+                    if is_face_page and identity and request.method in {"GET", "HEAD"}:
+                        return HTMLResponse(
+                            content="<!doctype html><html lang='ru'><meta charset='utf-8'><title>Лица недоступны</title>"
+                            "<body><h1>Лица временно недоступны</h1><p>Проверьте API-ключ и Supervisor "
+                            "версии 2026.10.2 или новее. После проверки обновите страницу.</p></body></html>",
+                            status_code=503,
+                            headers={"Cache-Control": "no-store"},
+                        )
                     return JSONResponse(
-                        status_code=status.HTTP_401_UNAUTHORIZED,
+                        status_code=401,
                         content={"detail": "Authentication required."},
                         headers={"Cache-Control": "no-store"},
                     )
-                page = await asyncio.to_thread(self._face_summary_html)
-                return HTMLResponse(
-                    content=page,
-                    headers={
-                        "Cache-Control": "no-store, must-revalidate",
-                        "X-Content-Type-Options": "nosniff",
-                    },
-                )
-            if (
-                self.face_enabled
-                and not self.face_diagnostics_enabled
-                and (
-                    path in {"/faces/debug", "/faces/people", "/faces/backup", "/faces/restore"}
-                    or path.startswith("/faces/debug/")
-                    or path.startswith("/faces/people/")
-                )
-            ):
-                return JSONResponse(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    content={"detail": "Not found."},
-                    headers={"Cache-Control": "no-store"},
-                )
-            if not self.face_enabled and (
-                path in {"/faces", "/faces.html"} or path.startswith("/faces/")
-            ):
-                return JSONResponse(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    content={"detail": "Not found."},
-                    headers={"Cache-Control": "no-store"},
-                )
-            if self.auth_key and is_protected_api_path(path):
-                # Разрешить аутентифицированным пользователям Home Assistant
-                # через Supervisor Ingress без API-ключа; прямые вызовы всё
-                # равно требуют doods-auth-key.
-                remote_host = request.client.host if request.client else None
-                if not is_authenticated_ingress_request(remote_host, request.headers):
-                    supplied_key = request.headers.get("doods-auth-key")
-                    has_api_key = api_key_matches(self.auth_key, supplied_key)
-                    if not has_api_key:
-                        response = JSONResponse(
-                            status_code=status.HTTP_401_UNAUTHORIZED,
-                            content={"detail": "API authentication required."},
+                if ingress_ok:
+                    request.state.faces_ingress_identity = identity
+                if (is_face_api or is_editor_api) and request.method not in {"GET", "HEAD", "OPTIONS"} and not key_ok:
+                    if not identity or not csrf_token_matches(
+                        self._csrf_secret, identity, request.headers.get("x-doods-csrf")
+                    ):
+                        return JSONResponse(
+                            status_code=403,
+                            content={"detail": "CSRF validation failed."},
+                            headers={"Cache-Control": "no-store"},
                         )
-                        response.headers["Cache-Control"] = "no-store"
-                        response.headers["X-Content-Type-Options"] = "nosniff"
-                        return response
+                if is_face_page and not self.face_diagnostics_enabled and request.method in {"GET", "HEAD"}:
+                    page = await asyncio.to_thread(self._face_summary_html)
+                    return HTMLResponse(
+                        content=page,
+                        headers={
+                            "Cache-Control": "no-store, must-revalidate",
+                            "X-Content-Type-Options": "nosniff",
+                        },
+                    )
+                if not self.face_diagnostics_enabled and (
+                    path in {"/faces/debug", "/faces/people", "/faces/backup", "/faces/restore"}
+                    or path.startswith("/faces/debug/") or path.startswith("/faces/people/")
+                ):
+                    return JSONResponse(
+                        status_code=404,
+                        content={"detail": "Not found."},
+                        headers={"Cache-Control": "no-store"},
+                    )
+            elif self.auth_key and is_protected_api_path(path) and not key_ok:
+                # Other routes keep their existing key-only behaviour. Never
+                # grant broad ingress access without equivalent CSRF protection.
+                return JSONResponse(
+                    status_code=401,
+                    content={"detail": "API authentication required."},
+                    headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
+                )
             response = await call_next(request)
             if (
                 path == "/faces"
@@ -484,13 +544,13 @@ class API():
         async def list_profiles():
             """Получить упорядоченные по ID профили для редактора."""
             require_profiles_enabled()
-            return self.profile_store.list_profiles()
+            return await asyncio.to_thread(self.profile_store.list_profiles)
 
         @self.api.get("/profiles/{profile_id}")
         async def get_profile(profile_id: str):
             """Получить один профиль зон."""
             require_profiles_enabled()
-            profile = self.profile_store.get(profile_id)
+            profile = await asyncio.to_thread(self.profile_store.get, profile_id)
             if profile is None:
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND,
@@ -503,7 +563,7 @@ class API():
             """Получить только непрозрачный источник preview, связанный с профилем."""
             response.headers["Cache-Control"] = "no-store"
             require_profiles_enabled()
-            if self.profile_store.get(profile_id) is None:
+            if await asyncio.to_thread(self.profile_store.get, profile_id) is None:
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND,
                     detail="Profile not found.",
@@ -535,7 +595,7 @@ class API():
             """Запомнить opaque source_id отдельно от JSON профиля и JPEG-кадров."""
             response.headers["Cache-Control"] = "no-store"
             require_profiles_enabled()
-            if self.profile_store.get(profile_id) is None:
+            if await asyncio.to_thread(self.profile_store.get, profile_id) is None:
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND,
                     detail="Profile not found.",
@@ -576,7 +636,7 @@ class API():
         async def delete_profile_preview_source(profile_id: str):
             """Убрать связь источника; сам профиль и временные кадры не меняются."""
             require_profiles_enabled()
-            if self.profile_store.get(profile_id) is None:
+            if await asyncio.to_thread(self.profile_store.get, profile_id) is None:
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND,
                     detail="Profile not found.",
@@ -658,6 +718,18 @@ class API():
                     )
             return Response(status_code=status.HTTP_204_NO_CONTENT)
 
+        @self.api.get("/ingress/csrf")
+        @self.api.get("/faces/csrf")
+        async def face_csrf(request: Request):
+            """Issue an in-memory, per-Ingress-user token; never expose API keys."""
+            identity = getattr(request.state, "faces_ingress_identity", None)
+            if not identity:
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Ingress required.")
+            return JSONResponse(
+                content={"token": csrf_token(self._csrf_secret, identity)},
+                headers={"Cache-Control": "no-store"},
+            )
+
         @self.api.post("/faces/cameras")
         async def set_face_detection_cameras(request: Request):
             """Установить список камер, для которых выполнять face detection.
@@ -732,8 +804,8 @@ class API():
             """Текущий статус модели и локального ограниченного хранилища."""
             require_face_debug_enabled()
             return {
-                "model": self.face_analyzer.model_status(),
-                "storage": self.face_debug_store.status(),
+                "model": await asyncio.to_thread(self.face_analyzer.model_status),
+                "storage": await asyncio.to_thread(self.face_debug_store.status),
                 "gallery_enabled": face_gallery_enabled(),
                 "face_detection_cameras": sorted(
                     self.face_analyzer.face_detection_cameras or []
@@ -1267,7 +1339,7 @@ class API():
                     encoded = np.frombuffer(jpeg_bytes, dtype=np.uint8)
                     import cv2
 
-                    frame = cv2.imdecode(encoded, cv2.IMREAD_COLOR)
+                    frame = await asyncio.to_thread(cv2.imdecode, encoded, cv2.IMREAD_COLOR)
                     if frame is None:
                         errors += 1
                         continue
@@ -1604,7 +1676,7 @@ class API():
                     id=detect_request.id,
                     error="Profile features require configured API authentication.",
                 )
-            detect_response = self.doods.detect(detect_request)
+            detect_response = await run_http_detection(detect_request)
             if detect_response.error:
                 response.status_code = status.HTTP_400_BAD_REQUEST
             # If we requested an image, base64 encode it back to the user.
@@ -1617,63 +1689,60 @@ class API():
             if not await authorize_websocket(websocket):
                 return
             await websocket.accept()
-            detect_responses = asyncio.Queue()
-            executor = ThreadPoolExecutor()
-            async def detect_handle(detect_request: odrpc.DetectRequest):
-                try:
-                    detect_response = self.doods.detect(detect_request)
-                    if detect_request.image and detect_response.image is not None:
-                        detect_response.image = base64.b64encode(detect_response.image)
-                    await detect_responses.put(detect_response)
-                except asyncio.TimeoutError:
-                    self.logger.error("Detector timeout error")
-                except Exception as e:
-                    self.logger.error("Exception({0}):{1!r}".format(type(e).__name__, e.args))
+            pending = set()
+            send_lock = asyncio.Lock()
 
-            def detect_thread(detect_request: odrpc.DetectRequest):
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                try:
-                    loop.run_until_complete(detect_handle(detect_request))
-                    loop.close()
-                except Exception as e:
-                    self.logger.error("Exception({0}):{1!r}".format(type(e).__name__, e.args))
-                    loop.close()
+            async def send_response(result):
+                async with send_lock:
+                    await websocket.send_json(result.asdict(include_none=False))
 
-            async def send_detect_responses():
+            async def process_request(detect_request):
                 try:
-                    while True:
-                        detect_response = await detect_responses.get()
-                        await websocket.send_json(detect_response.asdict(include_none=False))
-                except Exception as e:
-                    self.logger.error("Exception({0}):{1!r}".format(type(e).__name__, e.args))
+                    result = await run_http_detection(detect_request)
+                    if detect_request.image and result.image is not None:
+                        result.image = base64.b64encode(result.image).decode("ascii")
+                    await send_response(result)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as err:
+                    # Do not log request payloads, images, or stream URLs.
+                    self.logger.warning("WebSocket detection failed (%s)", type(err).__name__)
+                    try:
+                        await send_response(odrpc.DetectResponse(
+                            id=detect_request.id, error="Detection failed or detector busy"
+                        ))
+                    except Exception:
+                        pass
 
-            send_detect_responses_task = asyncio.create_task(send_detect_responses())
-            
-            while True:
-                try:
+            try:
+                while True:
+                    # Apply backpressure instead of unbounded executor submissions.
+                    if len(pending) >= 2:
+                        await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
                     detect_config = await websocket.receive_json()
-                    detect_request = odrpc.DetectRequest(**detect_config)
-                    if detect_request.profile_id and not profiles_enabled():
-                        await detect_responses.put(
-                            odrpc.DetectResponse(
-                                id=detect_request.id,
-                                error="Profile features require configured API authentication.",
-                            )
-                        )
+                    try:
+                        detect_request = odrpc.DetectRequest(**detect_config)
+                    except (TypeError, ValueError):
+                        await send_response(odrpc.DetectResponse(error="could not parse request body"))
                         continue
-                    executor.submit(detect_thread, detect_request)
-                except TypeError:
-                    await detect_responses.put(odrpc.DetectResponse(error='could not parse request body'))
-                except WebSocketDisconnect:
-                    send_detect_responses_task.cancel()
-                    executor.shutdown()
-                    break
-                except Exception as e:
-                    self.logger.error("Exception({0}):{1!r}".format(type(e).__name__, e.args))
-                    send_detect_responses_task.cancel()
-                    executor.shutdown()
-                    break
+                    if detect_request.profile_id and not profiles_enabled():
+                        await send_response(odrpc.DetectResponse(
+                            id=detect_request.id,
+                            error="Profile features require configured API authentication.",
+                        ))
+                        continue
+                    task = asyncio.create_task(process_request(detect_request))
+                    pending.add(task)
+                    task.add_done_callback(pending.discard)
+            except WebSocketDisconnect:
+                pass
+            except Exception as err:
+                self.logger.warning("WebSocket detection stopped (%s)", type(err).__name__)
+            finally:
+                for task in tuple(pending):
+                    task.cancel()
+                if pending:
+                    await asyncio.gather(*tuple(pending), return_exceptions=True)
 
         @self.api.post("/image")
         async def image(detect_request: odrpc.DetectRequest, response: Response):
@@ -1685,7 +1754,7 @@ class API():
                 )
             if not detect_request.image:
                 detect_request.image = ".jpg"
-            detect_response = self.doods.detect(detect_request)
+            detect_response = await run_http_detection(detect_request)
             if detect_response.error:
                 return Response(status_code=status.HTTP_400_BAD_REQUEST, content=detect_response.error)
             return Response(content=detect_response.image, media_type="image/jpeg")
@@ -1709,6 +1778,7 @@ class API():
                 return
             await websocket.accept()
             streamer = None
+            stream_read = None
             try:
                 # Fetch the initial request payload
                 detect_config = await websocket.receive_json()
@@ -1724,24 +1794,38 @@ class API():
 
                 # Run the stream detector and return the results.
                 streamer = Streamer(self.doods).start_stream(detect_request)
-                for detect_response in streamer:
-                    # If we requested an image, base64 encode it back to the user
+                sentinel = object()
+                while True:
+                    # The iterator performs blocking capture, throttling and
+                    # inference, so advance it outside the event loop.
+                    stream_read = asyncio.create_task(asyncio.to_thread(next, streamer, sentinel))
+                    detect_response = await asyncio.shield(stream_read)
+                    stream_read = None
+                    if detect_response is sentinel:
+                        break
                     if detect_request.image and detect_response.image is not None:
                         detect_response.image = base64.b64encode(detect_response.image).decode('utf-8')
-                    await websocket.send_json(detect_response.asdict(include_none=False))            
-                    # Fake poll to maintain updated connection state
+                    await websocket.send_json(detect_response.asdict(include_none=False))
                     try:
-                        await asyncio.wait_for(websocket.receive_text(), 0.0001)   
+                        await asyncio.wait_for(websocket.receive_text(), 0.0001)
                     except asyncio.TimeoutError:
                         pass
-
-            except Exception as e:
-                self.logger.info(e)
-                try:
-                    if streamer:
-                        streamer.send(True) # Stop the streamer
-                except StopIteration:
-                    pass
+            except WebSocketDisconnect:
+                pass
+            except Exception as err:
+                self.logger.warning("WebSocket stream stopped (%s)", type(err).__name__)
+            finally:
+                if streamer:
+                    if stream_read is not None and not stream_read.done():
+                        # The underlying worker cannot be cancelled safely. Close
+                        # the iterator only after that read actually finishes.
+                        def finish_read(task):
+                            if not task.cancelled():
+                                task.exception()
+                            asyncio.create_task(asyncio.to_thread(streamer.close))
+                        stream_read.add_done_callback(finish_read)
+                    else:
+                        await asyncio.to_thread(streamer.close)
 
         @self.api.websocket("/motion/stream")
         async def motion_stream(websocket: WebSocket):
@@ -1848,6 +1932,7 @@ class API():
                 stop_event,
                 publish,
                 face_analyzer=self.face_analyzer,
+                artifact_diagnostics=getattr(self.config, "rtsp_artifact_diagnostics", False),
             )
 
             def run_worker() -> None:
@@ -1987,5 +2072,11 @@ li {{ margin: .75rem 0; }} p, li {{ line-height: 1.5; }}
         log_config["formatters"]["access"]["fmt"] = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
         log_config["formatters"]["default"]["fmt"] = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
         log_config["loggers"]["uvicorn"]["propagate"] = False # Fix a bug in logging
-        uvicorn.run(self.api, host=self.config.host, port=self.config.port, log_config=log_config) 
+        uvicorn.run(
+            self.api,
+            host=self.config.host,
+            port=self.config.port,
+            log_config=log_config,
+            proxy_headers=False,
+        )
 

@@ -89,6 +89,7 @@ class FaceAnalyzer:
         face_gallery_store: Any = None,
         debug_store: Any = None,
         illumination_compensation: bool = False,
+        illumination_mode: str = "legacy",
         illumination_threshold: int = 60,
         illumination_gamma: float = 0.45,
         max_match_faces: int = _DEFAULT_MAX_MATCH_FACES,
@@ -116,7 +117,13 @@ class FaceAnalyzer:
         )
         self.face_gallery_store = face_gallery_store
         self.debug_store = debug_store
-        self.illumination_compensation = illumination_compensation is True
+        if illumination_mode not in {"legacy", "off", "gamma", "clahe", "gamma_clahe"}:
+            raise ValueError("Invalid face illumination mode")
+        self.illumination_mode = illumination_mode
+        self.illumination_compensation = (
+            illumination_compensation is True if illumination_mode == "legacy"
+            else illumination_mode != "off"
+        )
         if (
             isinstance(illumination_threshold, bool)
             or not isinstance(illumination_threshold, int)
@@ -158,6 +165,7 @@ class FaceAnalyzer:
                 aligned_face,
                 threshold=self.illumination_threshold,
                 gamma=self.illumination_gamma,
+                mode="gamma" if self.illumination_mode == "legacy" else self.illumination_mode,
             )
         except Exception as err:
             # A bad crop or unavailable image processing must not stop matching.
@@ -306,6 +314,7 @@ class FaceAnalyzer:
         successful_faces = 0
         face_errors = 0
         sface_images: dict[int, bytes] = {}
+        aligned_images: dict[int, bytes] = {}
         state = "error"
         error_code: str | None = None
 
@@ -344,9 +353,26 @@ class FaceAnalyzer:
                         if raw_score is not None and math.isfinite(raw_score)
                         else None
                     )
+                    # YuNet landmarks are in analysis-frame coordinates. Keep
+                    # them only in private diagnostic capture metadata.
+                    landmarks = None
+                    if self.debug_store is not None and len(face) >= 15:
+                        try:
+                            points = [
+                                {
+                                    "x": round(float(face[4 + 2 * i]) * width / analysis_width),
+                                    "y": round(float(face[5 + 2 * i]) * height / analysis_height),
+                                }
+                                for i in range(5)
+                            ]
+                            if all(-100_000 <= p[axis] <= 100_000 for p in points for axis in ("x", "y")):
+                                landmarks = points
+                        except (ValueError, OverflowError, TypeError):
+                            pass
                     face_detections.append(
                         {
                             "face_index": face_index,
+                            "landmarks": landmarks,
                             "bbox": {
                                 "x": max(0, x),
                                 "y": max(0, y),
@@ -375,6 +401,7 @@ class FaceAnalyzer:
                     match_results, successful_faces, face_errors = self._analyze_faces(
                         analysis_frame, rows, scale, started,
                         debug_images=sface_images if self.debug_store is not None else None,
+                        aligned_images=aligned_images if self.debug_store is not None else None,
                     )
                     state = "face_detected"
                     embedding_ready = successful_faces > 0
@@ -441,6 +468,7 @@ class FaceAnalyzer:
                     full_frame_jpeg=full_frame_jpeg,
                     face_crops_jpeg=face_crops_jpeg,
                     sface_images_jpeg=sface_images,
+                    aligned_images_jpeg=aligned_images,
                 )
             except Exception as err:
                 _LOGGER.warning(
@@ -542,6 +570,7 @@ class FaceAnalyzer:
     def _analyze_faces(
         self, frame: Any, rows: list[Any], scale: float, started_at: float,
         *, debug_images: dict[int, bytes] | None = None,
+        aligned_images: dict[int, bytes] | None = None,
     ) -> tuple[list[dict[str, Any]], int, int]:
         """Analyze up to the configured number of largest faces independently.
 
@@ -560,6 +589,13 @@ class FaceAnalyzer:
             row = rows[index]
             try:
                 aligned = self._recognizer.alignCrop(frame, row)
+                if aligned_images is not None:
+                    try:
+                        ok, encoded = self._cv2.imencode(".jpg", aligned)
+                        if ok:
+                            aligned_images[index] = encoded.tobytes()
+                    except Exception as err:
+                        _LOGGER.debug("Aligned debug image unavailable (%s)", type(err).__name__)
                 prepared = self._prepare_match_face(aligned)
                 feature = self._recognizer.feature(prepared)
                 self._validate_feature(feature)

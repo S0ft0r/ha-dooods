@@ -21,6 +21,9 @@ configuration:
       profiles_file:
         name: Profiles file
         description: Persistent JSON file inside the app data directory.
+      rtsp_artifact_diagnostics:
+        name: RTSP artifact diagnostics
+        description: Experimental analysis of sampled RTSP frames. Suspicions are summarized in logs; frames are not dropped. False positives are possible. Restart the app after changing this option.
       metrics:
         name: Prometheus metrics
       trace:
@@ -39,6 +42,9 @@ configuration:
       illumination_compensation:
         name: Face backlight compensation
         description: Brightens dark aligned faces before SFace matching. Does not affect YuNet face detection or enrolled references; accuracy may change. Disabled by default. Applied after restarting the app.
+      illumination_mode:
+        name: Face illumination mode
+        description: "legacy uses the previous switch; off disables; gamma uses the previous smoothing and gamma; clahe uses CLAHE; gamma_clahe applies gamma then CLAHE. The legacy switch is ignored in other modes. Restart the App after changing."
       illumination_threshold:
         name: Face brightness threshold
         description: Faces with median L brightness below this threshold are corrected. Range 0–255; default 60. Zero disables correction. Applied after restarting the app.

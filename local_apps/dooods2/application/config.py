@@ -1,4 +1,4 @@
-from typing import List, Optional, Union
+from typing import List, Literal, Optional, Union
 from pydantic import BaseSettings, Extra, Field
 from odrpc import MqttDetectRequest
 
@@ -60,6 +60,7 @@ class ServerConfig(BaseSettings):
     port: Optional[int] = 8080
     auth_key: Optional[str] = ''
     profiles_file: Optional[str] = "/data/profiles.json"
+    rtsp_artifact_diagnostics: bool = False
     metrics: Optional[bool] = True
     trace: Optional[bool] = False
     class Config:
@@ -72,6 +73,7 @@ class FaceConfig(BaseSettings):
     enabled: bool = True
     diagnostics_enabled: bool = True
     illumination_compensation: bool = False
+    illumination_mode: Literal["legacy", "off", "gamma", "clahe", "gamma_clahe"] = "legacy"
     illumination_threshold: int = Field(60, ge=0, le=255)
     illumination_gamma: float = Field(0.45, ge=0.3, le=0.9)
     max_match_faces: int = Field(3, ge=1, le=5)

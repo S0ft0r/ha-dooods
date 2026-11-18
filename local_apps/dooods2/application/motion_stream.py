@@ -13,6 +13,7 @@ import cv2
 
 from motion_gate import MotionGate
 from odrpc import MotionStreamRequest
+from rtsp_artifact_diagnostics import ArtifactDiagnostics
 
 _LOGGER = logging.getLogger("doods.motion_stream")
 _MAX_RECONNECT_DELAY = 30.0
@@ -36,12 +37,14 @@ class MotionStreamWorker:
         publish: Callable[[dict[str, Any]], None],
         *,
         face_analyzer: Any = None,
+        artifact_diagnostics: bool = False,
     ) -> None:
         self.request = request
         self.gate = gate
         self.stop_event = stop_event
         self.publish = publish
         self.face_analyzer = face_analyzer
+        self.artifact_diagnostics = artifact_diagnostics
 
     def run(self) -> None:
         """Connect, sample frames, and reconnect until the websocket closes."""
@@ -57,6 +60,12 @@ class MotionStreamWorker:
         max_score_interval = 0.0
         last_motion_at: str | None = None
         last_candidate_at: str | None = None
+        artifact_observer = (
+            ArtifactDiagnostics(self.request.source_id, _LOGGER, time.monotonic())
+            if self.artifact_diagnostics else None
+        )
+        if artifact_observer is not None:
+            _LOGGER.info("RTSP artifact diagnostics enabled (observation only): camera=%s", artifact_observer.source_id)
 
         while not self.stop_event.is_set():
             capture = self._open_capture()
@@ -105,6 +114,20 @@ class MotionStreamWorker:
                         continue
                     last_sample_at = now
 
+                    if artifact_observer is not None:
+                        try:
+                            artifact_observer.observe(frame, now)
+                        except Exception as err:
+                            # Diagnostics must never interrupt or alter motion processing.
+                            _LOGGER.warning(
+                                "RTSP artifact diagnostics disabled after error: camera=%s error=%s",
+                                artifact_observer.source_id, type(err).__name__,
+                            )
+                            try:
+                                artifact_observer.flush(now)
+                            except Exception:
+                                pass
+                            artifact_observer = None
                     update = self.gate.update(frame)
                     sampled_frames_total += 1
                     sampled_frames_interval += 1
@@ -181,6 +204,11 @@ class MotionStreamWorker:
                 self.stop_event.wait(reconnect_delay)
                 reconnect_delay = min(reconnect_delay * 2, _MAX_RECONNECT_DELAY)
 
+        if artifact_observer is not None:
+            try:
+                artifact_observer.flush(time.monotonic())
+            except Exception:
+                pass
         self._emit_status("stopped")
 
     def _open_capture(self) -> cv2.VideoCapture | None:

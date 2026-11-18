@@ -7,7 +7,7 @@
   <meta http-equiv="cache-control" content="no-store, must-revalidate">
   <meta http-equiv="pragma" content="no-cache">
   <meta http-equiv="expires" content="0">
-  <meta name="dooods-build" content="0.1.36">
+  <meta name="dooods-build" content="0.1.37.1">
   <title>Лица — диагностика и галерея</title>
   <style>
     :root {
@@ -61,48 +61,56 @@
     [hidden] { display: none !important; }
     .capture-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(270px, 1fr)); gap: .8rem; }
     .capture { background: var(--panel-2); border: 1px solid var(--line); border-radius: 10px; padding: .7rem; min-width: 0; }
+    .candidate-card { cursor:pointer; }
+    .candidate-card:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
     .capture.selected { border-color: var(--accent); box-shadow: 0 0 0 2px #55a9ed33; }
     .capture.matched { border-color: var(--good); box-shadow: 0 0 0 2px #65d49a4d; }
     .capture.ambiguous { border-color: var(--warn); box-shadow: 0 0 0 2px #ffd1664d; }
     .capture img { display: block; width: 100%; max-height: 300px; object-fit: contain; background: #0b1015; border-radius: 7px; }
-    .modal-overlay {
-      position: fixed; inset: 0; background: rgba(0, 0, 0, 0.75); display: none;
-      align-items: center; justify-content: center; z-index: 50; padding: 1rem;
-    }
-    .modal-overlay.shown { display: flex; }
-    .modal {
-      background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
-      width: min(740px, 94vw); max-height: 92vh; overflow: auto;
-      animation: modal-in 0.18s ease-out;
-    }
-    @keyframes modal-in {
-      from { opacity: 0; transform: translatey(-12px); }
-      to { opacity: 1; transform: none; }
-    }
-    .modal-close {
-      position: absolute; top: .7rem; right: .9rem; background: transparent;
-      border: none; color: var(--muted); font-size: 1.5rem; line-height: 1;
-      padding: 0 .15rem; cursor: pointer;
-    }
-    .modal-close:hover { color: var(--text); }
-    .modal-head { display: flex; align-items: center; gap: .55rem; padding: .95rem 1rem .5rem; border-bottom: 1px solid var(--line); }
-    .modal-head h3 { margin: 0; font-size: 1rem; flex: 1; }
-    .modal-pill { font-size: .78rem; border: 1px solid currentColor; border-radius: 999px; padding: .12rem .55rem; color: inherit; }
-    .modal-meta { display: flex; gap: .8rem; padding: .65rem 1rem; border-bottom: 1px solid var(--line); font-size: .86rem; color: var(--muted); flex-wrap: wrap; }
-    .modal-pair { display: flex; gap: 1rem; padding: 1rem; }
-    .face-card { flex: 1; display: flex; flex-direction: column; gap: .4rem; align-items: center; }
-    .face-card img { width: 100%; height: 260px; object-fit: contain; background: #0b1015; border-radius: 8px; border: 1px solid var(--line); display: block; }
-    .face-card .label { color: var(--muted); font-size: .8rem; text-transform: uppercase; letter-spacing: .04em; }
-    .face-card .note { color: var(--muted); font-size: .82rem; text-align: center; }
-    .modal-empty { padding: 1rem; color: var(--muted); font-size: .9rem; text-align: center; }
-    .modal-note { padding: .5rem 1rem 1rem; color: var(--muted); font-size: .82rem; text-align: center; border-top: 1px solid var(--line); }
-    .modal-diag { padding: .8rem 1rem 1rem; border-top: 1px solid var(--line); }
-    .modal-diag h4 { margin: 0 0 .5rem; font-size: .8rem; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); font-weight: 600; }
-    .diag-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: .45rem .9rem; font-size: .84rem; }
-    .diag-item { display: flex; flex-direction: column; gap: .1rem; }
-    .diag-item .k { color: var(--muted); font-size: .76rem; }
-    .diag-item .v { color: var(--text); font-variant-numeric: tabular-nums; }
-    .diag-group + .diag-group { margin-top: .8rem; }
+    @keyframes modal-in { from { opacity:0; transform:translateY(-12px); } to { opacity:1; transform:none; } }
+    .diag-group + .diag-group { margin-top:.8rem; }
+    .modal-overlay { position:fixed; inset:0; background:rgba(0,0,0,.78); display:none; align-items:center; justify-content:center; z-index:50; padding:1rem; }
+    .modal-overlay.shown { display:flex; }
+    .modal { position:relative; width:min(960px,96vw); max-height:94vh; overflow:auto; background:#19232f; border:1px solid var(--line); border-radius:12px; }
+    .modal-close { position:absolute; top:.65rem; right:.75rem; border:0; background:transparent; color:var(--muted); font-size:1.5rem; padding:.15rem .45rem; z-index:1; }
+    .modal-head { padding:1rem 3.5rem .75rem 1rem; border-bottom:1px solid var(--line); }
+    .modal-head h3 { margin:0 0 .25rem; font-size:1.1rem; }
+    .modal-subtitle, .modal-meta { color:var(--muted); font-size:.78rem; }
+    .modal-meta { display:flex; flex-wrap:wrap; gap:.45rem 1rem; padding:.7rem 1rem; }
+    .modal-tabs { display:flex; gap:.3rem; padding:0 1rem; border-bottom:1px solid var(--line); overflow-x:auto; }
+    .modal-tab { display:flex; align-items:center; gap:.55rem; min-width:128px; border:0; border-bottom:3px solid transparent; border-radius:0; background:transparent; text-align:left; padding:.55rem; color:var(--muted); }
+    .modal-tab[aria-selected="true"] { background:#202e3d; border-bottom-color:#72c6f4; color:var(--text); }
+    .modal-tab img { width:34px; height:38px; object-fit:cover; border-radius:4px; background:#0b1015; }
+    .modal-tab small { display:block; color:var(--muted); font-size:.7rem; }
+    .modal-content { padding:1rem; }
+    .modal-strip-head { display:flex; justify-content:space-between; gap:.5rem; font-size:.82rem; margin-bottom:.7rem; }
+    .modal-strip-head span { color:var(--muted); font-size:.72rem; }
+    .modal-strip { display:flex; gap:.6rem; overflow-x:auto; padding-bottom:.55rem; }
+    .modal-tile { flex:1 0 155px; min-width:155px; border:1px solid var(--line); border-radius:8px; overflow:hidden; background:#202d3b; }
+    .modal-tile-title { padding:.6rem; font-size:.75rem; font-weight:650; border-bottom:1px solid var(--line); min-height:2.8rem; }
+    .modal-image-button { display:grid; place-items:center; width:100%; height:145px; min-height:0; border:0; border-radius:0; background:#0b1015; padding:.35rem; cursor:zoom-in; }
+    .modal-image-button img { width:100%; height:100%; object-fit:contain; }
+    .modal-image-button:disabled { cursor:default; opacity:1; color:var(--muted); font-size:.75rem; }
+    .modal-tile-foot { min-height:2.5rem; display:flex; align-items:center; justify-content:space-between; gap:.3rem; padding:.45rem .6rem; color:var(--muted); font-size:.72rem; }
+    .modal-tile-foot a { color:var(--accent); }
+    .modal-stats { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:.7rem; margin-top:.9rem; }
+    .modal-stat { border:1px solid var(--line); border-radius:8px; padding:.8rem; background:#202d3b; font-size:.8rem; }
+    .modal-stat h4 { margin:0 0 .5rem; font-size:.8rem; }
+    .modal-stat strong { display:block; font-size:1.35rem; margin:.2rem 0; }
+    .modal-stat .sub { color:var(--muted); }
+    .modal-details { margin-top:.8rem; border:1px solid var(--line); border-radius:8px; }
+    .modal-details summary { cursor:pointer; color:var(--muted); padding:.7rem; font-size:.8rem; }
+    .modal-diag { padding:0 .75rem .8rem; }
+    .modal-diag h4 { margin:.7rem 0 .45rem; font-size:.77rem; color:var(--muted); }
+    .diag-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:.45rem .8rem; font-size:.8rem; }
+    .diag-item { display:flex; flex-direction:column; gap:.1rem; overflow-wrap:anywhere; }
+    .diag-item .k { color:var(--muted); font-size:.72rem; }
+    .diag-item .v { font-variant-numeric:tabular-nums; }
+    .modal-footer { display:flex; justify-content:space-between; align-items:center; border-top:1px solid var(--line); padding:.8rem 1rem; color:var(--muted); font-size:.75rem; }
+    .modal-zoom { position:fixed; inset:0; z-index:60; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:.6rem; padding:1rem; background:rgba(0,0,0,.92); }
+    .modal-zoom img { max-width:90vw; max-height:78vh; object-fit:contain; }
+    .modal-zoom button { position:absolute; top:1rem; right:1rem; }
+    @media (max-width:560px) { .modal-stats { grid-template-columns:1fr; } .modal-tile { flex-basis:135px; min-width:135px; } }
     .crop-row { display: flex; gap: .45rem; overflow-x: auto; margin-top: .5rem; padding-bottom: .2rem; }
     .crop { flex: 0 0 90px; border: 1px solid #536777; border-radius: 7px; padding: .25rem; background: #10171e; cursor: pointer; }
     .crop.selected { border: 2px solid var(--accent); }
@@ -243,7 +251,7 @@
                   <input class="grow" id="new-person-name" type="text" maxlength="128" placeholder="Имя нового человека">
                   <button id="create-person" type="button">Создать</button>
                 </div>
-                <p id="selection-meta" class="muted small">Сначала выберите кроп слева или в разделе «Кадры».</p>
+                <p id="selection-meta" class="muted small">Сначала выберите кроп слева.</p>
                 <label class="confirm"><input id="confirm-enrollment" type="checkbox"><span>Я проверил(а) выбранный кроп и подтверждаю добавление образца этому человеку.</span></label>
                 <button id="enroll-button" class="primary" type="button" disabled>Добавить подтверждённый образец</button>
               </div>
@@ -282,21 +290,19 @@
   </main>
 
   <div class="modal-overlay" id="match-modal">
-    <div class="modal" role="dialog" aria-modal="true" aria-label="Совпадение лица">
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
       <button type="button" class="modal-close" id="modal-close" aria-label="Закрыть">×</button>
-      <div class="modal-head">
-        <h3 id="modal-title">Совпадение лица</h3>
-        <span class="modal-pill" id="modal-pill" hidden>—</span>
-      </div>
-      <div class="modal-meta">
-        <span><strong>Статус:</strong> <span id="modal-state">—</span></span>
-        <span><strong>Человек:</strong> <span id="modal-person">—</span></span>
-        <span><strong>Похожесть:</strong> <span id="modal-similarity">—</span></span>
-      </div>
-      <div id="modal-pair" class="modal-pair" hidden></div>
-      <div id="modal-empty" class="modal-empty" hidden></div>
-      <div id="modal-diagnostics" class="modal-diag" hidden></div>
+      <div class="modal-head"><h3 id="modal-title">Диагностика кадра</h3><div class="modal-subtitle">Детекция, выравнивание и сравнение с галереей</div></div>
+      <div class="modal-meta" id="modal-frame-meta"></div>
+      <div class="modal-tabs" id="modal-tabs" role="tablist" aria-label="Лица на кадре"></div>
+      <div class="modal-content" id="modal-content" role="tabpanel"></div>
+      <div class="modal-footer"><span>Данные диагностики кадра</span><button type="button" id="modal-footer-close">Закрыть</button></div>
     </div>
+  </div>
+  <div class="modal-zoom" id="modal-zoom" role="dialog" aria-modal="true" aria-label="Увеличенное изображение" hidden>
+    <button type="button" id="modal-zoom-close" aria-label="Закрыть изображение">×</button>
+    <img id="modal-zoom-image" alt=""><span id="modal-zoom-caption"></span>
+    <a id="modal-zoom-download" download>Скачать изображение</a>
   </div>
   <div class="person-modal-overlay" id="person-faces-modal">
     <div class="person-modal" role="dialog" aria-modal="true" aria-label="Эталонные кадры персоны">
@@ -350,9 +356,24 @@
       return url.toString();
     }
 
+    let csrfPromise = null;
+    async function getCsrfToken() {
+      if (!csrfPromise) {
+        csrfPromise = fetch(apiUrl("faces/csrf"), {cache: "no-store", credentials: "same-origin"})
+          .then(async response => {
+            if (!response.ok) throw new Error("Не удалось подтвердить защищённый доступ Ingress");
+            const data = await response.json();
+            if (typeof data.token !== "string") throw new Error("Некорректный ответ защиты Ingress");
+            return data.token;
+          }).catch(error => { csrfPromise = null; throw error; });
+      }
+      return csrfPromise;
+    }
     async function apiRequest(path, options = {}) {
       const headers = new Headers(options.headers || {});
       headers.set("Accept", "application/json");
+      const method = String(options.method || "GET").toUpperCase();
+      if (!["GET", "HEAD", "OPTIONS"].includes(method)) headers.set("X-DOODS-CSRF", await getCsrfToken());
       const request = { ...options, headers, cache: "no-store", credentials: "same-origin" };
       if (Object.prototype.hasOwnProperty.call(options, "json")) {
         headers.set("Content-Type", "application/json");
@@ -366,6 +387,7 @@
         try { payload = JSON.parse(raw); } catch (_) { payload = raw; }
       }
       if (!response.ok) {
+        if (response.status === 403) csrfPromise = null;
         const detail = payload && typeof payload === "object" ? payload.detail : payload;
         throw new Error(detail || `HTTP ${response.status}`);
       }
@@ -444,78 +466,31 @@
       $("capture-empty").hidden = state.captures.length !== 0;
       for (const capture of state.captures) {
         const card = document.createElement("article");
-        card.className = "capture";
+        card.className = "capture candidate-card";
         card.dataset.captureId = capture.capture_id;
-        if (state.selected && state.selected.captureId === capture.capture_id) card.classList.add("selected");
+        card.setAttribute("role", "button");
+        card.setAttribute("tabindex", "0");
+        const time = formatTime(capture.occurred_at);
+        card.setAttribute("aria-label", `Открыть диагностику кадра от ${time}`);
         const heading = document.createElement("h3");
-        heading.textContent = `Кадр · ${formatTime(capture.occurred_at)}`;
-        card.append(heading);
+        heading.textContent = time;
         const full = document.createElement("img");
         full.alt = "Полный кадр с найденным лицом";
         full.loading = "lazy";
-        card.append(full);
+        card.append(heading, full);
+        card.addEventListener("click", () => openMatchModal(capture));
+        card.addEventListener("keydown", event => {
+          if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            openMatchModal(capture);
+          }
+        });
+        grid.append(card);
         try {
           full.src = await apiImage(`faces/debug/captures/${capture.capture_id}/image?kind=frame`);
         } catch (error) {
           full.alt = `Кадр недоступен: ${error.message}`;
         }
-        const meta = document.createElement("dl");
-        meta.className = "meta";
-        const values = [
-          ["Камера", capture.source_id],
-          ["Лиц", capture.faces_detected],
-          ["Порог", capture.yunet_score_threshold],
-          ["YuNet + SFace", capture.inference_ms === null ? null : `${capture.inference_ms} ms`],
-        ];
-        for (const [label, value] of values) {
-          const dt = document.createElement("dt"); dt.textContent = label;
-          const dd = document.createElement("dd"); dd.textContent = value === null || value === undefined ? "—" : String(value);
-          meta.append(dt, dd);
-        }
-        card.append(meta);
-        const faceResults = Array.isArray(capture.matches) ? capture.matches : (capture.match ? [capture.match] : []);
-        for (const result of faceResults) {
-          const detail = document.createElement("button");
-          detail.type = "button";
-          const number = Number.isInteger(result.face_index) ? `Лицо ${result.face_index + 1}` : "Лицо без сохранённого кропа";
-          detail.textContent = `${number}: ${MATCH_STATE_LABELS[result.state] || result.state || "—"} · ${result.person_name || "—"}`;
-          detail.addEventListener("click", event => { event.stopPropagation(); openMatchModal({ ...capture, match: result }); });
-          card.append(detail);
-        }
-        const matchState = capture.match && capture.match.state;
-        if (matchState === "matched") card.classList.add("matched");
-        else if (matchState === "ambiguous") card.classList.add("ambiguous");
-        card.addEventListener("click", () => openMatchModal(capture));
-        const crops = document.createElement("div");
-        crops.className = "crop-row";
-        for (const face of (capture.faces || [])) {
-          const crop = document.createElement("button");
-          crop.type = "button";
-          crop.className = "crop";
-          crop.setAttribute("aria-label", `Выбрать кроп лица ${face.face_index + 1}`);
-          if (state.selected && state.selected.captureId === capture.capture_id && state.selected.faceIndex === face.face_index) crop.classList.add("selected");
-          const image = document.createElement("img");
-          image.alt = `Кроп лица ${face.face_index + 1}`;
-          image.loading = "lazy";
-          crop.append(image);
-          const info = document.createElement("span");
-          info.className = "small";
-          const box = face.bbox || {};
-          info.textContent = `${box.width || "?"}×${box.height || "?"} px · score ${face.score ?? "—"}`;
-          crop.append(info);
-          crop.addEventListener("click", (event) => {
-            event.stopPropagation();
-            selectFace(capture, face, image.src);
-          });
-          crops.append(crop);
-          try {
-            image.src = await apiImage(`faces/debug/captures/${capture.capture_id}/image?kind=face&face_index=${face.face_index}`);
-          } catch (error) {
-            image.alt = `Кроп недоступен: ${error.message}`;
-          }
-        }
-        card.append(crops);
-        grid.append(card);
       }
     }
 
@@ -596,23 +571,36 @@
     }
 
     let modalUrls = [];
-
+    let modalSession = 0;
+    let modalRender = 0;
+    let modalImageCache = new Map();
+    let modalLandmarkCache = new Map();
     function revokeModalUrls() {
       for (const url of modalUrls) URL.revokeObjectURL(url);
       modalUrls = [];
+      modalImageCache = new Map();
+      modalLandmarkCache = new Map();
+    }
+    async function fetchModalImage(paths, session) {
+      for (const path of paths) {
+        try {
+          const response = await fetch(apiUrl(path), {cache: "no-store", credentials: "same-origin"});
+          if (!response.ok) continue;
+          const blob = await response.blob();
+          if (session !== modalSession) return null;
+          const url = URL.createObjectURL(blob);
+          modalUrls.push(url);
+          return url;
+        } catch (_) { /* Try the next source. */ }
+      }
+      return null;
     }
 
-    // Гарантировать наличие узла модалки, даже если разметка пришла из
-    // старой сборки (иначе обращение к null роняет весь обработчик клика).
-    function ensureModalNode(id, className) {
-      let node = $(id);
-      if (node) return node;
-      const modal = document.querySelector("#match-modal .modal");
-      node = document.createElement("div");
-      node.id = id;
-      if (className) node.className = className;
-      if (modal) modal.append(node);
-      return node;
+    function modalImage(paths, session) {
+      if (!paths.length) return Promise.resolve(null);
+      const key = paths.join("\n");
+      if (!modalImageCache.has(key)) modalImageCache.set(key, fetchModalImage(paths, session));
+      return modalImageCache.get(key);
     }
 
     const PAGE_BUILD = (document.querySelector('meta[name="dooods-build"]') || {}).content || "?";
@@ -664,246 +652,178 @@
       return group;
     }
 
-    function renderMatchDiagnostics(target, capture, match) {
-      target.replaceChildren();
-      const source = match || {};
+    // A stored face index is local to this capture. Never guess an association
+    // for an explicitly unassociated rematch or reuse another face's result.
+    function modalFaceEntries(capture) {
       const faces = Array.isArray(capture.faces) ? capture.faces : [];
-      const detected = faces.length ? faces : (source.yunet_bbox ? [{ bbox: source.yunet_bbox, score: source.yunet_score }] : []);
-      const face = detected.find(item => item.face_index === source.face_index) || {};
-      const box = source.yunet_bbox || face.bbox || {};
-
-      const yunetItems = [
-        ["Порог score", formatNumber(source.yunet_score_threshold ?? capture.yunet_score_threshold, 3)],
-        ["Лиц найдено", source.yunet_faces_detected ?? capture.faces_detected ?? faces.length],
-        ["Score лучшего лица", formatNumber(source.yunet_score ?? face.score, 3)],
-        ["BBox X", formatNumber(box.x, 1)],
-        ["BBox Y", formatNumber(box.y, 1)],
-        ["BBox W", formatNumber(box.width ?? box.w, 1)],
-        ["BBox H", formatNumber(box.height ?? box.h, 1)],
-      ];
-
-      const sfaceItems = [
-        ["Состояние", MATCH_STATE_LABELS[source.state] || source.state || "—"],
-        ["Лучшее сходство", formatPercent(source.sface_best_similarity ?? source.similarity ?? capture.similarity)],
-        ["Порог сходства", formatNumber(source.sface_threshold, 3)],
-        ["Лучший другой человек", source.sface_other_person || "—"],
-        ["Его сходство", formatPercent(source.sface_second_best_similarity)],
-        ["Отрыв", formatNumber(source.sface_similarity_gap, 3)],
-        ["Минимальный отрыв", formatNumber(source.sface_min_gap, 3)],
-        ["Сработавший образец", Number.isInteger(source.sface_sample_index)
-          ? `${source.sface_sample_index + 1} из ${source.sface_samples_total ?? "?"}`
-          : "—"],
-      ];
-
-      const captureItems = [
-        ["Камера", capture.source_id],
-        ["Время кадра", formatTime(capture.occurred_at)],
-        ["Инференс кадра", capture.inference_ms === null || capture.inference_ms === undefined ? null : `${capture.inference_ms} ms`],
-        ["Инференс match", source.match_inference_ms === null || source.match_inference_ms === undefined ? null : `${source.match_inference_ms} ms`],
-        ["Capture ID", capture.capture_id],
-      ];
-
-      target.append(
-        diagGroup("YuNet — детекция лица", yunetItems),
-        diagGroup("SFace — сравнение с галереей", sfaceItems),
-        diagGroup("Кадр", captureItems),
-      );
-      target.hidden = false;
+      const matches = Array.isArray(capture.matches) ? capture.matches.filter(m => m && typeof m === "object") : [];
+      const primary = capture.match && typeof capture.match === "object" ? capture.match : null;
+      if (primary && !matches.length) matches.push(primary);
+      const entries = faces.filter(f => Number.isInteger(f.face_index)).map(face => {
+        let match = matches.find(m => Number.isInteger(m.face_index) && m.face_index === face.face_index) || null;
+        // Pre-multiface legacy records contained one match without face_index.
+        if (!match && faces.length === 1 && primary && !("face_index" in primary)) match = primary;
+        return {face, match};
+      });
+      for (const match of matches) {
+        if (Number.isInteger(match.face_index) && entries.some(e => e.face.face_index === match.face_index)) continue;
+        if (!("face_index" in match) && faces.length === 1 && match === primary) continue;
+        entries.push({face: null, match});
+      }
+      if (!entries.length) entries.push({face: null, match: null});
+      return entries;
     }
 
-    async function openMatchModal(capture) {
-      revokeModalUrls();
-      const overlay = $("match-modal");
-      const title = $("modal-title");
-      const pill = $("modal-pill");
-      const stateEl = $("modal-state");
-      const personEl = $("modal-person");
-      const simEl = $("modal-similarity");
-      const pair = ensureModalNode("modal-pair", "modal-pair");
-      const empty = ensureModalNode("modal-empty", "modal-empty");
-      const diagnostics = ensureModalNode("modal-diagnostics", "modal-diag");
-      overlay.classList.add("shown");
-      pair.hidden = true;
-      empty.hidden = true;
-      diagnostics.hidden = true;
-      pair.innerHTML = "";
-      diagnostics.replaceChildren();
+    function modalDiagnosticGroup(title, items) {
+      return diagGroup(title, items);
+    }
 
-      const match = capture.match && typeof capture.match === "object" ? capture.match : null;
-      const stateText = match ? String(match.state) : "unknown";
-      stateEl.textContent = MATCH_STATE_LABELS[stateText] || "—";
-      personEl.textContent = match && match.person_name ? match.person_name : "—";
-      simEl.textContent = match && match.similarity !== null && match.similarity !== undefined
-        ? Math.round(match.similarity * 100) + "%"
-        : "—";
-
-      if (match) {
-        pill.hidden = false;
-        pill.textContent = MATCH_STATE_PILLS[match.state] || match.state;
-        pill.style.color = match.state === "matched" ? "var(--good)" : "var(--warn)";
-      } else {
-        pill.hidden = true;
+    function openModalZoom(url, title, filename) {
+      const zoom = $("modal-zoom");
+      $("modal-zoom-image").src = url;
+      $("modal-zoom-image").alt = title;
+      $("modal-zoom-caption").textContent = title;
+      $("modal-zoom-download").href = url;
+      $("modal-zoom-download").download = filename;
+      zoom.hidden = false;
+      $("modal-zoom-close").focus();
+    }
+    function closeModalZoom() {
+      $("modal-zoom").hidden = true;
+      $("modal-zoom-image").removeAttribute("src");
+      $("modal-zoom-download").removeAttribute("href");
+    }
+    function modalTile(title, url, description, filename) {
+      const tile = document.createElement("div"); tile.className = "modal-tile";
+      const head = document.createElement("div"); head.className = "modal-tile-title"; head.textContent = title;
+      const button = document.createElement("button"); button.className = "modal-image-button"; button.type = "button";
+      if (url) {
+        const img = document.createElement("img"); img.src = url; img.alt = title; button.append(img);
+        button.setAttribute("aria-label", `Увеличить: ${title}`);
+        button.addEventListener("click", () => openModalZoom(url, title, filename));
+      } else { button.disabled = true; button.textContent = "Недоступно"; }
+      const foot = document.createElement("div"); foot.className = "modal-tile-foot";
+      const text = document.createElement("span"); text.textContent = description; foot.append(text);
+      if (url) { const link = document.createElement("a"); link.href = url; link.download = filename; link.textContent = "↓"; link.setAttribute("aria-label", `Скачать: ${title}`); foot.append(link); }
+      tile.append(head, button, foot); return tile;
+    }
+    function modalStat(title, value, detail) {
+      const el = document.createElement("div"); el.className = "modal-stat";
+      const heading = document.createElement("h4"); heading.textContent = title;
+      const number = document.createElement("strong"); number.textContent = value;
+      const sub = document.createElement("div"); sub.className = "sub"; sub.textContent = detail;
+      el.append(heading, number, sub); return el;
+    }
+    async function modalLandmarks(cropUrl, face, session) {
+      if (!cropUrl || !face || !face.bbox || !face.crop_origin || !Array.isArray(face.landmarks) || face.landmarks.length !== 5) return null;
+      try {
+        const image = new Image(); image.src = cropUrl; await image.decode();
+        if (session !== modalSession) return null;
+        const canvas = document.createElement("canvas"); canvas.width = image.naturalWidth; canvas.height = image.naturalHeight;
+        const ctx = canvas.getContext("2d"); ctx.drawImage(image, 0, 0);
+        const origin = face.crop_origin, box = face.bbox;
+        const unit = Math.max(2, Math.round(Math.min(canvas.width, canvas.height) / 110));
+        ctx.lineWidth = unit; ctx.strokeStyle = "#00ff80";
+        ctx.strokeRect(box.x - origin.x, box.y - origin.y, box.width, box.height);
+        ctx.font = `bold ${Math.max(12, unit * 6)}px sans-serif`;
+        face.landmarks.forEach((point, index) => {
+          const x = point.x - origin.x, y = point.y - origin.y;
+          ctx.beginPath(); ctx.arc(x, y, unit * 2, 0, Math.PI * 2); ctx.fillStyle = "#ffdb00"; ctx.fill();
+          ctx.strokeStyle = "#000"; ctx.lineWidth = Math.max(1, unit / 2); ctx.stroke();
+          ctx.strokeText(String(index + 1), x + unit * 3, y - unit * 2); ctx.fillStyle = "#fff"; ctx.fillText(String(index + 1), x + unit * 3, y - unit * 2);
+        });
+        const blob = await new Promise(resolve => canvas.toBlob(resolve, "image/png"));
+        if (!blob || session !== modalSession) return null;
+        const url = URL.createObjectURL(blob); modalUrls.push(url); return url;
+      } catch (_) { return null; }
+    }
+    function modalImagePaths(capture, kind, index) {
+      const query = `kind=${kind}&face_index=${index}`;
+      const id = encodeURIComponent(capture.capture_id);
+      return ["captures", "matches"].map(source => `faces/debug/${source}/${id}/image?${query}`);
+    }
+    async function renderModalFace(capture, entry, session) {
+      const revision = ++modalRender;
+      const content = $("modal-content");
+      content.replaceChildren(); content.textContent = "Загрузка диагностики…";
+      const face = entry.face, match = entry.match, index = face?.face_index;
+      const hasFace = Number.isInteger(index);
+      const wasRematched = [capture.match, ...(Array.isArray(capture.matches) ? capture.matches : [])]
+        .some(result => result?.sface_input_origin === "rematch_unavailable");
+      const canUseAligned = hasFace && !wasRematched;
+      const cropPromise = hasFace ? modalImage(modalImagePaths(capture, "face", index), session) : Promise.resolve(null);
+      const beforePromise = canUseAligned ? modalImage(modalImagePaths(capture, "aligned", index), session) : Promise.resolve(null);
+      const sfacePromise = canUseAligned ? modalImage(modalImagePaths(capture, "sface", index), session) : Promise.resolve(null);
+      const refPaths = [];
+      if (match?.person_id && match.sface_sample_id) refPaths.push(`faces/debug/persons/${encodeURIComponent(match.person_id)}/faces/${encodeURIComponent(match.sface_sample_id)}/image`);
+      const [crop, before, sface, reference] = await Promise.all([cropPromise, beforePromise, sfacePromise, modalImage(refPaths, session)]);
+      if (hasFace && !modalLandmarkCache.has(index)) modalLandmarkCache.set(index, modalLandmarks(crop, face, session));
+      const marked = hasFace ? await modalLandmarkCache.get(index) : null;
+      if (session !== modalSession || revision !== modalRender) return;
+      const heading = document.createElement("div"); heading.className = "modal-strip-head";
+      const label = document.createElement("strong"); label.textContent = hasFace ? `Изображения лица ${index + 1}` : "Результат без привязки к сохранённому лицу";
+      const hint = document.createElement("span"); hint.textContent = "Нажмите на изображение, чтобы увеличить"; heading.append(label, hint);
+      const strip = document.createElement("div"); strip.className = "modal-strip";
+      const box = face?.bbox || {};
+      const illumination = {applied:"Компенсация применена", disabled:"Компенсация выключена", not_applied:"Компенсация не применена"};
+      strip.append(
+        modalTile("01  Исходный кроп", crop, hasFace ? `${box.width ?? "—"} × ${box.height ?? "—"} px` : "Лицо не сопоставлено", `face-${(index ?? 0) + 1}.jpg`),
+        modalTile("02  Ориентиры YuNet", marked, "Исходная рамка и 5 ориентиров", `yunet-${(index ?? 0) + 1}.png`),
+        modalTile("03  До компенсации", before, "После выравнивания", `face-before-${(index ?? 0) + 1}.jpg`),
+        modalTile("04  Вход SFace", sface, illumination[match?.illumination_status] || "Состояние неизвестно", `face-sface-${(index ?? 0) + 1}.jpg`),
+        modalTile("05  Эталон", reference, reference ? (match?.person_name || "Образец") : "Эталон недоступен", `face-reference-${(index ?? 0) + 1}.jpg`),
+      );
+      const stats = document.createElement("div"); stats.className = "modal-stats";
+      const score = face?.score ?? match?.yunet_score;
+      stats.append(modalStat("Детекция лица", formatNumber(score, 3), `Порог ${formatNumber(match?.yunet_score_threshold ?? capture.yunet_score_threshold, 3)} · рамка ${box.width ?? "—"} × ${box.height ?? "—"} px`));
+      stats.append(modalStat("Сравнение с галереей", formatPercent(match?.sface_best_similarity ?? match?.similarity), `${MATCH_STATE_LABELS[match?.state] || (match ? match.state || "Нет результата" : "Результат недоступен")} · порог ${formatNumber(match?.sface_threshold, 3)} · ${match?.person_name || "персона не определена"}`));
+      const details = document.createElement("details"); details.className = "modal-details";
+      const summary = document.createElement("summary"); summary.textContent = "Технические подробности · YuNet, SFace, параметры кадра";
+      const diag = document.createElement("div"); diag.className = "modal-diag";
+      const src = match || {};
+      diag.append(
+        modalDiagnosticGroup("YuNet — детекция лица", [["Порог score", formatNumber(src.yunet_score_threshold ?? capture.yunet_score_threshold, 3)], ["Лиц найдено", capture.faces_detected ?? "—"], ["Score лица", formatNumber(score, 3)], ["BBox X", box.x], ["BBox Y", box.y], ["BBox W", box.width], ["BBox H", box.height]]),
+        modalDiagnosticGroup("SFace — сравнение с галереей", [["Состояние", MATCH_STATE_LABELS[src.state] || src.state || "Нет результата"], ["Лучшее сходство", formatPercent(src.sface_best_similarity ?? src.similarity)], ["Порог сходства", formatNumber(src.sface_threshold, 3)], ["Лучший другой человек", src.sface_other_person], ["Его сходство", formatPercent(src.sface_second_best_similarity)], ["Отрыв", formatNumber(src.sface_similarity_gap, 3)], ["Минимальный отрыв", formatNumber(src.sface_min_gap, 3)], ["Образец", Number.isInteger(src.sface_sample_index) ? `${src.sface_sample_index + 1} из ${src.sface_samples_total ?? "?"}` : "—"], ["Инференс match", src.match_inference_ms == null ? "—" : `${src.match_inference_ms} ms`], ["Компенсация", illumination[src.illumination_status] || "—"]]),
+        modalDiagnosticGroup("Кадр", [["Камера", capture.source_id], ["Время", formatTime(capture.occurred_at)], ["Инференс кадра", capture.inference_ms == null ? "—" : `${capture.inference_ms} ms`], ["Capture ID", capture.capture_id], ["Обработано лиц", capture.faces_processed], ["Ошибок", capture.faces_failed], ["Лимит", capture.faces_limit]]),
+      );
+      details.append(summary, diag); content.replaceChildren(heading, strip, stats, details);
+    }
+    function openMatchModal(capture) {
+      ++modalSession; ++modalRender; revokeModalUrls(); closeModalZoom();
+      const session = modalSession;
+      const entries = modalFaceEntries(capture);
+      const tabs = $("modal-tabs"); tabs.replaceChildren();
+      $("modal-title").textContent = `Диагностика кадра · ${Array.isArray(capture.faces) ? capture.faces.length : 0} лиц`;
+      const meta = $("modal-frame-meta"); meta.replaceChildren();
+      for (const value of [`Камера: ${capture.source_id || "—"}`, `Время: ${formatTime(capture.occurred_at)}`, `Инференс: ${capture.inference_ms == null ? "—" : capture.inference_ms + " ms"}`, `ID: ${capture.capture_id || "—"}`]) {
+        const span = document.createElement("span"); span.textContent = value; meta.append(span);
       }
-      title.textContent = match && match.person_name ? `Лицо персоны «${match.person_name}»` : "Совпадение лица";
-
-      const faces = Array.isArray(capture.faces) ? capture.faces : [];
-      const matchedFaceIndex = match && Number.isInteger(match.face_index)
-        ? match.face_index : (match && !("face_index" in match) ? 0 : null);
-      // Кадр может прийти и с вкладки «Кадры», которой нет в буфере совпадений,
-      // поэтому перебираем оба хранилища: сначала кроп, затем полный кадр.
-      const imageCandidates = [];
-      if (faces.length && matchedFaceIndex !== null) {
-        imageCandidates.push(`faces/debug/matches/${capture.capture_id}/image?kind=face&face_index=${matchedFaceIndex}`);
-        imageCandidates.push(`faces/debug/captures/${capture.capture_id}/image?kind=face&face_index=${matchedFaceIndex}`);
+      $("match-modal").classList.add("shown");
+      const requested = capture.match;
+      let selected = entries.findIndex(e => requested && (e.match === requested || (Number.isInteger(requested.face_index) && e.face?.face_index === requested.face_index)));
+      if (selected < 0) selected = 0;
+      const buttons = [];
+      function select(i) {
+        buttons.forEach((button, j) => { button.setAttribute("aria-selected", String(i === j)); button.tabIndex = i === j ? 0 : -1; });
+        renderModalFace(capture, entries[i], session);
       }
-      imageCandidates.push(`faces/debug/matches/${capture.capture_id}/image?kind=frame`);
-      imageCandidates.push(`faces/debug/captures/${capture.capture_id}/image?kind=frame`);
-      let faceUrl = null;
-      let faceFromCrop = false;
-      for (const candidate of imageCandidates) {
-        try {
-          faceUrl = await apiImage(candidate);
-          modalUrls.push(faceUrl);
-          faceFromCrop = candidate.includes("kind=face");
-          break;
-        } catch (_) {
-          faceUrl = null;
+      entries.forEach((entry, i) => {
+        const button = document.createElement("button"); button.type = "button"; button.className = "modal-tab"; button.setAttribute("role", "tab");
+        if (entry.face) {
+          const img = document.createElement("img"); img.alt = ""; button.append(img);
+          modalImage(modalImagePaths(capture, "face", entry.face.face_index), session).then(url => { if (url && session === modalSession) img.src = url; });
         }
-      }
-
-      pair.append(...[
-        (() => {
-          const card = document.createElement("div");
-          card.className = "face-card";
-          const label = document.createElement("div");
-          label.className = "label";
-          label.textContent = "Исходный кроп";
-          card.append(label);
-          if (faceUrl) {
-            const img = document.createElement("img");
-            img.src = faceUrl;
-            img.alt = "Найденное лицо на кадре";
-            card.append(img);
-          } else {
-            const note = document.createElement("div");
-            note.className = "note";
-            note.textContent = "Кроп лица недоступен";
-            card.append(note);
-          }
-          const note = document.createElement("div");
-          note.className = "note";
-          note.textContent = faceUrl && !faceFromCrop
-            ? "кроп недоступен, показан полный кадр"
-            : (faces.length && matchedFaceIndex !== null
-              ? `лицо №${matchedFaceIndex + 1} из ${faces.length}`
-              : "кадр без обнаруженных лиц");
-          card.append(note);
-          return card;
-        })(),
-      ]);
-
-      if (match) {
-        const card = document.createElement("div");
-        card.className = "face-card";
-        const label = document.createElement("div");
-        label.className = "label";
-        label.textContent = "Вход SFace (выровненное лицо)";
-        card.append(label);
-        let loaded = false;
-        if (matchedFaceIndex !== null && match.sface_input_origin !== "rematch_unavailable") {
-          for (const source of ["matches", "captures"]) {
-            try {
-              const url = await apiImage(`faces/debug/${source}/${capture.capture_id}/image?kind=sface&face_index=${matchedFaceIndex}`);
-              modalUrls.push(url);
-              const img = document.createElement("img");
-              img.src = url;
-              img.alt = "Выровненное лицо, использованное для SFace";
-              card.append(img);
-              loaded = true;
-              break;
-            } catch (_) { /* Old captures may have no saved SFace input. */ }
-          }
-        }
-        const note = document.createElement("div");
-        note.className = "note";
-        const labels = {
-          applied: "Компенсация применена",
-          disabled: "Компенсация выключена",
-          not_applied: "Компенсация не применена: порог не достигнут или произошла ошибка обработки",
-        };
-        note.textContent = loaded
-          ? `${labels[match.illumination_status] || "Состояние компенсации неизвестно"}; сохранена JPEG-копия входа.`
-          : (match.sface_input_origin === "rematch_unavailable"
-            ? "После повторного сравнения изображение входа не сохранено."
-            : "Изображение входа недоступно для этой записи.");
-        card.append(note);
-        pair.append(card);
-      }
-
-      if (match && match.person_id) {
-        const card = document.createElement("div");
-        card.className = "face-card";
-        const label = document.createElement("div");
-        label.className = "label";
-        label.textContent = "Эталон из галереи";
-        card.append(label);
-        let refLoaded = false;
-        if (match.sface_sample_id) {
-          try {
-            const sampleUrl = await apiImage(
-              `faces/debug/persons/${encodeURIComponent(match.person_id)}/faces/${encodeURIComponent(match.sface_sample_id)}/image`
-            );
-            modalUrls.push(sampleUrl);
-            const img = document.createElement("img");
-            img.src = sampleUrl;
-            img.alt = "Эталонное лицо, по которому найдено совпадение";
-            img.dataset.sampleId = match.sface_sample_id;
-            card.append(img);
-            refLoaded = true;
-          } catch (_) {
-            refLoaded = false;
-          }
-        }
-        if (!refLoaded) {
-          try {
-            const refUrl = await apiImage(`faces/debug/persons/${encodeURIComponent(match.person_id)}/face`);
-            modalUrls.push(refUrl);
-            const img = document.createElement("img");
-            img.src = refUrl;
-            img.alt = "Эталонное лицо персоны";
-            card.append(img);
-            refLoaded = true;
-          } catch (error) {
-            const note = document.createElement("div");
-            note.className = "note";
-            note.textContent = `Эталон недоступен: ${String(error.message)}`;
-            card.append(note);
-          }
-        }
-        const note = document.createElement("div");
-        note.className = "note";
-        const sampleLabel = Number.isInteger(match.sface_sample_index) && match.sface_samples_total
-          ? ` · образец ${match.sface_sample_index + 1} из ${match.sface_samples_total}`
-          : "";
-        note.textContent = `образец персоны «${String(match.person_name ?? "—")}»${sampleLabel}`;
-        card.append(note);
-        pair.append(card);
-      } else if (!match) {
-        empty.hidden = false;
-        empty.textContent = "На этом кадре совпадений не зафиксировано.";
-      }
-
-      pair.hidden = false;
-      renderMatchDiagnostics(diagnostics, capture, match);
-      if (match && match.state === "ambiguous") {
-        const note = document.createElement("div");
-        note.className = "note";
-        note.textContent =
-          `Отрыв от следующего человека меньше минимального: ` +
-          `${formatNumber(match.sface_similarity_gap, 3)} < ${formatNumber(match.sface_min_gap, 3)}. ` +
-          `Уменьшите «Минимальный отрыв» в настройках App, если это один и тот же человек.`;
-        pair.append(note);
-      }
+        const text = document.createElement("span");
+        text.textContent = entry.face ? `Лицо ${entry.face.face_index + 1}` : "Без привязки";
+        const status = document.createElement("small"); status.textContent = MATCH_STATE_LABELS[entry.match?.state] || entry.match?.state || "Нет результата";
+        text.append(status); button.append(text); button.addEventListener("click", () => select(i));
+        button.addEventListener("keydown", event => {
+          if (event.key !== "ArrowRight" && event.key !== "ArrowLeft") return;
+          event.preventDefault(); const next = (i + (event.key === "ArrowRight" ? 1 : -1) + entries.length) % entries.length; select(next); buttons[next].focus();
+        });
+        tabs.append(button); buttons.push(button);
+      });
+      select(selected);
     }
 
     async function openPersonFacesModal(person) {
@@ -980,6 +900,7 @@
     function closeMatchModal() {
       const overlay = $("match-modal");
       overlay.classList.remove("shown");
+      ++modalSession; ++modalRender; closeModalZoom();
       revokeModalUrls();
     }
 
@@ -997,12 +918,12 @@
       $("confirm-enrollment").checked = false;
       updateEnrollButton();
       setStatus("enroll-status", "Проверьте лицо и выберите человека перед добавлением.");
-      document.querySelectorAll(".capture").forEach((card) => {
+      document.querySelectorAll("#enroll-captures-grid .capture").forEach((card) => {
         card.classList.toggle("selected", card.dataset.captureId === capture.capture_id);
       });
       document.querySelectorAll(".crop").forEach((button) => button.classList.remove("selected"));
       if (cropImageUrl) {
-        const buttons = [...document.querySelectorAll(".capture")]
+        const buttons = [...document.querySelectorAll("#enroll-captures-grid .capture")]
           .find((card) => card.dataset.captureId === capture.capture_id)
           ?.querySelectorAll(".crop");
         buttons?.[face.face_index]?.classList.add("selected");
@@ -1365,6 +1286,9 @@
     $("person-select").addEventListener("change", updateEnrollButton);
     $("confirm-enrollment").addEventListener("change", updateEnrollButton);
     $("modal-close").addEventListener("click", closeMatchModal);
+    $("modal-footer-close").addEventListener("click", closeMatchModal);
+    $("modal-zoom-close").addEventListener("click", closeModalZoom);
+    $("modal-zoom").addEventListener("click", event => { if (event.target === $("modal-zoom")) closeModalZoom(); });
     $("match-modal").addEventListener("click", (event) => {
       if (event.target === $("match-modal")) closeMatchModal();
     });
@@ -1373,7 +1297,7 @@
       if (event.target === $("person-faces-modal")) closePersonFacesModal();
     });
     window.addEventListener("keydown", (event) => {
-      if (event.key === "Escape") closeMatchModal();
+      if (event.key === "Escape") { if (!$("modal-zoom").hidden) closeModalZoom(); else closeMatchModal(); }
     });
     // Автообновление: чекбоксы
     const cbCap = $("autorefresh-captures");

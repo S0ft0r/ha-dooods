@@ -394,9 +394,25 @@
       return url.toString();
     }
 
+    let csrfPromise = null;
+    async function getCsrfToken() {
+      if (!csrfPromise) {
+        csrfPromise = fetch(apiUrl("ingress/csrf"), { cache: "no-store", credentials: "same-origin" })
+          .then(async response => {
+            if (!response.ok) throw new Error("Не удалось подтвердить защищённый доступ Ingress");
+            const data = await response.json();
+            if (typeof data.token !== "string") throw new Error("Некорректный ответ защиты Ingress");
+            return data.token;
+          }).catch(error => { csrfPromise = null; throw error; });
+      }
+      return csrfPromise;
+    }
+
     async function apiRequest(path, options = {}) {
       const headers = new Headers(options.headers || {});
-      const requestOptions = { ...options, headers };
+      const method = String(options.method || "GET").toUpperCase();
+      if (!["GET", "HEAD", "OPTIONS"].includes(method)) headers.set("X-DOODS-CSRF", await getCsrfToken());
+      const requestOptions = { ...options, headers, credentials: "same-origin" };
       if (Object.prototype.hasOwnProperty.call(options, "json")) {
         headers.set("Content-Type", "application/json");
         requestOptions.body = JSON.stringify(options.json);
@@ -409,6 +425,7 @@
         try { payload = JSON.parse(raw); } catch (_) { payload = raw; }
       }
       if (!response.ok) {
+        if (response.status === 403) csrfPromise = null;
         const detail = payload && typeof payload === "object" ? payload.detail : payload;
         throw new Error(detail || `HTTP ${response.status}`);
       }

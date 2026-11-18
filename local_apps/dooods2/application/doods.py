@@ -4,6 +4,7 @@ import numpy as np
 import cv2
 import odrpc
 import time
+import threading
 
 from detectors.tensorflow import Tensorflow
 from detectors.tflite import TensorflowLite
@@ -101,6 +102,7 @@ class Doods:
 
         # Initialize the detectors
         self._detectors = {}
+        self._detector_locks = {}
         for detector_config in self.config.detectors:
             detector_class = detectors.get(detector_config.type, MissingDetector)
             try:
@@ -110,6 +112,7 @@ class Doods:
                 continue
             logger.info('Registered detector type:%s name:%s', detector.config.type, detector.config.name)
             self._detectors[detector_config.name] = detector
+            self._detector_locks[detector_config.name] = threading.Lock()
 
     # Get the detectors configs
     def detectors(self):
@@ -186,7 +189,10 @@ class Doods:
 
         # Run detection
         start = time.perf_counter()
-        ret = detector.detect(image)
+        # All HTTP and stream callers share the same model instance.
+        # Some detector backends do not support concurrent inference.
+        with self._detector_locks[detect.detector_name]:
+            ret = detector.detect(image)
         if ret.error:
             return ret
         # Detection duration in milliseconds.
