@@ -500,7 +500,7 @@ class API():
             supplied_key = websocket.headers.get("doods-auth-key")
             if api_key_matches(self.auth_key, supplied_key):
                 return True
-            await websocket.close(code=1008, reason="Invalid API key")
+            await websocket.close(code=1008)
             return False
 
         # Enable metrics
@@ -1833,10 +1833,7 @@ class API():
             if not await authorize_websocket(websocket):
                 return
             if not self.auth_key:
-                await websocket.close(
-                    code=1008,
-                    reason="API authentication is required for RTSP motion streaming.",
-                )
+                await websocket.close(code=1008)
                 return
 
             await websocket.accept()
