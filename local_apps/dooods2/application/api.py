@@ -186,6 +186,10 @@ class API():
         self._csrf_secret = secrets.token_bytes(32)
         self._ingress_checks = asyncio.Semaphore(4)
         self._http_detection_slots = asyncio.Semaphore(2)
+        self._detect_websocket_connections = asyncio.Semaphore(16)
+        self._stream_websocket_connections = asyncio.Semaphore(8)
+        self._motion_websocket_connections = asyncio.Semaphore(32)
+        self._motion_worker_slots = threading.BoundedSemaphore(32)
 
         async def run_http_detection(detect_request):
             # Admission is bounded. Once started, cancellation does not release
@@ -514,7 +518,8 @@ class API():
 
         async def authorize_websocket(websocket: WebSocket) -> bool:
             if not self.auth_key:
-                return True
+                await websocket.close(code=1008)
+                return False
             supplied_key = websocket.headers.get("doods-auth-key")
             if api_key_matches(self.auth_key, supplied_key):
                 return True
@@ -1702,10 +1707,7 @@ class API():
                 detect_response.image = base64.b64encode(detect_response.image)
             return detect_response
         
-        @self.api.websocket("/detect")
-        async def detect_stream(websocket: WebSocket):
-            if not await authorize_websocket(websocket):
-                return
+        async def detect_stream_session(websocket: WebSocket):
             await websocket.accept()
             pending = set()
             send_lock = asyncio.Lock()
@@ -1766,6 +1768,21 @@ class API():
                 if pending:
                     await asyncio.gather(*tuple(pending), return_exceptions=True)
 
+        @self.api.websocket("/detect")
+        async def detect_stream(websocket: WebSocket):
+            if not await authorize_websocket(websocket):
+                return
+            # This runs on one event loop. An uncontended acquire cannot yield,
+            # so the locked check and reservation are atomic between tasks.
+            if self._detect_websocket_connections.locked():
+                await websocket.close(code=1013)
+                return
+            await self._detect_websocket_connections.acquire()
+            try:
+                await detect_stream_session(websocket)
+            finally:
+                self._detect_websocket_connections.release()
+
         @self.api.post("/image")
         async def image(detect_request: odrpc.DetectRequest, response: Response):
             # logger.info('image request: %s', detect_request)
@@ -1781,8 +1798,8 @@ class API():
                 return Response(status_code=status.HTTP_400_BAD_REQUEST, content=detect_response.error)
             return Response(content=detect_response.image, media_type="image/jpeg")
 
-        async def open_http_stream(detect_request: odrpc.DetectRequest):
-            """Wait for the first frame before committing an HTTP success status."""
+        async def open_http_stream(detect_request: odrpc.DetectRequest, request: Request):
+            """Wait for the first frame or disconnect before committing a status."""
             if detect_request.profile_id and not profiles_enabled():
                 raise HTTPException(
                     status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -1791,16 +1808,42 @@ class API():
             detect_request.image = ".jpg"
             handler = Streamer(self.doods)
             frames = handler.mjpeg_streamer(detect_request)
+            async def wait_for_disconnect():
+                while True:
+                    message = await request.receive()
+                    if message["type"] == "http.disconnect":
+                        return
+
+            frame_task = asyncio.create_task(frames.__anext__())
+            disconnect_task = asyncio.create_task(wait_for_disconnect())
+            first = None
             try:
-                first = await asyncio.wait_for(frames.__anext__(), timeout=_STREAM_FIRST_FRAME_TIMEOUT)
-            except asyncio.TimeoutError:
-                raise HTTPException(status_code=504, detail="Stream did not produce a frame in time.") from None
+                done, _ = await asyncio.wait(
+                    {frame_task, disconnect_task},
+                    timeout=_STREAM_FIRST_FRAME_TIMEOUT,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                if disconnect_task in done:
+                    disconnect_task.result()
+                    raise HTTPException(status_code=499, detail="Client disconnected.")
+                if frame_task not in done:
+                    raise HTTPException(status_code=504, detail="Stream did not produce a frame in time.")
+                first = frame_task.result()
             except StopAsyncIteration:
                 raise HTTPException(status_code=503, detail="Stream capacity unavailable or stream ended.") from None
+            except HTTPException:
+                raise
             except Exception:
                 # Native exceptions can contain a source URL and credentials.
                 self.logger.warning("Could not start camera stream")
                 raise HTTPException(status_code=502, detail="Could not start camera stream.") from None
+            finally:
+                for task in (frame_task, disconnect_task):
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(frame_task, disconnect_task, return_exceptions=True)
+                if first is None:
+                    await frames.aclose()
 
             async def body():
                 try:
@@ -1817,19 +1860,16 @@ class API():
             )
 
         @self.api.get("/stream")
-        async def stream(detect_request: str = '{}'):
+        async def stream(request: Request, detect_request: str = '{}'):
             detect_request_dict = json.loads(detect_request)
-            return await open_http_stream(odrpc.DetectRequest(**detect_request_dict))
+            return await open_http_stream(odrpc.DetectRequest(**detect_request_dict), request)
 
         @self.api.post("/stream")
-        async def stream_from_body(detect_request: odrpc.DetectRequest):
+        async def stream_from_body(detect_request: odrpc.DetectRequest, request: Request):
             """Start the browser stream without exposing its source in the URL."""
-            return await open_http_stream(detect_request)
+            return await open_http_stream(detect_request, request)
 
-        @self.api.websocket("/stream")
-        async def websocket_stream(websocket: WebSocket):
-            if not await authorize_websocket(websocket):
-                return
+        async def websocket_stream_session(websocket: WebSocket):
             await websocket.accept()
             streamer = None
             stream_handler = None
@@ -1893,15 +1933,21 @@ class API():
                             stream_read.exception()
                         await asyncio.to_thread(streamer.close)
 
-        @self.api.websocket("/motion/stream")
-        async def motion_stream(websocket: WebSocket):
-            """Постоянно читать RTSP и передавать HA только кадры-кандидаты."""
+        @self.api.websocket("/stream")
+        async def websocket_stream(websocket: WebSocket):
             if not await authorize_websocket(websocket):
                 return
-            if not self.auth_key:
-                await websocket.close(code=1008)
+            if self._stream_websocket_connections.locked():
+                await websocket.close(code=1013)
                 return
+            await self._stream_websocket_connections.acquire()
+            try:
+                await websocket_stream_session(websocket)
+            finally:
+                self._stream_websocket_connections.release()
 
+        async def motion_stream_session(websocket: WebSocket):
+            """Постоянно читать RTSP и передавать HA только кадры-кандидаты."""
             await websocket.accept()
             source_id = "unknown"
             stop_event = threading.Event()
@@ -1989,14 +2035,22 @@ class API():
                 except RuntimeError:
                     stop_event.set()
 
-            worker = MotionStreamWorker(
-                request,
-                gate,
-                stop_event,
-                publish,
-                face_analyzer=self.face_analyzer,
-                artifact_diagnostics=getattr(self.config, "rtsp_artifact_diagnostics", False),
-            )
+            if not self._motion_worker_slots.acquire(blocking=False):
+                await websocket.send_json({"type": "error", "error": "motion_stream_capacity"})
+                await websocket.close(code=1013)
+                return
+            try:
+                worker = MotionStreamWorker(
+                    request,
+                    gate,
+                    stop_event,
+                    publish,
+                    face_analyzer=self.face_analyzer,
+                    artifact_diagnostics=getattr(self.config, "rtsp_artifact_diagnostics", False),
+                )
+            except BaseException:
+                self._motion_worker_slots.release()
+                raise
 
             def run_worker() -> None:
                 try:
@@ -2013,13 +2067,19 @@ class API():
                             "state": "error",
                         }
                     )
+                finally:
+                    self._motion_worker_slots.release()
 
             worker_thread = threading.Thread(
                 target=run_worker,
                 name=f"doods-rtsp-motion-{source_id[:32]}",
                 daemon=True,
             )
-            worker_thread.start()
+            try:
+                worker_thread.start()
+            except BaseException:
+                self._motion_worker_slots.release()
+                raise
             receive_task = asyncio.create_task(websocket.receive())
             event_task = None
 
@@ -2062,6 +2122,22 @@ class API():
                     await asyncio.gather(receive_task, return_exceptions=True)
                 if worker_thread is not None:
                     await asyncio.to_thread(worker_thread.join, 6.0)
+
+        @self.api.websocket("/motion/stream")
+        async def motion_stream(websocket: WebSocket):
+            if not await authorize_websocket(websocket):
+                return
+            if not self.auth_key:
+                await websocket.close(code=1008)
+                return
+            if self._motion_websocket_connections.locked():
+                await websocket.close(code=1013)
+                return
+            await self._motion_websocket_connections.acquire()
+            try:
+                await motion_stream_session(websocket)
+            finally:
+                self._motion_websocket_connections.release()
 
         @self.api.get("/memory")
         async def memory():

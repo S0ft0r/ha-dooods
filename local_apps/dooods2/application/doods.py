@@ -165,11 +165,14 @@ class Doods:
         # If it's a url, use cv2 to read an image or frame.
         elif detect.data.startswith("http") or detect.data.startswith("rtsp") or detect.data.startswith("ftp"):
             cap = cv2.VideoCapture(detect.data)
-            if cap.isOpened():
-                _, image = cap.read()
+            try:
+                if not cap.isOpened():
+                    return odrpc.DetectResponse(id=detect.id, error="Unable to open image source")
+                ok, image = cap.read()
+                if not ok or image is None:
+                    return odrpc.DetectResponse(id=detect.id, error="Unable to read image source")
+            finally:
                 cap.release()
-            else:
-                raise 'No Image'
         
         # Should be base64 encoded image
         else:
