@@ -1296,6 +1296,8 @@ class DooodsCoordinator(DataUpdateCoordinator[dict[str, CameraScanResult]]):
         periodic: bool = False,
     ) -> None:
         """Добавить выбранные камеры в очередь и поручить координатору объединить запросы обновления."""
+        if self._is_shutting_down:
+            return
         camera_ids = set(camera_entity_ids).intersection(self.cameras)
         if full_scan:
             camera_ids = set(self.cameras)
@@ -1552,7 +1554,9 @@ class DooodsCoordinator(DataUpdateCoordinator[dict[str, CameraScanResult]]):
     @override
     def _async_refresh_finished(self) -> None:
         """Запланировать повторное сканирование, если движение обнаружено во время текущей проверки."""
-        if not self._pending_camera_scans and not self._force_full_scan:
+        if self._is_shutting_down or (
+            not self._pending_camera_scans and not self._force_full_scan
+        ):
             return
         self._config_entry.async_create_background_task(
             self.hass,
