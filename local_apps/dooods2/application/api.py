@@ -4,6 +4,7 @@ import json
 import base64
 import copy
 from collections import deque
+from functools import wraps
 import logging
 import asyncio
 import math
@@ -249,6 +250,7 @@ class API():
         self._motion_worker_slots = threading.BoundedSemaphore(32)
         self._rematch_slot = asyncio.Semaphore(1)
         self._face_camera_settings_slot = asyncio.Semaphore(1)
+        self._profile_operation_slot = asyncio.Semaphore(1)
         self._rematch_task = None
 
         async def run_http_detection(detect_request):
@@ -276,6 +278,32 @@ class API():
 
             task.add_done_callback(detection_finished)
             return await asyncio.shield(task)
+
+        def serialize_profile_operation(handler):
+            # Keep the complete multi-store operation ordered even if the
+            # requesting client disconnects while a disk worker is running.
+            @wraps(handler)
+            async def wrapped(*args, **kwargs):
+                try:
+                    async with asyncio.timeout(5.0):
+                        await self._profile_operation_slot.acquire()
+                except TimeoutError:
+                    raise HTTPException(status_code=503, detail="Profile storage busy; retry later.") from None
+                try:
+                    task = asyncio.create_task(handler(*args, **kwargs))
+                except BaseException:
+                    self._profile_operation_slot.release()
+                    raise
+
+                def finished(completed):
+                    self._profile_operation_slot.release()
+                    if not completed.cancelled():
+                        completed.exception()
+
+                task.add_done_callback(finished)
+                return await asyncio.shield(task)
+
+            return wrapped
 
         async def supervisor_is_supported():
             """Check every Ingress request; an unavailable Supervisor fails closed."""
@@ -652,6 +680,7 @@ class API():
             return profile.as_dict()
 
         @self.api.get("/profiles/{profile_id}/preview-source")
+        @serialize_profile_operation
         async def get_profile_preview_source(profile_id: str, response: Response):
             """Получить только непрозрачный источник preview, связанный с профилем."""
             response.headers["Cache-Control"] = "no-store"
@@ -680,6 +709,7 @@ class API():
             return {"source_id": source_id}
 
         @self.api.put("/profiles/{profile_id}/preview-source")
+        @serialize_profile_operation
         async def put_profile_preview_source(
             profile_id: str,
             source_data: dict,
@@ -726,6 +756,7 @@ class API():
             "/profiles/{profile_id}/preview-source",
             status_code=status.HTTP_204_NO_CONTENT,
         )
+        @serialize_profile_operation
         async def delete_profile_preview_source(profile_id: str):
             """Убрать связь источника; сам профиль и временные кадры не меняются."""
             require_profiles_enabled()
@@ -756,6 +787,7 @@ class API():
             )
 
         @self.api.put("/profiles/{profile_id}")
+        @serialize_profile_operation
         async def put_profile(profile_id: str, profile_data: dict):
             """Создать или полностью заменить профиль зон."""
             require_profiles_enabled()
@@ -779,6 +811,7 @@ class API():
             return profile.as_dict()
 
         @self.api.delete("/profiles/{profile_id}", status_code=status.HTTP_204_NO_CONTENT)
+        @serialize_profile_operation
         async def delete_profile(profile_id: str):
             """Удалить профиль; повторное удаление вернёт 404."""
             require_profiles_enabled()
