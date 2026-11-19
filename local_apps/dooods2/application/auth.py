@@ -49,7 +49,7 @@ def check_supervisor_version(token: str) -> bool:
             return False
         info = envelope.get("data")
         return isinstance(info, dict) and supervisor_version_supported(info.get("supervisor"))
-    except (OSError, ValueError, http.client.HTTPException, UnicodeError):
+    except (OSError, ValueError, RecursionError, http.client.HTTPException, UnicodeError):
         return False
     finally:
         if connection is not None:

@@ -27,6 +27,7 @@ from streamer import Streamer
 from motion_gate import MotionGate
 from motion_stream import MotionStreamWorker
 from capabilities import capabilities_payload
+from cooperative_json import loads as cooperative_json_loads, dumps as cooperative_json_dumps
 from auth import (
     api_key_matches,
     check_supervisor_version,
@@ -251,6 +252,11 @@ class API():
         self._rematch_slot = asyncio.Semaphore(1)
         self._face_camera_settings_slot = asyncio.Semaphore(1)
         self._profile_operation_slot = asyncio.Semaphore(1)
+        self._face_backup_operation_slot = asyncio.Semaphore(1)
+        self._face_gallery_operation_slot = asyncio.Semaphore(1)
+        self._face_debug_operation_slot = asyncio.Semaphore(1)
+        self._face_inference_operation_slot = asyncio.Semaphore(1)
+        self._memory_snapshot_slot = asyncio.Semaphore(1)
         self._rematch_task = None
 
         async def run_http_detection(detect_request):
@@ -279,6 +285,43 @@ class API():
             task.add_done_callback(detection_finished)
             return await asyncio.shield(task)
 
+        async def run_storage_operation(slot, label, function, *args, **kwargs):
+            # Lock waiters remain outside the shared thread pool. A cancelled
+            # request keeps its slot until its actual disk work has returned.
+            try:
+                async with asyncio.timeout(5.0):
+                    await slot.acquire()
+            except TimeoutError:
+                raise HTTPException(status_code=503, detail=f"{label} busy; retry later.") from None
+            try:
+                task = asyncio.create_task(asyncio.to_thread(function, *args, **kwargs))
+            except BaseException:
+                slot.release()
+                raise
+
+            def finished(completed):
+                slot.release()
+                if not completed.cancelled():
+                    completed.exception()
+
+            task.add_done_callback(finished)
+            return await asyncio.shield(task)
+
+        async def run_gallery_operation(function, *args, **kwargs):
+            return await run_storage_operation(
+                self._face_gallery_operation_slot, "Face gallery", function, *args, **kwargs
+            )
+
+        async def run_debug_operation(function, *args, **kwargs):
+            return await run_storage_operation(
+                self._face_debug_operation_slot, "Face diagnostics", function, *args, **kwargs
+            )
+
+        async def run_face_inference(function, *args, **kwargs):
+            return await run_storage_operation(
+                self._face_inference_operation_slot, "Face inference", function, *args, **kwargs
+            )
+
         def serialize_profile_operation(handler):
             # Keep the complete multi-store operation ordered even if the
             # requesting client disconnects while a disk worker is running.
@@ -305,6 +348,31 @@ class API():
 
             return wrapped
 
+        def serialize_face_backup_operation(handler):
+            """Bound backup parsing, serialization and restore I/O per process."""
+            @wraps(handler)
+            async def wrapped(*args, **kwargs):
+                try:
+                    async with asyncio.timeout(5.0):
+                        await self._face_backup_operation_slot.acquire()
+                except TimeoutError:
+                    raise HTTPException(status_code=503, detail="Face backup is busy; retry later.") from None
+                try:
+                    task = asyncio.create_task(handler(*args, **kwargs))
+                except BaseException:
+                    self._face_backup_operation_slot.release()
+                    raise
+
+                def finished(completed):
+                    self._face_backup_operation_slot.release()
+                    if not completed.cancelled():
+                        completed.exception()
+
+                task.add_done_callback(finished)
+                return await asyncio.shield(task)
+
+            return wrapped
+
         async def supervisor_is_supported():
             """Check every Ingress request; an unavailable Supervisor fails closed."""
             token = os.environ.get("SUPERVISOR_TOKEN", "")
@@ -322,9 +390,15 @@ class API():
                         raise
                     # A timed-out thread keeps running. Hold the slot until it
                     # actually finishes, rather than allowing unbounded work.
-                    task.add_done_callback(lambda _: self._ingress_checks.release())
+                    def ingress_check_done(completed):
+                        self._ingress_checks.release()
+                        if not completed.cancelled():
+                            completed.exception()
+
+                    task.add_done_callback(ingress_check_done)
                     return await asyncio.shield(task)
-            except (TimeoutError, OSError):
+            except Exception:
+                # Unknown or malformed Supervisor responses never grant access.
                 return False
 
         async def cleanup_preview_frames():
@@ -470,13 +544,15 @@ class API():
                     )
             body = bytearray()
             async for chunk in request.stream():
-                body.extend(chunk)
-                if len(body) > max_bytes:
+                if len(chunk) > max_bytes - len(body):
                     raise HTTPException(
                         status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
                         detail="JSON request exceeds the configured size limit.",
                     )
+                body.extend(chunk)
             try:
+                if max_bytes > _MAX_FACE_JSON_REQUEST_BYTES:
+                    return await cooperative_json_loads(body)
                 return json.loads(body.decode("utf-8"))
             except (UnicodeDecodeError, ValueError, RecursionError) as err:
                 raise HTTPException(
@@ -573,7 +649,7 @@ class API():
                             headers={"Cache-Control": "no-store"},
                         )
                 if is_face_page and not self.face_diagnostics_enabled and request.method in {"GET", "HEAD"}:
-                    page = await asyncio.to_thread(self._face_summary_html)
+                    page = await run_gallery_operation(self._face_summary_html)
                     return HTMLResponse(
                         content=page,
                         headers={
@@ -662,12 +738,14 @@ class API():
             return {"status": "ok"}
 
         @self.api.get("/profiles")
+        @serialize_profile_operation
         async def list_profiles():
             """Получить упорядоченные по ID профили для редактора."""
             require_profiles_enabled()
             return await asyncio.to_thread(self.profile_store.list_profiles)
 
         @self.api.get("/profiles/{profile_id}")
+        @serialize_profile_operation
         async def get_profile(profile_id: str):
             """Получить один профиль зон."""
             require_profiles_enabled()
@@ -950,7 +1028,7 @@ class API():
             require_face_debug_enabled()
             return {
                 "model": await asyncio.to_thread(self.face_analyzer.model_status),
-                "storage": await asyncio.to_thread(self.face_debug_store.status),
+                "storage": await run_debug_operation(self.face_debug_store.status),
                 "gallery_enabled": face_gallery_enabled(),
                 "face_detection_cameras": sorted(
                     self.face_analyzer.face_detection_cameras or []
@@ -966,11 +1044,11 @@ class API():
             require_face_debug_enabled()
             try:
                 return {
-                    "entries": await asyncio.to_thread(
+                    "entries": await run_debug_operation(
                         self.face_debug_store.list_logs,
                         limit,
                     ),
-                    "storage": await asyncio.to_thread(self.face_debug_store.status),
+                    "storage": await run_debug_operation(self.face_debug_store.status),
                 }
             except FaceDebugValidationError as err:
                 raise HTTPException(
@@ -989,11 +1067,11 @@ class API():
             require_face_debug_enabled()
             try:
                 return {
-                    "captures": await asyncio.to_thread(
+                    "captures": await run_debug_operation(
                         self.face_debug_store.list_captures,
                         limit,
                     ),
-                    "storage": await asyncio.to_thread(self.face_debug_store.status),
+                    "storage": await run_debug_operation(self.face_debug_store.status),
                 }
             except FaceDebugValidationError as err:
                 raise HTTPException(
@@ -1015,7 +1093,7 @@ class API():
             """Отдать retained JPEG только после проверки face API key."""
             require_face_debug_enabled()
             try:
-                image = await asyncio.to_thread(
+                image = await run_debug_operation(
                     self.face_debug_store.get_capture_image,
                     capture_id,
                     kind=kind,
@@ -1062,7 +1140,7 @@ class API():
                     detail="Select a person and explicitly confirm sample enrollment.",
                 )
             try:
-                capture = await asyncio.to_thread(
+                capture = await run_debug_operation(
                     self.face_debug_store.get_capture,
                     capture_id,
                 )
@@ -1071,11 +1149,11 @@ class API():
                 faces = capture.get("faces", [])
                 if not 0 <= face_index < len(faces):
                     raise FaceDebugNotFoundError("Face crop not found")
-                jpeg_bytes = await asyncio.to_thread(
+                jpeg_bytes = await run_debug_operation(
                     self.face_debug_store.get_capture_frame,
                     capture_id,
                 )
-                embedding = await asyncio.to_thread(
+                embedding = await run_face_inference(
                     self.face_analyzer.embedding_from_capture,
                     jpeg_bytes,
                     expected_bbox=faces[face_index]["bbox"],
@@ -1107,7 +1185,7 @@ class API():
                 ) from err
 
             try:
-                return await asyncio.to_thread(
+                return await run_gallery_operation(
                     self.face_gallery_store.add_sample,
                     payload.get("person_id"),
                     model_id="opencv_sface",
@@ -1138,7 +1216,7 @@ class API():
         async def list_face_people():
             """Список людей без embedding-векторов."""
             require_face_gallery_enabled()
-            return await asyncio.to_thread(self.face_gallery_store.list_people)
+            return await run_gallery_operation(self.face_gallery_store.list_people)
 
         @self.api.post("/faces/people", status_code=status.HTTP_201_CREATED)
         async def create_face_person(request: Request):
@@ -1151,7 +1229,7 @@ class API():
                     detail="Expected only the name field.",
                 )
             try:
-                return await asyncio.to_thread(
+                return await run_gallery_operation(
                     self.face_gallery_store.create_person,
                     payload.get("name"),
                 )
@@ -1172,7 +1250,7 @@ class API():
             """Получить человека и метаданные образцов, не сами embeddings."""
             require_face_gallery_enabled()
             try:
-                person = await asyncio.to_thread(
+                person = await run_gallery_operation(
                     self.face_gallery_store.get_person,
                     person_id,
                 )
@@ -1199,7 +1277,7 @@ class API():
                     detail="Expected only the name field.",
                 )
             try:
-                person = await asyncio.to_thread(
+                person = await run_gallery_operation(
                     self.face_gallery_store.rename_person,
                     person_id,
                     payload.get("name"),
@@ -1230,7 +1308,7 @@ class API():
             """Удалить человека и все связанные embeddings."""
             require_face_gallery_enabled()
             try:
-                deleted = await asyncio.to_thread(
+                deleted = await run_gallery_operation(
                     self.face_gallery_store.delete_person,
                     person_id,
                 )
@@ -1266,12 +1344,12 @@ class API():
             try:
                 # Эталон хранится в постоянном буфере person_faces и не вытесняется
                 # вместе с кадрами; FIFO-буфер кадров используем только как fallback.
-                jpeg_bytes = await asyncio.to_thread(
+                jpeg_bytes = await run_gallery_operation(
                     self.face_gallery_store.get_reference_face_image,
                     person_id,
                 )
                 if jpeg_bytes is None:
-                    reference = await asyncio.to_thread(
+                    reference = await run_gallery_operation(
                         self.face_gallery_store.get_person_face_reference,
                         person_id,
                     )
@@ -1282,7 +1360,7 @@ class API():
                         )
                     capture_id = reference["capture_id"]
                     face_index = reference["face_index"]
-                    jpeg_bytes = await asyncio.to_thread(
+                    jpeg_bytes = await run_debug_operation(
                         self.face_debug_store.get_capture_image,
                         capture_id,
                         kind="face",
@@ -1315,7 +1393,7 @@ class API():
             require_face_debug_enabled()
             require_face_gallery_enabled()
             try:
-                person = await asyncio.to_thread(
+                person = await run_gallery_operation(
                     self.face_gallery_store.get_person,
                     person_id,
                 )
@@ -1335,7 +1413,7 @@ class API():
                 has_image = False
                 if isinstance(sample_id, str):
                     try:
-                        has_image = await asyncio.to_thread(
+                        has_image = await run_gallery_operation(
                             self.face_gallery_store.has_person_face_image,
                             person_id,
                             sample_id,
@@ -1359,7 +1437,7 @@ class API():
             require_face_debug_enabled()
             require_face_gallery_enabled()
             try:
-                jpeg_bytes = await asyncio.to_thread(
+                jpeg_bytes = await run_gallery_operation(
                     self.face_gallery_store.get_person_face_image,
                     person_id,
                     sample_id,
@@ -1385,7 +1463,7 @@ class API():
             """Список кадров-совпадений лиц (состояние matched)."""
             require_face_debug_enabled()
             try:
-                matches = await asyncio.to_thread(
+                matches = await run_debug_operation(
                     self.face_debug_store.list_matches,
                 )
             except FaceDebugStoreError as err:
@@ -1405,7 +1483,7 @@ class API():
             """Вернуть изображение кадра-совпадения или кроп найденного лица."""
             require_face_debug_enabled()
             try:
-                jpeg_bytes = await asyncio.to_thread(
+                jpeg_bytes = await run_debug_operation(
                     self.face_debug_store.get_match_image,
                     capture_id,
                     kind=kind,
@@ -1432,10 +1510,10 @@ class API():
             """Флаги новых данных для автообновления фронтенда (без самих кадров)."""
             require_face_debug_enabled()
             return {
-                "frames": await asyncio.to_thread(
+                "frames": await run_debug_operation(
                     self.face_debug_store.has_new_frames
                 ),
-                "matches": await asyncio.to_thread(
+                "matches": await run_debug_operation(
                     self.face_debug_store.has_new_matches
                 ),
             }
@@ -1454,7 +1532,7 @@ class API():
                     detail="Face analyzer or debug store is unavailable.",
                 )
             try:
-                captures = await asyncio.to_thread(
+                captures = await run_debug_operation(
                     self.face_debug_store.list_captures,
                     100,
                 )
@@ -1475,7 +1553,7 @@ class API():
                     continue
                 processed += 1
                 try:
-                    jpeg_bytes = await asyncio.to_thread(
+                    jpeg_bytes = await run_debug_operation(
                         self.face_debug_store.get_capture_image,
                         capture_id,
                         kind="frame",
@@ -1493,7 +1571,7 @@ class API():
                     if frame is None:
                         errors += 1
                         continue
-                    raw_results = await asyncio.to_thread(
+                    raw_results = await run_face_inference(
                         self.face_analyzer.match_frame_all, frame, source_id,
                     )
                     faces = capture.get("faces", []) or []
@@ -1501,7 +1579,7 @@ class API():
                     for result in mapped:
                         result["sface_input_origin"] = "rematch_unavailable"
                     match_result = self.face_analyzer._best_match(mapped)
-                    updated = await asyncio.to_thread(
+                    updated = await run_debug_operation(
                         self.face_debug_store.update_capture_match,
                         capture_id, match_result, mapped,
                     )
@@ -1512,7 +1590,7 @@ class API():
                         for face in faces:
                             index = face.get("face_index")
                             try:
-                                image = await asyncio.to_thread(
+                                image = await run_debug_operation(
                                     self.face_debug_store.get_capture_image,
                                     capture_id, kind="face", face_index=index,
                                 )
@@ -1521,7 +1599,7 @@ class API():
                             face_images.append(image)
                         capture["match"] = match_result
                         capture["matches"] = mapped
-                        await asyncio.to_thread(
+                        await run_debug_operation(
                             self.face_debug_store._write_match_capture,
                             capture_id, jpeg_bytes, capture, face_images=face_images,
                         )
@@ -1580,7 +1658,7 @@ class API():
                     detail="Expected manual_confirmation, model_id, model_version and embedding.",
                 )
             try:
-                return await asyncio.to_thread(
+                return await run_gallery_operation(
                     self.face_gallery_store.add_sample,
                     person_id,
                     model_id=payload.get("model_id"),
@@ -1626,7 +1704,7 @@ class API():
         async def _do_delete_face_sample(person_id: str, sample_id: str) -> Response:
             require_face_gallery_enabled()
             try:
-                deleted = await asyncio.to_thread(
+                deleted = await run_gallery_operation(
                     self.face_gallery_store.delete_sample,
                     person_id,
                     sample_id,
@@ -1656,14 +1734,17 @@ class API():
             return Response(status_code=status.HTTP_204_NO_CONTENT)
 
         @self.api.get("/faces/backup")
+        @serialize_face_backup_operation
         async def export_face_gallery_backup():
             """Скачать embeddings только по защищённому API и с no-store."""
             require_face_gallery_enabled()
-            backup = await asyncio.to_thread(
+            backup = await run_gallery_operation(
                 self.face_gallery_store.export_backup
             )
-            return JSONResponse(
-                content=backup,
+            content = await cooperative_json_dumps(backup)
+            return Response(
+                content=content,
+                media_type="application/json",
                 headers={
                     "Content-Disposition": 'attachment; filename="dooods2f-face-gallery.json"',
                     "Cache-Control": "no-store",
@@ -1672,6 +1753,7 @@ class API():
             )
 
         @self.api.post("/faces/restore")
+        @serialize_face_backup_operation
         async def restore_face_gallery_backup(request: Request):
             """Заменить галерею только по явной команде и валидной резервной копии."""
             require_face_gallery_enabled()
@@ -1689,7 +1771,7 @@ class API():
                     detail="Restore requires confirm_replace=true and a backup object.",
                 )
             try:
-                return await asyncio.to_thread(
+                return await run_gallery_operation(
                     self.face_gallery_store.replace_from_backup,
                     payload.get("backup"),
                 )
@@ -2196,6 +2278,8 @@ class API():
                 self._motion_worker_slots.release()
                 raise
 
+            worker_finished = asyncio.Event()
+
             def run_worker() -> None:
                 try:
                     worker.run()
@@ -2213,6 +2297,11 @@ class API():
                     )
                 finally:
                     self._motion_worker_slots.release()
+                    try:
+                        loop.call_soon_threadsafe(worker_finished.set)
+                    except RuntimeError:
+                        # The event loop can already be closed at process shutdown.
+                        pass
 
             worker_thread = threading.Thread(
                 target=run_worker,
@@ -2266,7 +2355,12 @@ class API():
                     receive_task.cancel()
                     await asyncio.gather(receive_task, return_exceptions=True)
                 if worker_thread is not None:
-                    await asyncio.to_thread(worker_thread.join, 6.0)
+                    try:
+                        async with asyncio.timeout(6.0):
+                            await worker_finished.wait()
+                    except TimeoutError:
+                        # The native worker keeps its own capacity slot until it exits.
+                        pass
 
         @self.api.websocket("/motion/stream")
         async def motion_stream(websocket: WebSocket):
@@ -2288,19 +2382,21 @@ class API():
         async def memory():
             if not self.config.trace:
                 return "Not Enabled"
-            current_mem, peak_mem = tracemalloc.get_traced_memory()
-            overhead = tracemalloc.get_tracemalloc_memory()
-            ret = [ "traced memory: %d KiB  peak: %d KiB  overhead: %d KiB" % (
-                int(current_mem // 1024), int(peak_mem // 1024), int(overhead // 1024)
-            ) ]
-            snapshot = tracemalloc.take_snapshot()
-            stats = snapshot.statistics('lineno')            
-            for trace in stats[:20]:
-                ret.append("%s" % (trace))
 
-            data = {}
-            data['traceback'] = ret
-            return data
+            def collect_snapshot():
+                current_mem, peak_mem = tracemalloc.get_traced_memory()
+                overhead = tracemalloc.get_tracemalloc_memory()
+                lines = [
+                    "traced memory: %d KiB  peak: %d KiB  overhead: %d KiB"
+                    % (current_mem // 1024, peak_mem // 1024, overhead // 1024)
+                ]
+                snapshot = tracemalloc.take_snapshot()
+                lines.extend(str(trace) for trace in snapshot.statistics("lineno")[:20])
+                return {"traceback": lines}
+
+            return await run_storage_operation(
+                self._memory_snapshot_slot, "Memory diagnostics", collect_snapshot
+            )
 
         # Mount the UI directory - must be last
         self.api.mount("/", StaticFiles(directory="html", html=True), name="static")
