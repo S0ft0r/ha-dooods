@@ -15,7 +15,10 @@ from urllib.parse import quote, urlsplit, urlunsplit
 import aiohttp
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
-from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers.aiohttp_client import (
+    async_create_clientsession,
+    async_get_clientsession,
+)
 
 from .const import (
     CONF_BOTTOM,
@@ -124,6 +127,7 @@ async def async_get_detectors(
         async with async_get_clientsession(hass).get(
             f"{base_url.rstrip('/')}/detectors",
             headers=headers,
+            allow_redirects=False,
             timeout=aiohttp.ClientTimeout(total=15),
         ) as response:
             if response.status in {401, 403}:
@@ -204,6 +208,7 @@ async def async_get_profiles(
         async with async_get_clientsession(hass).get(
             f"{base_url.rstrip('/')}/profiles",
             headers=headers,
+            allow_redirects=False,
             timeout=aiohttp.ClientTimeout(total=10),
         ) as response:
             if response.status in {401, 403}:
@@ -257,6 +262,7 @@ async def async_get_profile(
         async with async_get_clientsession(hass).get(
             url,
             headers=headers,
+            allow_redirects=False,
             timeout=aiohttp.ClientTimeout(total=10),
         ) as response:
             if response.status in {401, 403}:
@@ -296,6 +302,7 @@ async def async_put_profile(
             url,
             json=dict(profile),
             headers=headers,
+            allow_redirects=False,
             timeout=aiohttp.ClientTimeout(total=10),
         ) as response:
             if response.status in {401, 403}:
@@ -331,6 +338,7 @@ async def async_get_capabilities(
         async with async_get_clientsession(hass).get(
             f"{base_url.rstrip('/')}/capabilities",
             headers=headers,
+            allow_redirects=False,
             timeout=aiohttp.ClientTimeout(total=5),
         ) as response:
             if response.status in {401, 403}:
@@ -364,6 +372,7 @@ async def async_put_face_detection_cameras(
             f"{base_url.rstrip('/')}/faces/cameras",
             json=payload,
             headers=headers,
+            allow_redirects=False,
             timeout=aiohttp.ClientTimeout(total=10),
         ) as response:
             if response.status in {401, 403}:
@@ -421,6 +430,7 @@ async def async_put_preview(
             url,
             data=image,
             headers=headers,
+            allow_redirects=False,
             timeout=aiohttp.ClientTimeout(total=timeout),
         ) as response:
             if response.status in {401, 403}:
@@ -535,6 +545,7 @@ async def async_detect(
             f"{base_url.rstrip('/')}/detect",
             json=request_payload,
             headers=headers,
+            allow_redirects=False,
             timeout=aiohttp.ClientTimeout(total=timeout),
         ) as response:
             if response.status in {401, 403}:
@@ -571,6 +582,15 @@ async def async_detect(
     )
 
 
+async def _reject_websocket_redirect(
+    session: aiohttp.ClientSession,
+    trace_config_ctx: Any,
+    params: aiohttp.TraceRequestRedirectParams,
+) -> None:
+    """Do not forward the API key through a WebSocket handshake redirect."""
+    raise aiohttp.ClientError("DOOODS WebSocket redirect refused")
+
+
 async def async_iter_motion_stream_events(
     hass: HomeAssistant,
     base_url: str,
@@ -605,7 +625,8 @@ async def async_iter_motion_stream_events(
         "quiet_frames": 4,
         "roi_polygons": roi_polygons,
     }
-    session = async_get_clientsession(hass)
+    trace = aiohttp.TraceConfig()
+    trace.on_request_redirect.append(_reject_websocket_redirect)
     ws_connect_options: dict[str, Any] = {
         "headers": headers,
         "heartbeat": 20,
@@ -621,6 +642,9 @@ async def async_iter_motion_stream_events(
         # Compatibility with the older aiohttp releases still used by HA.
         ws_connect_options["timeout"] = 10
         ws_connect_options["receive_timeout"] = None
+    # ws_connect has no allow_redirects option. A dedicated HA-managed
+    # session rejects redirects before aiohttp forwards the custom key.
+    session = async_create_clientsession(hass, auto_cleanup=False, trace_configs=[trace])
     try:
         async with session.ws_connect(ws_url, **ws_connect_options) as websocket:
             await websocket.send_json(request_payload)
@@ -709,3 +733,6 @@ async def async_iter_motion_stream_events(
         raise DooodsConnectionError("connection_failed") from err
     except (aiohttp.ClientError, TimeoutError) as err:
         raise DooodsConnectionError("connection_failed") from err
+    finally:
+        # The HA helper shares its connector: detach, never close it here.
+        session.detach()
