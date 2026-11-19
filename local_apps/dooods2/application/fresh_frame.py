@@ -1,76 +1,78 @@
-import os
-import sys
-import time
+"""Read the newest frame without blocking the caller on capture cleanup."""
+
 import threading
-import numpy as np
-import cv2 as cv
 
-# also acts (partly) like a cv.VideoCapture
+
 class FreshestFrame(threading.Thread):
-    def __init__(self, capture, name='FreshestFrame'):
+    """Own a capture on one thread; never release it concurrently with read()."""
+
+    def __init__(self, capture, name="FreshestFrame", on_release=None):
+        if not capture.isOpened():
+            raise ValueError("Capture is not open")
         self.capture = capture
-        assert self.capture.isOpened()
-
-        # this lets the read() method block until there's a new frame
+        self._on_release = on_release
         self.cond = threading.Condition()
-
-        # this allows us to stop the thread gracefully
         self.running = False
-
-        # keeping the newest frame around
         self.frame = None
-
-        # passing a sequence number allows read() to NOT block
-        # if the currently available one is exactly the one you ask for
         self.latestnum = 0
-
-        # this is just for demo purposes        
         self.callback = None
-        
-        super().__init__(name=name)
+        # A native backend read may never return. It must not keep Python alive.
+        super().__init__(name=name, daemon=True)
         self.start()
 
     def start(self):
-        self.running = True
+        with self.cond:
+            self.running = True
         super().start()
 
     def release(self, timeout=None):
-        self.running = False
-        self.join(timeout=timeout)
-        self.capture.release()
+        """Request stop, wake waiting readers, and wait at most timeout seconds.
+
+        The capture is released by its reader thread after read returns. A stuck
+        backend cannot be safely force-stopped from another Python thread.
+        """
+        with self.cond:
+            self.running = False
+            self.cond.notify_all()
+        if threading.current_thread() is not self:
+            self.join(timeout=1.0 if timeout is None else max(0.0, timeout))
 
     def run(self):
         counter = 0
-        while self.running:
-            # block for fresh frame
-            (rv, img) = self.capture.read()
-            counter += 1
-
-            # publish the frame
-            with self.cond: # lock the condition for this operation
-                self.frame = img if rv else None
-                self.latestnum = counter
-                self.cond.notify_all()
-
-            if self.callback:
-                self.callback(img)
+        try:
+            while True:
+                with self.cond:
+                    if not self.running:
+                        break
+                rv, img = self.capture.read()
+                counter += 1
+                with self.cond:
+                    self.frame = img if rv else None
+                    self.latestnum = counter
+                    self.cond.notify_all()
+                    running = self.running
+                if running and self.callback:
+                    self.callback(img)
+        finally:
+            try:
+                self.capture.release()
+            finally:
+                if self._on_release is not None:
+                    self._on_release()
+                with self.cond:
+                    self.running = False
+                    self.cond.notify_all()
 
     def read(self, wait=True, seqnumber=None, timeout=None):
-        # with no arguments (wait=True), it always blocks for a fresh frame
-        # with wait=False it returns the current frame immediately (polling)
-        # with a seqnumber, it blocks until that frame is available (or no wait at all)
-        # with timeout argument, may return an earlier frame;
-        #   may even be (0,None) if nothing received yet
-
         with self.cond:
             if wait:
                 if seqnumber is None:
-                    seqnumber = self.latestnum+1
-                if seqnumber < 1:
-                    seqnumber = 1
-                
-                rv = self.cond.wait_for(lambda: self.latestnum >= seqnumber, timeout=timeout)
-                if not rv:
-                    return (self.latestnum, self.frame)
-
-            return (self.latestnum, self.frame)
+                    seqnumber = self.latestnum + 1
+                seqnumber = max(seqnumber, 1)
+                self.cond.wait_for(
+                    lambda: self.latestnum >= seqnumber or not self.running,
+                    timeout=timeout,
+                )
+            if not self.running:
+                return self.latestnum, None
+            return self.latestnum, self.frame

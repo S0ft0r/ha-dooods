@@ -41,195 +41,148 @@
 </head>
 <script>
 const reader = new FileReader();
+const pathParts = window.location.pathname.split('/').filter(Boolean);
+const appIndex = pathParts.findIndex((part, i) => part === 'app' && /^(?:local|[a-z0-9]+)_dooods2-dev$/.test(pathParts[i + 1] || ''));
+const appRootPath = appIndex >= 0 ? `/${pathParts.slice(0, appIndex + 2).join('/')}/` : new URL('./', window.location.href).pathname;
+const apiUrl = path => new URL(path.replace(/^\/+/, ''), new URL(appRootPath, window.location.origin)).toString();
+let csrfPromise = null;
+let streamController = null;
+let imageObjectUrl = null;
 
 function loadFile() {
   const file = document.getElementById('file').files[0];
-  if (file) {
-    reader.readAsDataURL(file);
-    console.log("File loaded...");
-  }
+  if (file) reader.readAsDataURL(file);
 }
-
-function detectImage() {
-  const file = document.getElementById('file').files[0];
-  if (!file) {
-    alert("Select a file first...");
-    return
+async function getCsrfToken() {
+  if (!csrfPromise) csrfPromise = fetch(apiUrl('ingress/csrf'), {credentials:'same-origin', cache:'no-store'})
+    .then(async response => {
+      if (!response.ok) throw new Error(`Ingress недоступен (HTTP ${response.status})`);
+      const data = await response.json();
+      if (typeof data.token !== 'string') throw new Error('Некорректный токен Ingress');
+      return data.token;
+    }).catch(error => { csrfPromise = null; throw error; });
+  return csrfPromise;
+}
+async function postRequest(path, data, signal) {
+  const token = await getCsrfToken();
+  const response = await fetch(apiUrl(path), {
+    method:'POST', credentials:'same-origin', cache:'no-store', signal,
+    headers:{'Content-Type':'application/json', 'X-DOODS-CSRF':token},
+    body:JSON.stringify(data),
+  });
+  if (!response.ok) {
+    if (response.status === 403) csrfPromise = null;
+    throw new Error(`Запрос отклонён (HTTP ${response.status})`);
   }
+  return response;
+}
+function stopStream() {
+  if (streamController) { streamController.abort(); streamController = null; }
+}
+function showImage(blob) {
+  if (imageObjectUrl) URL.revokeObjectURL(imageObjectUrl);
+  imageObjectUrl = URL.createObjectURL(blob);
+  const image = document.getElementById('image');
+  image.src = imageObjectUrl; image.hidden = false;
+  document.getElementById('json').hidden = true;
+}
+function parseRequest(fromFile) {
+  const request = JSON.parse(document.getElementById('detect_request').value);
+  if (fromFile) {
+    if (!document.getElementById('file').files[0] || reader.readyState !== FileReader.DONE || typeof reader.result !== 'string') throw new Error('Сначала выберите изображение и дождитесь загрузки.');
+    request.data = reader.result.split(',')[1];
+  } else request.data = document.getElementById('url').value;
+  return request;
+}
+async function runDetection(fromFile, image) {
+  stopStream();
   try {
-    var detect_request = JSON.parse(document.getElementById('detect_request').value);
-  } catch (error) {
-    alert('could not parse detect request: '+error)
-    return
-  }
-  detect_request.data = reader.result.split(',')[1];
-  
-  var xmlhttp = new XMLHttpRequest();
-  xmlhttp.open("POST", "/image");
-  xmlhttp.setRequestHeader("Content-Type", "application/json;charset=UTF-8");
-  xmlhttp.responseType = "blob";
-  xmlhttp.onload = function(e) {
-    if (this.status !== 200) {
-      this.response.text().then(function(message){alert(message)});
-      return;
+    const response = await postRequest(image ? 'image' : 'detect', parseRequest(fromFile));
+    if (image) showImage(await response.blob());
+    else {
+      const result = await response.json();
+      const json = document.getElementById('json');
+      json.value = JSON.stringify(result, null, 2); json.hidden = false;
+      document.getElementById('image').hidden = true;
     }
-    var urlCreator = window.URL || window.webkitURL;
-    var imageUrl = urlCreator.createObjectURL(this.response);
-    const image = document.getElementById('image');
-    image.src = imageUrl;
-    image.hidden = false;
-    document.getElementById('json').hidden = true;
-  }
-  xmlhttp.send(JSON.stringify(detect_request));
+  } catch (error) { alert(error.message); }
 }
+function detectImage() { return runDetection(true, true); }
+function detectJSON() { return runDetection(true, false); }
+function detectUrlImage() { return runDetection(false, true); }
+function detectUrlJSON() { return runDetection(false, false); }
 
-function detectJSON() {
-  const file = document.getElementById('file').files[0];
-  if (!file) {
-    alert("Select a file first...");
-    return
+async function consumeMjpeg(streamReader, onFrame) {
+  const separator = [13,10,13,10];
+  let buffer = new Uint8Array(0);
+  while (true) {
+    const {value, done} = await streamReader.read();
+    if (done) return;
+    const joined = new Uint8Array(buffer.length + value.length);
+    joined.set(buffer); joined.set(value, buffer.length); buffer = joined;
+    if (buffer.length > 16 * 1024 * 1024) throw new Error('Слишком большой кадр потока');
+    while (true) {
+      let split = -1;
+      for (let i = 0; i <= buffer.length - 4; i++) {
+        if (separator.every((v,j) => buffer[i+j] === v)) { split = i; break; }
+      }
+      if (split < 0) break;
+      const header = new TextDecoder().decode(buffer.subarray(0, split));
+      const length = /^content-length:\s*(\d+)\s*$/im.exec(header);
+      if (!header.startsWith('--frame\r\n') || !length) throw new Error('Некорректный формат потока');
+      const size = Number(length[1]);
+      if (!Number.isSafeInteger(size) || size < 1 || size > 16 * 1024 * 1024) throw new Error('Некорректный размер кадра');
+      const end = split + 4 + size;
+      if (buffer.length < end + 2) break;
+      if (buffer[end] !== 13 || buffer[end+1] !== 10) throw new Error('Некорректный конец кадра');
+      onFrame(buffer.slice(split + 4, end));
+      buffer = buffer.slice(end + 2);
+    }
   }
+}
+async function detectUrlStream() {
+  stopStream();
+  const controller = new AbortController(); streamController = controller;
   try {
-    var detect_request = JSON.parse(document.getElementById('detect_request').value);
+    const response = await postRequest('stream', parseRequest(false), controller.signal);
+    if (!response.body) throw new Error('Браузер не поддерживает потоковый ответ');
+    const streamReader = response.body.getReader();
+    try { await consumeMjpeg(streamReader, bytes => showImage(new Blob([bytes], {type:'image/jpeg'}))); }
+    finally { streamReader.releaseLock(); }
   } catch (error) {
-    alert('could not parse detect request: '+error)
-    return
-  }
-  detect_request.data = reader.result.split(',')[1];
-  
-  var xmlhttp = new XMLHttpRequest();
-  xmlhttp.open("POST", "/detect");
-  xmlhttp.setRequestHeader("Content-Type", "application/json;charset=UTF-8");
-  xmlhttp.onload = function(e) {
-    if (this.status !== 200) {
-      this.response.text().then(function(message){alert(message)});
-      return;
-    }
-    var urlCreator = window.URL || window.webkitURL;
-    response = JSON.parse(this.response);
-    json.innerHTML = JSON.stringify(response, null, 2);
-    json.hidden = false;
-    document.getElementById('image').hidden = true;
-  }
-  xmlhttp.send(JSON.stringify(detect_request));
+    if (error.name !== 'AbortError') alert(error.message);
+  } finally { if (streamController === controller) streamController = null; }
 }
-
-function detectUrlImage() {
+async function getDetectors() {
   try {
-    var detect_request = JSON.parse(document.getElementById('detect_request').value);
-  } catch (error) {
-    alert('could not parse detect request: '+error)
-    return
-  }
-  detect_request.data = document.getElementById('url').value;
-
-  var xmlhttp = new XMLHttpRequest();
-  xmlhttp.open("POST", "/image");
-  xmlhttp.setRequestHeader("Content-Type", "application/json;charset=UTF-8");
-  xmlhttp.responseType = "blob";
-  xmlhttp.onload = function(e) {
-    if (this.status !== 200) {
-      this.response.text().then(function(message){alert(message)});
-      return;
-    }
-    var urlCreator = window.URL || window.webkitURL;
-    var imageUrl = urlCreator.createObjectURL(this.response);
-    const image = document.getElementById('image');
-    image.src = imageUrl;
-    image.hidden = false;
-    document.getElementById('json').hidden = true;
-  }
-  xmlhttp.send(JSON.stringify(detect_request));
-}
-
-function detectUrlJSON() {
-  try {
-    var detect_request = JSON.parse(document.getElementById('detect_request').value);
-  } catch (error) {
-    alert('could not parse detect request: '+error)
-    return
-  }
-  detect_request.data = document.getElementById('url').value;
-
-  var xmlhttp = new XMLHttpRequest();
-  xmlhttp.open("POST", "/detect");
-  xmlhttp.setRequestHeader("Content-Type", "application/json;charset=UTF-8");
-  xmlhttp.onload = function(e) {
-    if (this.status !== 200) {
-      this.response.text().then(function(message){alert(message)});
-      return;
-    }
-    var urlCreator = window.URL || window.webkitURL;
-    response = JSON.parse(this.response);
-    json.innerHTML = JSON.stringify(response, null, 2);
-    json.hidden = false;
-    document.getElementById('image').hidden = true;
-  }
-  xmlhttp.send(JSON.stringify(detect_request));
-}
-
-function detectUrlStream() {
-  try {
-    var detect_request = JSON.parse(document.getElementById('detect_request').value);
-  } catch (error) {
-    alert('could not parse detect request: '+error)
-    return
-  }
-  detect_request.data = document.getElementById('url').value;
-  window.open("/stream?detect_request=" + encodeURIComponent(JSON.stringify(detect_request)));
-}
-
-function getDetectors() {
-  var xmlhttp = new XMLHttpRequest();
-  xmlhttp.open("GET", "/detectors");
-  xmlhttp.onload = function(e) {
-    if (this.status !== 200) {
-      this.response.text().then(function(message){alert(message)});
-      return;
-    }
+    const response = await fetch(apiUrl('detectors'), {credentials:'same-origin',cache:'no-store'});
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const json = document.getElementById('json');
-    // Parse the json response
-    response = JSON.parse(this.response);
-    json.innerHTML = JSON.stringify(response, null, 2);
-    json.hidden = false;
+    json.value = JSON.stringify(await response.json(), null, 2); json.hidden = false;
     document.getElementById('image').hidden = true;
-  }
-  xmlhttp.send();
+  } catch (error) { alert(error.message); }
 }
-
 function setDetectorName(e) {
-  var detect_request = document.getElementById('detect_request');
   try {
-    detect_request_object = JSON.parse(detect_request.value);
-  } catch (error) {
-    alert('could not parse detect request: '+error);
-    return
-  }
-  detect_request_object.detector_name = e.target.value;
-  detect_request.value = JSON.stringify(detect_request_object, null, 2);
-   console.log(detect_request);
+    const input = document.getElementById('detect_request');
+    const data = JSON.parse(input.value); data.detector_name = e.target.value;
+    input.value = JSON.stringify(data, null, 2);
+  } catch (error) { alert('could not parse detect request: ' + error.message); }
 }
-
-// Fetch the detectors and fill the select
-let xmlhttp = new XMLHttpRequest();
-xmlhttp.open("GET", "/detectors");
-xmlhttp.onload = function(e) {
-    if (this.status !== 200) {
-      this.response.text().then(function(message){alert(message)});
-      return;
+document.addEventListener('DOMContentLoaded', async () => {
+  try {
+    const response = await fetch(apiUrl('detectors'), {credentials:'same-origin',cache:'no-store'});
+    if (!response.ok) return;
+    const data = await response.json();
+    const select = document.getElementById('detector_names');
+    for (const detector of data.detectors || []) {
+      const option = document.createElement('option'); option.value = detector.name;
+      option.textContent = detector.name; select.appendChild(option);
     }
-    const detector_names = document.getElementById('detector_names');
-    response = JSON.parse(this.response);
-    for (const detector of response.detectors) {
-      var opt = document.createElement('option');
-      opt.value = detector.name;
-      opt.innerHTML = detector.name;
-      detector_names.appendChild(opt);
-    }
-    detector_names.dispatchEvent(new Event('change'));
-}
-xmlhttp.send();
-
+    if (select.options.length) select.dispatchEvent(new Event('change'));
+  } catch (_) { /* manual retries remain available */ }
+});
+window.addEventListener('pagehide', stopStream);
 </script>
 <body>
 <div id="logo"><img src="doods.jpg"/></div>
@@ -290,6 +243,7 @@ URL:
 <button type="button" onclick=detectUrlImage()>Detect Image</button>
 <button type="button" onclick=detectUrlJSON()>Detect JSON</button>
 <button type="button" onclick=detectUrlStream()>Detect Stream</button>
+<button type="button" onclick=stopStream()>Stop Stream</button>
 <br/>
 Supports http://, https://, ftp:// or rtsp:// for both an image or video stream. (Detect stream willl only work with a video stream)
 <hr/>

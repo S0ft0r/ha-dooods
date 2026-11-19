@@ -1,6 +1,6 @@
 name: "DOOODS2 (Dev)"
 slug: "dooods2-dev"
-version: "0.1.38-dev"
+version: "0.1.38.1-dev"
 description: ""
 arch:
   - aarch64

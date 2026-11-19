@@ -2,6 +2,7 @@ import uvicorn
 import odrpc
 import json
 import base64
+import copy
 import logging
 import asyncio
 import math
@@ -51,6 +52,17 @@ from prometheus_fastapi_instrumentator import Instrumentator
 
 import tracemalloc
 from pathlib import Path
+
+class _AccessQueryRedaction(logging.Filter):
+    """Keep request paths but do not log potentially sensitive query strings."""
+
+    def filter(self, record):
+        args = record.args
+        if isinstance(args, tuple) and len(args) == 5 and isinstance(args[2], str):
+            path = args[2].split("?", 1)[0]
+            record.args = (args[0], args[1], path, args[3], args[4])
+        return True
+
 
 def _map_rematch_faces(raw_results, capture):
     """Map redetected boxes only when their overlap is unambiguous."""
@@ -402,7 +414,8 @@ class API():
             is_face_api = path == "/faces" or path.startswith("/faces/")
             is_face_page = path == "/faces.html"
             is_editor_api = (
-                path in {"/detectors", "/profiles", "/preview", "/ingress/csrf"}
+                path in {"/detectors", "/detect", "/image", "/profiles", "/preview", "/ingress/csrf"}
+                or (path == "/stream" and request.method == "POST")
                 or path.startswith("/profiles/")
                 or path.startswith("/preview/")
             )
@@ -472,7 +485,9 @@ class API():
                         content={"detail": "Not found."},
                         headers={"Cache-Control": "no-store"},
                     )
-            elif self.auth_key and is_protected_api_path(path) and not key_ok:
+            elif (self.auth_key and is_protected_api_path(path) and not key_ok) or (
+                path == "/stream" and not key_ok
+            ):
                 # Other routes keep their existing key-only behaviour. Never
                 # grant broad ingress access without equivalent CSRF protection.
                 return JSONResponse(
@@ -1716,14 +1731,18 @@ class API():
 
             try:
                 while True:
-                    # Apply backpressure instead of unbounded executor submissions.
-                    if len(pending) >= 2:
-                        await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+                    # Keep receiving while busy so a disconnect is observable.
+                    # Reject excess work rather than building an unbounded queue.
                     detect_config = await websocket.receive_json()
                     try:
                         detect_request = odrpc.DetectRequest(**detect_config)
                     except (TypeError, ValueError):
                         await send_response(odrpc.DetectResponse(error="could not parse request body"))
+                        continue
+                    if len(pending) >= 2:
+                        await send_response(odrpc.DetectResponse(
+                            id=detect_request.id, error="Detector busy; retry later."
+                        ))
                         continue
                     if detect_request.profile_id and not profiles_enabled():
                         await send_response(odrpc.DetectResponse(
@@ -1770,7 +1789,27 @@ class API():
                     detail="Profile features require configured API authentication.",
                 )
             detect_request.image = ".jpg" # Must be jpg
-            return StreamingResponse(Streamer.mjpeg_streamer(Streamer(self.doods).start_stream(detect_request)), media_type="multipart/x-mixed-replace;boundary=frame")
+            stream_handler = Streamer(self.doods)
+            return StreamingResponse(
+                stream_handler.mjpeg_streamer(detect_request),
+                media_type="multipart/x-mixed-replace;boundary=frame",
+            )
+
+        @self.api.post("/stream")
+        async def stream_from_body(detect_request: odrpc.DetectRequest):
+            """Start the browser stream without exposing its source in the URL."""
+            if detect_request.profile_id and not profiles_enabled():
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail="Profile features require configured API authentication.",
+                )
+            detect_request.image = ".jpg"
+            stream_handler = Streamer(self.doods)
+            return StreamingResponse(
+                stream_handler.mjpeg_streamer(detect_request),
+                media_type="multipart/x-mixed-replace;boundary=frame",
+                headers={"Cache-Control": "no-store"},
+            )
 
         @self.api.websocket("/stream")
         async def websocket_stream(websocket: WebSocket):
@@ -1778,9 +1817,10 @@ class API():
                 return
             await websocket.accept()
             streamer = None
+            stream_handler = None
             stream_read = None
+            receive_task = None
             try:
-                # Fetch the initial request payload
                 detect_config = await websocket.receive_json()
                 detect_request = odrpc.DetectRequest(**detect_config)
                 if detect_request.profile_id and not profiles_enabled():
@@ -1792,39 +1832,50 @@ class API():
                     await websocket.close(code=1008)
                     return
 
-                # Run the stream detector and return the results.
-                streamer = Streamer(self.doods).start_stream(detect_request)
+                stream_handler = Streamer(self.doods)
+                streamer = stream_handler.start_stream(detect_request)
                 sentinel = object()
+                receive_task = asyncio.create_task(websocket.receive())
                 while True:
-                    # The iterator performs blocking capture, throttling and
-                    # inference, so advance it outside the event loop.
-                    stream_read = asyncio.create_task(asyncio.to_thread(next, streamer, sentinel))
-                    detect_response = await asyncio.shield(stream_read)
-                    stream_read = None
-                    if detect_response is sentinel:
-                        break
-                    if detect_request.image and detect_response.image is not None:
-                        detect_response.image = base64.b64encode(detect_response.image).decode('utf-8')
-                    await websocket.send_json(detect_response.asdict(include_none=False))
-                    try:
-                        await asyncio.wait_for(websocket.receive_text(), 0.0001)
-                    except asyncio.TimeoutError:
-                        pass
+                    if stream_read is None:
+                        stream_read = asyncio.create_task(asyncio.to_thread(next, streamer, sentinel))
+                    done, _ = await asyncio.wait(
+                        {stream_read, receive_task}, return_when=asyncio.FIRST_COMPLETED
+                    )
+                    if receive_task in done:
+                        message = receive_task.result()
+                        if message.get("type") == "websocket.disconnect":
+                            break
+                        receive_task = asyncio.create_task(websocket.receive())
+                    if stream_read in done:
+                        detect_response = stream_read.result()
+                        stream_read = None
+                        if detect_response is sentinel:
+                            break
+                        if detect_request.image and detect_response.image is not None:
+                            detect_response.image = base64.b64encode(detect_response.image).decode("ascii")
+                        await websocket.send_json(detect_response.asdict(include_none=False))
             except WebSocketDisconnect:
                 pass
             except Exception as err:
                 self.logger.warning("WebSocket stream stopped (%s)", type(err).__name__)
             finally:
-                if streamer:
+                if stream_handler is not None:
+                    stream_handler.stop()
+                if receive_task is not None:
+                    receive_task.cancel()
+                    await asyncio.gather(receive_task, return_exceptions=True)
+                if streamer is not None:
                     if stream_read is not None and not stream_read.done():
-                        # The underlying worker cannot be cancelled safely. Close
-                        # the iterator only after that read actually finishes.
+                        # Never close a generator while its worker is inside it.
                         def finish_read(task):
                             if not task.cancelled():
                                 task.exception()
                             asyncio.create_task(asyncio.to_thread(streamer.close))
                         stream_read.add_done_callback(finish_read)
                     else:
+                        if stream_read is not None and not stream_read.cancelled():
+                            stream_read.exception()
                         await asyncio.to_thread(streamer.close)
 
         @self.api.websocket("/motion/stream")
@@ -2065,7 +2116,10 @@ li {{ margin: .75rem 0; }} p, li {{ line-height: 1.5; }}
 </ol></section></main></body></html>"""
 
     def run(self):
-        log_config = uvicorn.config.LOGGING_CONFIG
+        log_config = copy.deepcopy(uvicorn.config.LOGGING_CONFIG)
+        log_config.setdefault("filters", {})["redact_query"] = {"()": _AccessQueryRedaction}
+        access_handler = log_config.get("handlers", {}).get("access", {})
+        access_handler["filters"] = [*access_handler.get("filters", []), "redact_query"]
         log_config["formatters"]["access"]["fmt"] = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
         log_config["formatters"]["default"]["fmt"] = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
         log_config["loggers"]["uvicorn"]["propagate"] = False # Fix a bug in logging
