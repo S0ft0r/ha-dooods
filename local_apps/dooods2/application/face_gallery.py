@@ -7,6 +7,7 @@ import logging
 import math
 import os
 import re
+import shutil
 import tempfile
 import threading
 import uuid
@@ -52,6 +53,10 @@ class FaceGalleryValidationError(ValueError):
 
 class FaceGalleryStoreError(RuntimeError):
     """Ошибка чтения или атомарной записи хранилища галереи."""
+
+
+class FaceGalleryCleanupError(FaceGalleryStoreError):
+    """Private image cleanup failed before gallery metadata was changed."""
 
 
 class FaceGalleryNotFoundError(LookupError):
@@ -484,13 +489,15 @@ class FaceGalleryStore:
             sample_id = _validate_id(sample_id, "ID образца")
         except FaceGalleryValidationError:
             return False
-        if self._person_face_image_path(person_id, sample_id).is_file():
-            return True
         with self._lock:
             person = self._people.get(person_id)
             if person is None:
                 return False
             sample = next((s for s in person.samples if s.id == sample_id), None)
+            if sample is None:
+                return False
+            if self._person_face_image_path(person_id, sample_id).is_file():
+                return True
         return bool(
             sample is not None
             and sample.capture_id is not None
@@ -605,13 +612,30 @@ class FaceGalleryStore:
         """Удалить человека вместе со всеми embeddings и метаданными образцов."""
         person_id = _validate_id(person_id, "ID человека")
         with self._lock:
-            if person_id not in self._people:
-                return False
-            updated_people = dict(self._people)
-            del updated_people[person_id]
-            self._write_file(updated_people)
-            self._people = updated_people
-        return True
+            existed = person_id in self._people
+            # Remove private images before committing metadata deletion. If
+            # cleanup fails, the entry remains visible and deletion can retry.
+            # These private JPEGs are not included in gallery backups and must
+            # not silently survive a person deletion. Retrying an earlier
+            # partial deletion also attempts cleanup even if metadata is gone.
+            image_dir = self.path.parent / "face_debug" / "person_faces" / person_id
+            try:
+                if image_dir.is_symlink():
+                    image_dir.unlink()
+                else:
+                    shutil.rmtree(image_dir)
+            except FileNotFoundError:
+                pass
+            except OSError as err:
+                raise FaceGalleryCleanupError(
+                    "Private face images could not be deleted; person metadata is unchanged"
+                ) from err
+            if existed:
+                updated_people = dict(self._people)
+                del updated_people[person_id]
+                self._write_file(updated_people)
+                self._people = updated_people
+        return existed
 
     def add_sample(
         self,
@@ -746,11 +770,13 @@ class FaceGalleryStore:
         with self._lock:
             person = self._people.get(person_id)
             if person is None:
+                self._remove_sample_image(person_id, sample_id)
                 return False
             remaining_samples = tuple(
                 sample for sample in person.samples if sample.id != sample_id
             )
             if len(remaining_samples) == len(person.samples):
+                self._remove_sample_image(person_id, sample_id)
                 return False
             sample_removed = next((s for s in person.samples if s.id == sample_id), None)
             updated_person = replace(
@@ -760,15 +786,20 @@ class FaceGalleryStore:
             )
             updated_people = dict(self._people)
             updated_people[person_id] = updated_person
+            # Clean first so a failed deletion leaves metadata available for retry.
+            if sample_removed is not None:
+                self._remove_sample_image(person_id, sample_id)
             self._write_file(updated_people)
             self._people = updated_people
-        # Удалить сохранённый файл эталона из приватного буфера App (если есть).
-        if sample_removed is not None:
-            try:
-                self._person_face_image_path(person_id, sample_id).unlink(missing_ok=True)
-            except OSError:
-                pass
         return True
+
+    def _remove_sample_image(self, person_id: str, sample_id: str) -> None:
+        try:
+            self._person_face_image_path(person_id, sample_id).unlink(missing_ok=True)
+        except OSError as err:
+            raise FaceGalleryCleanupError(
+                "Private face image could not be deleted; sample metadata is unchanged"
+            ) from err
 
     def export_backup(self) -> dict[str, Any]:
         """Сформировать полный экспорт; включает embeddings и не включает изображения."""

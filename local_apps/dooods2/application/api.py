@@ -37,6 +37,7 @@ from profiles import ProfileStoreError, ProfileValidationError
 from preview import PreviewStore, PreviewTooLargeError, PreviewValidationError
 from profile_sources import ProfileSourceStore, ProfileSourceStoreError, ProfileSourceValidationError
 from face_gallery import (
+    FaceGalleryCleanupError,
     FaceGalleryNotFoundError,
     FaceGalleryStoreError,
     FaceGalleryValidationError,
@@ -191,6 +192,7 @@ class API():
         self._motion_websocket_connections = asyncio.Semaphore(32)
         self._motion_worker_slots = threading.BoundedSemaphore(32)
         self._rematch_slot = asyncio.Semaphore(1)
+        self._face_camera_settings_slot = asyncio.Semaphore(1)
         self._rematch_task = None
 
         async def run_http_detection(detect_request):
@@ -799,22 +801,41 @@ class API():
                 if camera and camera not in seen:
                     seen.add(camera)
                     unique_cameras.append(camera)
-            # Список переживает рестарт App: /data/face_settings.json, не память.
-            if self.face_settings_store is not None:
-                try:
-                    unique_cameras = await asyncio.to_thread(
-                        self.face_settings_store.save_cameras,
-                        unique_cameras,
-                    )
-                except FaceSettingsError as err:
-                    self.logger.error(
-                        "Face detection cameras were not persisted: %s", err
-                    )
-                    raise HTTPException(
-                        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                        detail="Could not persist face detection cameras.",
-                    ) from err
-            self.face_analyzer.face_detection_cameras = set(unique_cameras)
+            # The persisted and live values are one ordered operation. The
+            # slot remains held when a request is cancelled until disk I/O ends.
+            try:
+                async with asyncio.timeout(5.0):
+                    await self._face_camera_settings_slot.acquire()
+            except TimeoutError:
+                raise HTTPException(status_code=503, detail="Face camera settings are busy.") from None
+
+            def save_and_apply():
+                selected = unique_cameras
+                if self.face_settings_store is not None:
+                    selected = self.face_settings_store.save_cameras(selected)
+                self.face_analyzer.face_detection_cameras = set(selected)
+                return selected
+
+            try:
+                task = asyncio.create_task(asyncio.to_thread(save_and_apply))
+            except BaseException:
+                self._face_camera_settings_slot.release()
+                raise
+
+            def settings_done(completed):
+                self._face_camera_settings_slot.release()
+                if not completed.cancelled():
+                    completed.exception()
+
+            task.add_done_callback(settings_done)
+            try:
+                unique_cameras = await asyncio.shield(task)
+            except FaceSettingsError as err:
+                self.logger.error("Face detection cameras were not persisted: %s", err)
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Could not persist face detection cameras.",
+                ) from err
             self.logger.info(
                 "Face detection cameras updated: %s",
                 ", ".join(unique_cameras) if unique_cameras else "(none)",
@@ -1128,6 +1149,12 @@ class API():
                 raise HTTPException(
                     status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                     detail=str(err),
+                ) from err
+            except FaceGalleryCleanupError as err:
+                self.logger.error("Face gallery image cleanup failed; metadata remains unchanged")
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Private face image cleanup failed; gallery metadata remains unchanged.",
                 ) from err
             except FaceGalleryStoreError as err:
                 self.logger.error("Face gallery delete failed: %s", err)
@@ -1519,6 +1546,12 @@ class API():
                 raise HTTPException(
                     status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                     detail=str(err),
+                ) from err
+            except FaceGalleryCleanupError as err:
+                self.logger.error("Face gallery image cleanup failed; metadata remains unchanged")
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Private face image cleanup failed; gallery metadata remains unchanged.",
                 ) from err
             except FaceGalleryStoreError as err:
                 self.logger.error("Face gallery delete failed: %s", err)
