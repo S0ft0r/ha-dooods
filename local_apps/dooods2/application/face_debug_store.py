@@ -18,6 +18,7 @@ import sqlite3
 import threading
 import uuid
 from datetime import datetime, timezone
+from functools import wraps
 from pathlib import Path
 from typing import Any
 
@@ -33,6 +34,15 @@ _DEFAULT_MIN_FACE_WIDTH = 100
 _DEFAULT_MIN_FACE_HEIGHT = 100
 _DEFAULT_MAX_EVENT_BYTES = 24 * 1024 * 1024
 _MAX_FACES_PER_EVENT = 32
+
+
+def _synchronized_matches(method):
+    """Serialize match-directory reads, writes and pruning within one store."""
+    @wraps(method)
+    def wrapped(self, *args, **kwargs):
+        with self._match_lock:
+            return method(self, *args, **kwargs)
+    return wrapped
 
 
 class FaceDebugValidationError(ValueError):
@@ -89,6 +99,12 @@ class FaceDebugStore:
         self._queue: queue.Queue[dict[str, Any] | None] = queue.Queue(maxsize=queue_size)
         self._thread: threading.Thread | None = None
         self._lock = threading.RLock()
+        self._match_lock = threading.RLock()
+        self._lifecycle = threading.Condition()
+        self._stopping = False
+        self._active_direct_writes = 0
+        self._shutdown_thread: threading.Thread | None = None
+        self._shutdown_complete = threading.Event()
         self._closed = False
         try:
             self._make_private_directory(self.directory)
@@ -207,8 +223,8 @@ class FaceDebugStore:
 
     def start(self) -> None:
         """Start the bounded background disk writer."""
-        with self._lock:
-            if self._closed:
+        with self._lifecycle:
+            if self._stopping or self._closed:
                 raise FaceDebugStoreError("Face-debug store is closed")
             if self._thread is not None and self._thread.is_alive():
                 return
@@ -220,18 +236,43 @@ class FaceDebugStore:
             self._thread.start()
 
     def stop(self, timeout: float = 10.0) -> None:
-        """Drain queued writes and stop the background writer."""
-        thread = self._thread
-        if thread is not None and thread.is_alive():
-            self._queue.join()
-            self._queue.put(None)
-            self._queue.join()
-            thread.join(timeout=max(0.1, float(timeout)))
-        with self._lock:
-            self._thread = None
-            if not self._closed:
-                self._connection.close()
-                self._closed = True
+        """Request a drain and wait only up to timeout, even for stuck I/O.
+
+        A daemon finalizer keeps ownership of the SQLite connection until all
+        accepted writes finish. No new writes are accepted after stop begins.
+        """
+        with self._lifecycle:
+            if not self._stopping:
+                self._stopping = True
+                self._shutdown_thread = threading.Thread(
+                    target=self._finish_shutdown,
+                    name="doods-face-debug-shutdown",
+                    daemon=True,
+                )
+                self._shutdown_thread.start()
+        if not self._shutdown_complete.wait(max(0.0, float(timeout))):
+            _LOGGER.warning("Face-debug shutdown is waiting for pending disk I/O")
+
+    def _finish_shutdown(self) -> None:
+        try:
+            thread = self._thread
+            if thread is not None and thread.is_alive():
+                # Can wait on a full queue or stuck disk, but only this daemon
+                # finalizer waits; the caller of stop remains time-bounded.
+                self._queue.put(None)
+                thread.join()
+            with self._lifecycle:
+                self._lifecycle.wait_for(lambda: self._active_direct_writes == 0)
+            with self._lock:
+                if not self._closed:
+                    self._connection.close()
+                    self._closed = True
+            with self._lifecycle:
+                self._thread = None
+        except Exception as err:
+            _LOGGER.warning("Face-debug shutdown failed (%s)", type(err).__name__)
+        finally:
+            self._shutdown_complete.set()
 
     def flush(self, timeout: float = 10.0) -> bool:
         """Wait for queued events to be persisted; intended for shutdown/tests."""
@@ -386,15 +427,29 @@ class FaceDebugStore:
             "sface_images": sface_images,
             "aligned_images": aligned_images,
         }
-        thread = self._thread
-        if thread is None or not thread.is_alive():
-            self._persist(task)
-            return
+        with self._lifecycle:
+            if self._stopping:
+                return
+            thread = self._thread
+            direct_persist = thread is None or not thread.is_alive()
+            queue_full = False
+            if not direct_persist:
+                try:
+                    self._queue.put_nowait(task)
+                    return
+                except queue.Full:
+                    queue_full = True
+            self._active_direct_writes += 1
         try:
-            self._queue.put_nowait(task)
-        except queue.Full:
-            payload["capture_status"] = "queue_full" if image_bytes else payload["capture_status"]
-            self._write_log(payload, capture_id=None)
+            if direct_persist:
+                self._persist(task)
+            elif queue_full:
+                payload["capture_status"] = "queue_full" if image_bytes else payload["capture_status"]
+                self._write_log(payload, capture_id=None)
+        finally:
+            with self._lifecycle:
+                self._active_direct_writes -= 1
+                self._lifecycle.notify_all()
 
     def _worker(self) -> None:
         while True:
@@ -463,6 +518,7 @@ class FaceDebugStore:
                         "Face-debug match buffer write failed (%s)", type(err).__name__
                     )
 
+    @_synchronized_matches
     def _write_match_capture(
         self,
         capture_id: str,
@@ -541,6 +597,7 @@ class FaceDebugStore:
         with self._lock:
             self._has_new_matches = True
 
+    @_synchronized_matches
     def _prune_matches(self) -> None:
         """Оставить только последние max_matches кадров-совпадений."""
         with self._lock:
@@ -560,6 +617,7 @@ class FaceDebugStore:
         for stale in match_dirs[self.max_matches :]:
             shutil.rmtree(stale, ignore_errors=True)
 
+    @_synchronized_matches
     def list_matches(self, limit: int = _DEFAULT_MAX_MATCHES) -> list[dict[str, Any]]:
         """Вернуть метаданные сохранённых кадров-совпадений (новые сначала)."""
         limit = self._validate_limit(limit, self.max_matches)
@@ -589,6 +647,7 @@ class FaceDebugStore:
             self._has_new_matches = False
         return result
 
+    @_synchronized_matches
     def get_match_image(
         self,
         capture_id: str,
@@ -787,6 +846,7 @@ class FaceDebugStore:
         with self._lock:
             return self._has_new_matches
 
+    @_synchronized_matches
     def status(self) -> dict[str, int]:
         """Return bounded store counts and configured limits."""
         with self._lock:

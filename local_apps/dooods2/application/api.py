@@ -190,6 +190,8 @@ class API():
         self._stream_websocket_connections = asyncio.Semaphore(8)
         self._motion_websocket_connections = asyncio.Semaphore(32)
         self._motion_worker_slots = threading.BoundedSemaphore(32)
+        self._rematch_slot = asyncio.Semaphore(1)
+        self._rematch_task = None
 
         async def run_http_detection(detect_request):
             # Admission is bounded. Once started, cancellation does not release
@@ -281,13 +283,23 @@ class API():
                     pass
                 self._face_model_task = None
             if self.face_debug_store is not None:
-                try:
-                    await asyncio.to_thread(self.face_debug_store.stop, 10.0)
-                except Exception as err:
-                    self.logger.warning(
-                        "Face-debug writer shutdown failed (%s)",
-                        type(err).__name__,
-                    )
+                async def stop_face_store():
+                    try:
+                        await asyncio.to_thread(self.face_debug_store.stop, 10.0)
+                    except Exception as err:
+                        self.logger.warning(
+                            "Face-debug writer shutdown failed (%s)",
+                            type(err).__name__,
+                        )
+
+                rematch = self._rematch_task
+                if rematch is not None and not rematch.done():
+                    done, _ = await asyncio.wait({rematch}, timeout=1.0)
+                    if not done:
+                        self.logger.warning("Deferring face-debug shutdown until rematch finishes")
+                        rematch.add_done_callback(lambda _: asyncio.create_task(stop_face_store()))
+                        return
+                await stop_face_store()
 
         def profiles_enabled():
             return bool(self.auth_key and self.profile_store is not None)
@@ -1312,8 +1324,7 @@ class API():
                 ),
             }
 
-        @self.api.post("/faces/debug/rematch")
-        async def rematch_existing_captures():
+        async def rematch_existing_captures_worker():
             """Перепроверить существующие кадры в буфере на совпадение с галереей.
 
             Для каждого кадра с лицом повторно вычисляет SFace-embedding и
@@ -1374,10 +1385,12 @@ class API():
                     for result in mapped:
                         result["sface_input_origin"] = "rematch_unavailable"
                     match_result = self.face_analyzer._best_match(mapped)
-                    await asyncio.to_thread(
+                    updated = await asyncio.to_thread(
                         self.face_debug_store.update_capture_match,
                         capture_id, match_result, mapped,
                     )
+                    if not updated:
+                        continue
                     if any(result.get("state") == "matched" for result in mapped):
                         face_images = []
                         for face in faces:
@@ -1406,6 +1419,30 @@ class API():
                 "new_matches": new_matches,
                 "errors": errors,
             }
+
+        @self.api.post("/faces/debug/rematch")
+        async def rematch_existing_captures():
+            require_face_debug_enabled()
+            if self._rematch_slot.locked():
+                raise HTTPException(status_code=409, detail="Rematch is already running.")
+            await self._rematch_slot.acquire()
+            try:
+                task = asyncio.create_task(rematch_existing_captures_worker())
+                self._rematch_task = task
+            except BaseException:
+                self._rematch_slot.release()
+                raise
+
+            def finish_rematch(completed):
+                self._rematch_slot.release()
+                self._rematch_task = None
+                if not completed.cancelled():
+                    completed.exception()
+
+            task.add_done_callback(finish_rematch)
+            # A disconnected client does not abort a synchronous analysis in
+            # progress. Keep the admission slot until the entire job finishes.
+            return await asyncio.shield(task)
 
         @self.api.post(
             "/faces/people/{person_id}/samples",
@@ -2036,7 +2073,7 @@ class API():
                     stop_event.set()
 
             if not self._motion_worker_slots.acquire(blocking=False):
-                await websocket.send_json({"type": "error", "error": "motion_stream_capacity"})
+                await websocket.send_json({"type": "error", "source_id": source_id, "error": "motion_stream_capacity"})
                 await websocket.close(code=1013)
                 return
             try:
