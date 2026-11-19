@@ -3,6 +3,7 @@ import odrpc
 import json
 import base64
 import copy
+from collections import deque
 import logging
 import asyncio
 import math
@@ -55,6 +56,61 @@ import tracemalloc
 from pathlib import Path
 
 _STREAM_FIRST_FRAME_TIMEOUT = 10.0
+
+
+class _MotionEventRelay:
+    """Bound both cross-thread pending events and loop-side queue to four."""
+
+    def __init__(self, loop, queue, stop_event, max_pending=4):
+        self._loop = loop
+        self._queue = queue
+        self._stop = stop_event
+        self._pending = deque(maxlen=max_pending)
+        self._lock = threading.Lock()
+        self._scheduled = False
+        self._closed = False
+
+    def publish(self, event):
+        with self._lock:
+            if self._closed:
+                return
+            # As with the loop-side queue, keep the newest events under load.
+            self._pending.append(event)
+            if self._scheduled:
+                return
+            self._scheduled = True
+            try:
+                self._loop.call_soon_threadsafe(self._deliver)
+            except RuntimeError:
+                self._scheduled = False
+                self._pending.clear()
+                self._closed = True
+                self._stop.set()
+
+    def _deliver(self):
+        with self._lock:
+            if self._closed:
+                self._pending.clear()
+                self._scheduled = False
+                return
+            pending = list(self._pending)
+            self._pending.clear()
+            self._scheduled = False
+        for event in pending:
+            if self._queue.full():
+                try:
+                    self._queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    pass
+            try:
+                self._queue.put_nowait(event)
+            except asyncio.QueueFull:
+                pass
+
+    def close(self):
+        with self._lock:
+            self._closed = True
+            self._pending.clear()
 
 
 class _AccessQueryRedaction(logging.Filter):
@@ -2087,23 +2143,8 @@ class API():
             loop = asyncio.get_running_loop()
             event_queue: asyncio.Queue[dict] = asyncio.Queue(maxsize=4)
 
-            def publish(event: dict) -> None:
-                """Forward worker events without blocking its RTSP-reader thread."""
-                def enqueue() -> None:
-                    if event_queue.full():
-                        try:
-                            event_queue.get_nowait()
-                        except asyncio.QueueEmpty:
-                            pass
-                    try:
-                        event_queue.put_nowait(event)
-                    except asyncio.QueueFull:
-                        pass
-
-                try:
-                    loop.call_soon_threadsafe(enqueue)
-                except RuntimeError:
-                    stop_event.set()
+            relay = _MotionEventRelay(loop, event_queue, stop_event)
+            publish = relay.publish
 
             if not self._motion_worker_slots.acquire(blocking=False):
                 await websocket.send_json({"type": "error", "source_id": source_id, "error": "motion_stream_capacity"})
@@ -2183,6 +2224,7 @@ class API():
                 pass
             finally:
                 stop_event.set()
+                relay.close()
                 if event_task is not None:
                     if not event_task.done():
                         event_task.cancel()

@@ -143,6 +143,39 @@ def _validate_app_source_mirror(errors: list[str]) -> None:
             errors.append(f"local App build context differs from source: {relative}")
 
 
+def _validate_app_changelog(app_dir: Path, errors: list[str]) -> None:
+    """Validate exact headings consumed by HA's app update release notes."""
+    path = app_dir / "CHANGELOG.md"
+    config_path = app_dir / "config.yaml"
+    if not path.is_file():
+        errors.append(f"required App changelog is missing: {_relative(path)}")
+        return
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as err:
+        errors.append(f"{_relative(path)}: cannot read changelog ({err})")
+        return
+    headings = []
+    for number, line in enumerate(text.splitlines(), 1):
+        if not line.startswith("##") or line.startswith("###"):
+            continue
+        version = line[3:] if line.startswith("## ") else ""
+        if not _VERSION.fullmatch(version):
+            errors.append(f"{_relative(path)}:{number}: use a bare version heading, e.g. ## 0.1.37")
+        else:
+            headings.append(version)
+    if not headings:
+        errors.append(f"{_relative(path)}: no bare version headings")
+        return
+    if len(headings) != len(set(headings)):
+        errors.append(f"{_relative(path)}: duplicate version headings")
+    if not text.endswith("\n"):
+        errors.append(f"{_relative(path)}: changelog must end in a newline")
+    config = _load_yaml(config_path, errors) if config_path.is_file() else None
+    if isinstance(config, dict) and config.get("version") != headings[0]:
+        errors.append(f"{_relative(path)}: first version heading must match config.yaml")
+
+
 def validate_components(
     root: Path = ROOT,
     components: tuple[str, ...] = ("integration", "app"),
@@ -214,6 +247,10 @@ def validate_components(
                         )
 
         _validate_app_source_mirror(errors)
+        _validate_app_changelog(APP, errors)
+        dev_app = ROOT / "local_apps" / "dooods2-dev"
+        if dev_app.is_dir():
+            _validate_app_changelog(dev_app, errors)
 
     selected_dirs = []
     if "integration" in components:
