@@ -53,6 +53,9 @@ from prometheus_fastapi_instrumentator import Instrumentator
 import tracemalloc
 from pathlib import Path
 
+_STREAM_FIRST_FRAME_TIMEOUT = 10.0
+
+
 class _AccessQueryRedaction(logging.Filter):
     """Keep request paths but do not log potentially sensitive query strings."""
 
@@ -1778,38 +1781,50 @@ class API():
                 return Response(status_code=status.HTTP_400_BAD_REQUEST, content=detect_response.error)
             return Response(content=detect_response.image, media_type="image/jpeg")
 
-        @self.api.get("/stream")
-        async def stream(detect_request: str = '{}'):
-            detect_request_dict = json.loads(detect_request)
-            detect_request = odrpc.DetectRequest(**detect_request_dict)
-            # logger.info('stream request: %s', detect_request)
-            if detect_request.profile_id and not profiles_enabled():
-                raise HTTPException(
-                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                    detail="Profile features require configured API authentication.",
-                )
-            detect_request.image = ".jpg" # Must be jpg
-            stream_handler = Streamer(self.doods)
-            return StreamingResponse(
-                stream_handler.mjpeg_streamer(detect_request),
-                media_type="multipart/x-mixed-replace;boundary=frame",
-            )
-
-        @self.api.post("/stream")
-        async def stream_from_body(detect_request: odrpc.DetectRequest):
-            """Start the browser stream without exposing its source in the URL."""
+        async def open_http_stream(detect_request: odrpc.DetectRequest):
+            """Wait for the first frame before committing an HTTP success status."""
             if detect_request.profile_id and not profiles_enabled():
                 raise HTTPException(
                     status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                     detail="Profile features require configured API authentication.",
                 )
             detect_request.image = ".jpg"
-            stream_handler = Streamer(self.doods)
+            handler = Streamer(self.doods)
+            frames = handler.mjpeg_streamer(detect_request)
+            try:
+                first = await asyncio.wait_for(frames.__anext__(), timeout=_STREAM_FIRST_FRAME_TIMEOUT)
+            except asyncio.TimeoutError:
+                raise HTTPException(status_code=504, detail="Stream did not produce a frame in time.") from None
+            except StopAsyncIteration:
+                raise HTTPException(status_code=503, detail="Stream capacity unavailable or stream ended.") from None
+            except Exception:
+                # Native exceptions can contain a source URL and credentials.
+                self.logger.warning("Could not start camera stream")
+                raise HTTPException(status_code=502, detail="Could not start camera stream.") from None
+
+            async def body():
+                try:
+                    yield first
+                    async for frame in frames:
+                        yield frame
+                finally:
+                    await frames.aclose()
+
             return StreamingResponse(
-                stream_handler.mjpeg_streamer(detect_request),
+                body(),
                 media_type="multipart/x-mixed-replace;boundary=frame",
                 headers={"Cache-Control": "no-store"},
             )
+
+        @self.api.get("/stream")
+        async def stream(detect_request: str = '{}'):
+            detect_request_dict = json.loads(detect_request)
+            return await open_http_stream(odrpc.DetectRequest(**detect_request_dict))
+
+        @self.api.post("/stream")
+        async def stream_from_body(detect_request: odrpc.DetectRequest):
+            """Start the browser stream without exposing its source in the URL."""
+            return await open_http_stream(detect_request)
 
         @self.api.websocket("/stream")
         async def websocket_stream(websocket: WebSocket):
